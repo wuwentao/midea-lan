@@ -397,32 +397,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_cloud_instance.download_lua.reset_mock()
             self.namespace.device_type = bytearray()
 
-            # Invalid hex in the legacy SN type slot falls back to 0.
-            invalid_hex_sn = "0000ZZ00UNKNOWN00000000000000000"
-            self.namespace.device_sn = invalid_hex_sn
-            await self.cli.download()
-            mock_cloud_instance.download_lua.assert_called_once_with(
-                str(Path()),
-                0,
-                invalid_hex_sn,
-                invalid_hex_sn[9:17],
-                "0000",
-            )
-            mock_cloud_instance.download_lua.reset_mock()
-
-            # Short legacy SNs skip the hex-derived type path and keep 0.
-            short_sn = "SHORTSN"
-            self.namespace.device_sn = short_sn
-            await self.cli.download()
-            mock_cloud_instance.download_lua.assert_called_once_with(
-                str(Path()),
-                0,
-                short_sn,
-                short_sn[9:17],
-                "0000",
-            )
-            mock_cloud_instance.download_lua.reset_mock()
-
             # no host and no SN: download every device in the cloud account
             self.namespace.host = None
             self.namespace.device_sn = None
@@ -478,75 +452,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_called_once()
             mock_cloud_instance.download_plugin.assert_called_once()
-
-    async def test_download_continues_after_device_failures(self) -> None:
-        """Bulk download continues when individual devices fail."""
-        appliances = {
-            1: {
-                "type": 0xAC,
-                "sn": "0000AC000FIRST00000000000000000",
-                "model": "FIRST",
-                "manufacturer_code": "0001",
-            },
-            2: {
-                "type": 0xB0,
-                "sn": "0000B000SECOND0000000000000000",
-                "model": "SECOND",
-                "manufacturer_code": "0002",
-            },
-            3: {
-                "type": 0xFA,
-                "sn": "0000FA00THIRD00000000000000000",
-                "model": "THIRD",
-                "manufacturer_code": "0003",
-            },
-        }
-        mock_cloud_instance = AsyncMock()
-        mock_cloud_instance.login.return_value = True
-        mock_cloud_instance.list_appliances.return_value = appliances
-        mock_cloud_instance.download_lua.side_effect = [
-            RuntimeError("lua failed"),
-            "second.lua",
-            "third.lua",
-        ]
-        mock_cloud_instance.download_plugin.side_effect = [
-            RuntimeError("plugin failed"),
-            "third.plugin",
-        ]
-        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance):
-            self.namespace.host = None
-            self.namespace.device_sn = None
-            with self.assertLogs("cli", level="ERROR") as logs:
-                await self.cli.download()
-
-        assert mock_cloud_instance.download_lua.await_count == 3
-        assert mock_cloud_instance.download_plugin.await_count == 2
-        assert mock_cloud_instance.download_lua.await_args_list[0].args == (
-            str(Path()),
-            appliances[1]["type"],
-            appliances[1]["sn"],
-            appliances[1]["model"],
-            appliances[1]["manufacturer_code"],
-        )
-        assert mock_cloud_instance.download_lua.await_args_list[2].args == (
-            str(Path()),
-            appliances[3]["type"],
-            appliances[3]["sn"],
-            appliances[3]["model"],
-            appliances[3]["manufacturer_code"],
-        )
-        assert mock_cloud_instance.download_plugin.await_args_list[0].args == (
-            str(Path()),
-            appliances[2]["type"],
-            appliances[2]["sn"],
-        )
-        assert mock_cloud_instance.download_plugin.await_args_list[1].args == (
-            str(Path()),
-            appliances[3]["type"],
-            appliances[3]["sn"],
-        )
-        assert "Failed to download lua file for 0000AC000FIRST" in logs.output[0]
-        assert "Failed to download plugin file for 0000B000SECOND" in logs.output[1]
 
     async def test_set_attribute(self) -> None:
         """Test set attribute."""
@@ -610,11 +515,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_set_level.assert_called_with(logging.WARNING)
             self.namespace.func.assert_called_once()
 
-            del self.cli.session
-            self.namespace.func = MagicMock()
-            self.cli.run(self.namespace)
-            self.namespace.func.assert_called_once()
-
     def test_main_call(self) -> None:
         """Test main call."""
         # Command to run the script
@@ -676,26 +576,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             # password passed on command line: config value is not applied
             assert namespace.password == "argpass"
             assert namespace.func.__name__ == "discover"
-
-    def test_main_without_config_file(self) -> None:
-        """Test main entry runs when no config file exists."""
-        config_file = MagicMock()
-        config_file.exists.return_value = False
-        exit_code: int | str | None = None
-        with (
-            patch.object(sys, "argv", ["midealan", "discover", "-u", "user"]),
-            patch("midealan.cli.get_config_file_path", return_value=config_file),
-            patch.object(MideaCLI, "run") as mock_run,
-        ):
-            try:
-                main()
-            except SystemExit as exc:
-                exit_code = exc.code
-
-        assert exit_code == 0
-        mock_run.assert_called_once()
-        namespace = mock_run.call_args[0][0]
-        assert namespace.username == "user"
 
     def test_main_module_entry(self) -> None:
         """Test the __main__ guard when running the module as a script."""

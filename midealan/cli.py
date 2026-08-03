@@ -221,13 +221,6 @@ class MideaCLI:
                 self.namespace.cloud_name,
             )
             return
-        except Exception:
-            _LOGGER.exception(
-                "Failed to download lua file for %s [%s].",
-                device_sn,
-                hex(device_type),
-            )
-            return
 
         _LOGGER.debug(
             "Download plugin file for %s [%s]",
@@ -245,12 +238,6 @@ class MideaCLI:
                 "The '%s' cloud does not support downloading plugin files; "
                 "lua file downloaded only.",
                 self.namespace.cloud_name,
-            )
-        except Exception:
-            _LOGGER.exception(
-                "Failed to download plugin file for %s [%s].",
-                device_sn,
-                hex(device_type),
             )
 
     async def _download_by_sn(self, cloud: MideaCloud, device_sn: str) -> None:
@@ -295,10 +282,11 @@ class MideaCLI:
             return
 
         # 3. legacy fallback: derive the type from the serial number
-        device_type = 0
-        if len(device_sn) == SERIAL_TYPE1_LENGTH:
-            with contextlib.suppress(ValueError):
-                device_type = int.from_bytes(bytes.fromhex(device_sn[4:6]))
+        device_type = (
+            int.from_bytes(bytes.fromhex(device_sn[4:6]))
+            if len(device_sn) == SERIAL_TYPE1_LENGTH
+            else 0
+        )
         await self._download_device(
             cloud,
             device_type,

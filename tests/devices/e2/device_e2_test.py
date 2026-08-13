@@ -219,6 +219,37 @@ class TestMideaE2Device:
         assert message.target_temperature == 45
         assert message._body == bytearray([0x07, 45])
 
+    @pytest.mark.parametrize(
+        "attr",
+        [
+            DeviceAttributes.sterilization,
+            DeviceAttributes.screen_off,
+            DeviceAttributes.sleep,
+        ],
+    )
+    def test_set_attribute_old_protocol_unsupported_falls_back(
+        self,
+        attr: DeviceAttributes,
+    ) -> None:
+        """Old protocol falls back when MessageSet cannot carry the attribute."""
+        device = self._device('{"old_protocol": "true"}')
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(attr.value, True)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+        # Without the fallback this is a MessageSet and the flag is dropped.
+        assert isinstance(message, MessageNewProtocolSet)
+        assert getattr(message, attr.value) is True
+
+    def test_set_attribute_old_protocol_keeps_supported_attributes(self) -> None:
+        """Attributes MessageSet does carry must still use the old message."""
+        device = self._device('{"old_protocol": "true"}')
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.whole_tank_heating.value, True)
+            message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.whole_tank_heating is True
+
     def test_set_attribute_new_protocol(self) -> None:
         """Test new protocol attributes use the new protocol set message."""
         device = self._device('{"old_protocol": "false"}')

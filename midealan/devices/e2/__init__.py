@@ -235,6 +235,14 @@ class MideaE2Device(MideaDevice):
                 message.power = bool(value)
             elif old_protocol == OldProtocol.true:
                 message = self.make_message_set()
+                if not hasattr(message, str(attr)):
+                    # MessageSet only carries protection, whole_tank_heating,
+                    # target_temperature and variable_heating. setattr() would
+                    # happily create an unused attribute and the message would
+                    # be sent without the requested change, so the command is
+                    # silently lost. Fall back to the new protocol message,
+                    # which carries the remaining attributes.
+                    message = MessageNewProtocolSet(self._message_protocol_version)
                 setattr(message, str(attr), value)
             else:
                 message = MessageNewProtocolSet(self._message_protocol_version)

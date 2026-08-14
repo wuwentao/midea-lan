@@ -669,6 +669,21 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert cloud is not None
         assert not await cloud.login()
 
+    async def test_mideaaircloud_api_request_success_without_payload(self) -> None:
+        """Test MideaAirCloud _api_request with no result or data payload."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(return_value=b'{"errorCode": 0}')
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud._api_request(endpoint="/endpoint", data={}) is None
+
     async def test_mideaaircloud_download_lua(self) -> None:
         """Test MideaAirCloud download_lua against the legacy backend."""
         session = Mock()

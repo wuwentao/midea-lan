@@ -8,6 +8,7 @@ import time
 from asyncio import Lock
 from datetime import UTC, datetime
 from http import HTTPStatus
+from pathlib import Path
 from secrets import token_hex
 from typing import Any, cast
 
@@ -316,6 +317,23 @@ class MideaCloud:
             return cast("dict", response[device_id])
         return None
 
+    @staticmethod
+    def _get_lua_download_metadata(
+        path: str,
+        response: dict[str, Any],
+        sn: str,
+    ) -> tuple[str, Path] | None:
+        """Validate lua download metadata and build a safe destination path."""
+        url = response.get("url")
+        file_name_value = response.get("fileName")
+        file_name = (
+            Path(file_name_value).name if isinstance(file_name_value, str) else ""
+        )
+        if not isinstance(url, str) or not url or file_name in {"", ".."}:
+            _LOGGER.warning("Invalid lua metadata for appliance %s.", sn)
+            return None
+        return url, Path(path) / file_name
+
     async def download_lua(
         self,
         path: str,
@@ -565,11 +583,14 @@ class MeijuCloud(MideaCloud):
             "iotAppId": self._app_id,
         }
         fnm = None
-        if response := await self._api_request(
-            endpoint="/v1/appliance/protocol/lua/luaGet",
-            data=data,
-        ):
-            res = await self._session.get(response["url"])
+        if (
+            response := await self._api_request(
+                endpoint="/v1/appliance/protocol/lua/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
@@ -578,7 +599,7 @@ class MeijuCloud(MideaCloud):
                         + self._security.aes_decrypt_with_fixed_key(lua)
                     )
                     stream = stream.replace("\r\n", "\n")
-                    fnm = f"{path}/{response['fileName']}"
+                    fnm = file_path
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
@@ -799,11 +820,14 @@ class SmartHomeCloud(MideaCloud):
         if model_number is not None:
             data["modelNumber"] = model_number
         fnm = None
-        if response := await self._api_request(
-            endpoint="/v2/luaEncryption/luaGet",
-            data=data,
-        ):
-            res = await self._session.get(response["url"])
+        if (
+            response := await self._api_request(
+                endpoint="/v2/luaEncryption/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
@@ -812,7 +836,7 @@ class SmartHomeCloud(MideaCloud):
                         + self._security.aes_decrypt_with_fixed_key(lua)
                     )
                     stream = stream.replace("\r\n", "\n")
-                    fnm = f"{path}/{response['fileName']}"
+                    fnm = file_path
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
@@ -1031,11 +1055,14 @@ class MideaAirCloud(MideaCloud):
             },
         )
         fnm = None
-        if response := await self._api_request(
-            endpoint="/v1/appliance/protocol/lua/luaGet",
-            data=data,
-        ):
-            res = await self._session.get(response["url"])
+        if (
+            response := await self._api_request(
+                endpoint="/v1/appliance/protocol/lua/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
@@ -1053,7 +1080,7 @@ class MideaAirCloud(MideaCloud):
                         return None
                     stream = 'local bit = require "bit"\n' + decrypted_lua
                     stream = stream.replace("\r\n", "\n")
-                    fnm = f"{path}/{response['fileName']}"
+                    fnm = file_path
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None

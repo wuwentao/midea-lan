@@ -1,5 +1,6 @@
 """Test cloud."""
 
+from hashlib import md5
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import ClassVar
@@ -7,10 +8,11 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, ClientTimeout
 
 from midealan.cloud import (
     DEFAULT_KEYS,
+    SUPPORTED_CLOUDS,
     MeijuCloud,
     MideaAirCloud,
     MideaCloud,
@@ -37,6 +39,58 @@ class CloudTest(IsolatedAsyncioTestCase):
                 encoding="utf-8",
             ) as f:
                 self.responses[file_path.name] = bytes(f.read(), encoding="utf-8")
+
+    def test_lua_download_metadata(self) -> None:
+        """Test lua download metadata validation and filename sanitization."""
+        metadata = MideaCloud._get_lua_download_metadata(
+            "downloads",
+            {"url": "url", "fileName": "../lua.lua"},
+            "serial",
+        )
+        assert metadata == ("url", Path("downloads/lua.lua"))
+
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"fileName": "lua.lua"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "", "fileName": "lua.lua"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url", "fileName": None},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url", "fileName": ".."},
+                    "serial",
+                )
+                is None
+            )
+        assert len(logs.output) == 5
 
     def test_get_midea_cloud(self) -> None:
         """Test get midea cloud."""
@@ -383,11 +437,23 @@ class CloudTest(IsolatedAsyncioTestCase):
             file_path = Path(file)
             assert Path.exists(file_path)
             Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
 
             res.status = 404
             assert (
                 await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
             )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+            with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
 
     async def test_meijucloud_download_plugin(self) -> None:
         """Test MeijuCloud download_plugin."""
@@ -596,6 +662,18 @@ class CloudTest(IsolatedAsyncioTestCase):
             file_path = Path(file)
             assert Path.exists(file_path)
             Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+            with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
 
     async def test_msmartcloud_download_plugin(self) -> None:
         """Test MSmartCloud download_plugin."""
@@ -699,13 +777,6 @@ class CloudTest(IsolatedAsyncioTestCase):
         session.request = AsyncMock(return_value=response)
         res = Mock()
         res.status = 200
-        # Hex-encoded AES-128-ECB blob keyed by md5("Midea Air" app_key)[:16]
-        # that decrypts to a small valid lua snippet.
-        res.text = AsyncMock(
-            return_value=(
-                "f424cd84479c665a7e8a82d3b6bea6b67a1fdc95a7783791a6ff35b2953a158a"
-            ),
-        )
         session.get = AsyncMock(return_value=res)
         cloud = get_midea_cloud(
             "Midea Air",
@@ -714,6 +785,18 @@ class CloudTest(IsolatedAsyncioTestCase):
             password="password",
         )
         assert cloud is not None
+        app_key = SUPPORTED_CLOUDS["Midea Air"]["app_key"]
+        lua_key = (
+            md5(app_key.encode("ascii"), usedforsecurity=False)
+            .hexdigest()[:16]
+            .encode("ascii")
+        )
+        res.text = AsyncMock(
+            return_value=cloud._security.aes_encrypt(
+                b"function test() return 1 end",
+                lua_key,
+            ).hex(),
+        )
         assert await cloud.login()
 
         with TemporaryDirectory() as tmpdir:
@@ -725,11 +808,21 @@ class CloudTest(IsolatedAsyncioTestCase):
                 'local bit = require "bit"',
             )
             Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
 
             res.status = 404
             assert (
                 await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
             )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
 
     async def test_mideaaircloud_download_lua_no_response(self) -> None:
         """Test MideaAirCloud download_lua with no lua metadata."""

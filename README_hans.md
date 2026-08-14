@@ -65,13 +65,25 @@ ac.set_swing(False, False)
 
 ### 命令行工具
 
-已安装包时使用 `midealan` 命令；从本仓库开发环境运行时使用 `uv run`：
+本包安装后会提供 `midealan` 控制台命令。从本仓库克隆代码时，先创建开发环境、以 editable
+模式安装本包，并激活虚拟环境：
 
 ```bash
-# 已安装的软件包
-midealan --help
+# Linux / macOS / WSL2
+git clone https://github.com/wuwentao/midea-lan.git
+cd midea-lan
+./scripts/setup.sh
+uv pip install -e .
+source .venv/bin/activate
 
-# 本仓库开发环境
+midealan --help
+```
+
+在 Windows PowerShell 中，先运行 `scripts\setup.ps1`，再依次运行 `uv pip install -e .` 和
+`.\.venv\Scripts\Activate.ps1`，之后即可使用 `midealan --help`。控制台命令安装在 `.venv`
+中；未激活虚拟环境时，请使用 `uv run`：
+
+```bash
 uv run python -m midealan.cli -h
 ```
 

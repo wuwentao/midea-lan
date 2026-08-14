@@ -65,13 +65,26 @@ ac.set_swing(False, False)
 
 ### Command line tool
 
-The installed command is `midealan`. From a clone of this repository, use `uv run`:
+The package installs a `midealan` console command. From a clone of this repository, create
+the development environment, install the package in editable mode, and activate the virtual
+environment first:
 
 ```bash
-# Installed package
-midealan --help
+# Linux / macOS / WSL2
+git clone https://github.com/wuwentao/midea-lan.git
+cd midea-lan
+./scripts/setup.sh
+uv pip install -e .
+source .venv/bin/activate
 
-# Development checkout
+midealan --help
+```
+
+On Windows PowerShell, run `scripts\setup.ps1`, then `uv pip install -e .` and
+`.\.venv\Scripts\Activate.ps1` before using `midealan --help`. The console command is
+installed inside `.venv`, so use `uv run` when the virtual environment is not activated:
+
+```bash
 uv run python -m midealan.cli -h
 ```
 

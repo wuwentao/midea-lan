@@ -1040,9 +1040,9 @@ class MideaAirCloud(MideaCloud):
     ) -> str | None:
         """Download lua integration.
 
-        The legacy ``mapp.appsmb.com`` backend returns the lua payload under
-        ``data`` (handled by :meth:`_api_request`) and serves a hex-encoded
-        AES-128-ECB file keyed by the app key (see
+        The legacy backend returns the lua payload under ``data`` (handled by
+        :meth:`_api_request`) and serves a hex-encoded AES-128-ECB file keyed
+        by the app key (see
         :meth:`MideaAirSecurity.decrypt_appliance_lua`).
         """
         data = self._make_general_data()

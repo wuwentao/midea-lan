@@ -1039,10 +1039,19 @@ class MideaAirCloud(MideaCloud):
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
-                    stream = 'local bit = require "bit"\n' + cast(
-                        "MideaAirSecurity",
-                        self._security,
-                    ).decrypt_appliance_lua(lua)
+                    try:
+                        decrypted_lua = cast(
+                            "MideaAirSecurity",
+                            self._security,
+                        ).decrypt_appliance_lua(lua)
+                    except (ValueError, UnicodeDecodeError) as e:
+                        _LOGGER.warning(
+                            "Failed to decrypt lua for appliance %s: %s",
+                            sn,
+                            e,
+                        )
+                        return None
+                    stream = 'local bit = require "bit"\n' + decrypted_lua
                     stream = stream.replace("\r\n", "\n")
                     fnm = f"{path}/{response['fileName']}"
                     async with aiofiles.open(fnm, "w") as fp:

@@ -252,7 +252,13 @@ class MideaAirSecurity(CloudSecurity):
         as a hex-encoded AES-128-ECB blob keyed by ``md5(app_key)[:16]``, where
         ``app_key`` is this security object's login key.
         """
-        key = md5(self._login_key.encode("ascii")).hexdigest()[:16].encode("ascii")
+        # The legacy backend derives the AES key with MD5; not used as a
+        # security hash.
+        key = (
+            md5(self._login_key.encode("ascii"), usedforsecurity=False)
+            .hexdigest()[:16]
+            .encode("ascii")
+        )
         return unpad(
             AES.new(key, AES.MODE_ECB).decrypt(bytes.fromhex(data)),
             16,

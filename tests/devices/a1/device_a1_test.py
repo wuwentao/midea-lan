@@ -165,3 +165,22 @@ class TestMideaA1Device:
                     "modes": {1: "New Manual", 2: "New Mode"},
                 },
             )
+
+    def test_set_customize_prompt_tone(self) -> None:
+        """Test set customize can override the prompt_tone default.
+
+        prompt_tone is a write-only flag attached to every outgoing set command and
+        is never reported back by the device, so the integration has no way to learn
+        the real hardware state - it only holds this default in memory. Some users
+        want the confirmation beep off by default instead of on, so it must be
+        overridable per-device rather than changing the shared default for everyone.
+        """
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize('{"prompt_tone": false}')
+            assert self.device.attributes[DeviceAttributes.prompt_tone] is False
+            mock_update_all.assert_called_once_with({"prompt_tone": False})
+
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize('{"prompt_tone": true}')
+            assert self.device.attributes[DeviceAttributes.prompt_tone] is True
+            mock_update_all.assert_called_once_with({"prompt_tone": True})

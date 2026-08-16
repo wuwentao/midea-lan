@@ -178,9 +178,24 @@ class TestMideaA1Device:
         with patch.object(self.device, "update_all") as mock_update_all:
             self.device.set_customize('{"prompt_tone": false}')
             assert self.device.attributes[DeviceAttributes.prompt_tone] is False
+            assert self.device.make_message_set().prompt_tone is False
             mock_update_all.assert_called_once_with({"prompt_tone": False})
 
         with patch.object(self.device, "update_all") as mock_update_all:
             self.device.set_customize('{"prompt_tone": true}')
             assert self.device.attributes[DeviceAttributes.prompt_tone] is True
+            assert self.device.make_message_set().prompt_tone is True
             mock_update_all.assert_called_once_with({"prompt_tone": True})
+
+    def test_set_customize_prompt_tone_ignores_non_boolean(self) -> None:
+        """Test set customize ignores a non-boolean prompt_tone instead of coercing it.
+
+        JSON has no ambiguity about what a boolean is, so a malformed value (a
+        string, a number, null) should be rejected rather than passed through
+        Python's truthiness - bool("false") is True, which would silently invert
+        a user's intent.
+        """
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize('{"prompt_tone": "false"}')
+            assert self.device.attributes[DeviceAttributes.prompt_tone] is True
+            mock_update_all.assert_not_called()

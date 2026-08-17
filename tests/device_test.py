@@ -1,5 +1,6 @@
 """Midea Lan device test."""
 
+import threading
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
@@ -248,6 +249,41 @@ class TestMideaDevice:
 
         authenticate_mock.assert_not_called()
         refresh_mock.assert_not_called()
+        assert self.device.available is False
+
+    def test_connect_loop_discards_connection_closed_before_install(self) -> None:
+        """Test close() during connect prevents a connected socket from surviving."""
+        socket_mock = MagicMock()
+        close_started = threading.Event()
+        close_finished = threading.Event()
+        close_thread: threading.Thread | None = None
+
+        def close_device() -> None:
+            close_started.set()
+            self.device.close()
+            close_finished.set()
+
+        def create_socket(*_args: object) -> MagicMock:
+            nonlocal close_thread
+            close_thread = threading.Thread(target=close_device)
+            close_thread.start()
+            assert close_started.wait(1)
+            assert not close_finished.wait(0.01)
+            return socket_mock
+
+        self.device._is_run = True
+        self.device._device_protocol_version = ProtocolVersion.V2
+        with (
+            patch("socket.socket", side_effect=create_socket),
+            patch.object(self.device, "refresh_status"),
+        ):
+            self.device._connect_loop()
+
+        assert close_thread is not None
+        close_thread.join(1)
+        assert close_finished.is_set()
+        socket_mock.close.assert_called_once()
+        assert self.device._socket is None
         assert self.device.available is False
 
     def test_authenticate(self) -> None:

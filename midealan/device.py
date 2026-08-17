@@ -107,7 +107,7 @@ class MideaDevice(threading.Thread):
         self._ip_address = kwargs["ip_address"]
         self._port = kwargs["port"]
         self._security = LocalSecurity()
-        self._socket_lock = threading.Lock()
+        self._socket_lock = threading.RLock()
         self._token = bytes.fromhex(kwargs["token"])
         self._key = bytes.fromhex(kwargs["key"])
         self._buffer = b""
@@ -239,47 +239,54 @@ class MideaDevice(threading.Thread):
         """Connect to device."""
         connected = False
         sock: socket.socket | None = None
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            with self._socket_lock:
+        with self._socket_lock:
+            was_running = self._is_run
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self._socket = sock
-            sock.settimeout(SOCKET_TIMEOUT)
-            _LOGGER.debug(
-                "[%s] Connecting to %s:%s",
-                self._device_id,
-                self._ip_address,
-                self._port,
-            )
-            sock.connect((self._ip_address, self._port))
-            _LOGGER.debug("[%s] Connected", self._device_id)
-            if self._device_protocol_version == ProtocolVersion.V3:
-                self.authenticate()
-            # 1. midea_ac_lan add device verify token with connect and auth
-            # 2. init connection, check_protocol
-            if check_protocol:
-                self.refresh_status(check_protocol=check_protocol)
-            connected = True
-        except TimeoutError:
-            _LOGGER.debug("[%s] Connection timed out", self._device_id)
-        except OSError:  # refresh_status exception
-            _LOGGER.debug("[%s] Connection error", self._device_id)
-        except AuthException:  # authenticate exception
-            _LOGGER.warning("[%s] Authentication failed", self._device_id)
-        except SocketException:  # refresh_status exception
-            _LOGGER.debug("[%s] Connect socket exception", self._device_id)
-        except NoSupportedProtocol:  # refresh_status exception
-            _LOGGER.warning("[%s] No supported query protocol", self._device_id)
-        except Exception as e:
-            _LOGGER.exception(
-                "[%s] Unknown error during connect device",
-                self._device_id,
-                exc_info=e,
-            )
-        finally:
-            # Any failure path leaves connected False; release the socket once
-            # here instead of repeating close_socket() in every handler.
-            if not connected and sock is not None:
-                self.close_socket(sock)
+                sock.settimeout(SOCKET_TIMEOUT)
+                _LOGGER.debug(
+                    "[%s] Connecting to %s:%s",
+                    self._device_id,
+                    self._ip_address,
+                    self._port,
+                )
+                sock.connect((self._ip_address, self._port))
+                _LOGGER.debug("[%s] Connected", self._device_id)
+                if self._device_protocol_version == ProtocolVersion.V3:
+                    self.authenticate()
+                # 1. midea_ac_lan add device verify token with connect and auth
+                # 2. init connection, check_protocol
+                if check_protocol:
+                    self.refresh_status(check_protocol=check_protocol)
+                if was_running and not self._is_run:
+                    _LOGGER.debug(
+                        "[%s] Connection closed before lifecycle completed",
+                        self._device_id,
+                    )
+                else:
+                    connected = True
+            except TimeoutError:
+                _LOGGER.debug("[%s] Connection timed out", self._device_id)
+            except OSError:  # refresh_status exception
+                _LOGGER.debug("[%s] Connection error", self._device_id)
+            except AuthException:  # authenticate exception
+                _LOGGER.warning("[%s] Authentication failed", self._device_id)
+            except SocketException:  # refresh_status exception
+                _LOGGER.debug("[%s] Connect socket exception", self._device_id)
+            except NoSupportedProtocol:  # refresh_status exception
+                _LOGGER.warning("[%s] No supported query protocol", self._device_id)
+            except Exception as e:
+                _LOGGER.exception(
+                    "[%s] Unknown error during connect device",
+                    self._device_id,
+                    exc_info=e,
+                )
+            finally:
+                # Any failure path leaves connected False; release the socket once
+                # here instead of repeating close_socket() in every handler.
+                if not connected and sock is not None:
+                    self.close_socket(sock)
         # enable/disable device in init connection
         if check_protocol:
             self.set_available(connected)

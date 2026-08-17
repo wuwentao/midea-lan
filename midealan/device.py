@@ -8,8 +8,6 @@ from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
 
-from typing_extensions import deprecated
-
 from .const import DeviceType, ProtocolVersion
 from .exceptions import SocketException
 from .message import (
@@ -260,11 +258,11 @@ class MideaDevice(threading.Thread):
         except OSError:  # refresh_status exception
             _LOGGER.debug("[%s] Connection error", self._device_id)
         except AuthException:  # authenticate exception
-            _LOGGER.debug("[%s] Authentication failed", self._device_id)
+            _LOGGER.warning("[%s] Authentication failed", self._device_id)
         except SocketException:  # refresh_status exception
             _LOGGER.debug("[%s] Connect socket exception", self._device_id)
         except NoSupportedProtocol:  # refresh_status exception
-            _LOGGER.debug("[%s] No supported query protocol", self._device_id)
+            _LOGGER.warning("[%s] No supported query protocol", self._device_id)
         except Exception as e:
             _LOGGER.exception(
                 "[%s] Unknown error during connect device",
@@ -301,7 +299,7 @@ class MideaDevice(threading.Thread):
             response.hex(),
         )
         if len(response) < MIN_AUTH_RESPONSE:
-            _LOGGER.debug(
+            _LOGGER.warning(
                 "[%s] Received auth response len %d error, bytes: %s",
                 self._device_id,
                 len(response),
@@ -390,9 +388,9 @@ class MideaDevice(threading.Thread):
             cmds = [MessageQueryAppliance(self.device_type), *cmds]
         error_count = 0
         _LOGGER.debug(
-            "[%s] refresh_status with cmds: %s, check_protocol %s, \
-            device %s, type %s, model %s, subtype %s, device_protocol: %s, \
-            message_protocol %s, unsupported_protocol: %s",
+            "[%s] refresh_status with cmds: %s, check_protocol %s, "
+            "device %s, type %s, model %s, subtype %s, device_protocol: %s, "
+            "message_protocol %s, unsupported_protocol: %s",
             self._device_id,
             cmds,
             check_protocol,
@@ -462,7 +460,7 @@ class MideaDevice(threading.Thread):
                 error_count += 1
             # all the query failed
             if error_count == len(cmds):
-                _LOGGER.debug(
+                _LOGGER.warning(
                     "[%s] all the query cmds failed %s, please report bug",
                     self._device_id,
                     cmds,
@@ -604,7 +602,7 @@ class MideaDevice(threading.Thread):
             self.build_send(cmd)
         except OSError as e:
             _LOGGER.debug(
-                "[{%s] Interface send_command failure, %s, cmd_type: %s, cmd_body: %s",
+                "[%s] send_command failure, %s, cmd_type: %s, cmd_body: %s",
                 self._device_id,
                 repr(e),
                 cmd_type,
@@ -642,11 +640,6 @@ class MideaDevice(threading.Thread):
         status = {"available": available}
         self.update_all(status)
 
-    @deprecated("enable_device is replaced by set_available")
-    def enable_device(self, available: bool = True) -> None:
-        """Enable device."""
-        self.set_available(available)
-
     def open(self) -> None:
         """Open thread."""
         if not self._is_run:
@@ -673,9 +666,11 @@ class MideaDevice(threading.Thread):
         """Close socket."""
         self._unsupported_protocol = []
         self._buffer = b""
-        if self._socket:
+        sock = self._socket
+        # use local variable to avoid race condition with self
+        if sock is not None:
             try:
-                self._socket.shutdown(socket.SHUT_RDWR)
+                sock.shutdown(socket.SHUT_RDWR)
             except OSError as e:
                 # shutdown() raises ENOTCONN if the peer already went away;
                 # that's fine, we still close() below.
@@ -685,12 +680,15 @@ class MideaDevice(threading.Thread):
                     e,
                 )
             try:
-                self._socket.close()
+                sock.close()
                 _LOGGER.debug("[%s] Socket closed", self._device_id)
-            except OSError as e:
+            # catch OSError, AttributeError, ValueError to avoid race condition
+            except (OSError, AttributeError, ValueError) as e:
                 _LOGGER.debug("[%s] Error while closing socket: %s", self._device_id, e)
             finally:
-                self._socket = None
+                # Avoid race condition: only clear self._socket.
+                if self._socket == sock:
+                    self._socket = None
 
     def set_ip_address(self, ip_address: str) -> None:
         """Set IP address."""

@@ -547,15 +547,6 @@ class TestMideaDevice:
         self.device.set_mac("9234567890ab")
         assert self.device.mac == "9234567890ab"
 
-    def test_enable_device(self) -> None:
-        """Test deprecated enable_device delegates to set_available."""
-        with pytest.warns(DeprecationWarning, match="enable_device"):
-            self.device.enable_device(True)
-        assert self.device.available is True
-        with pytest.warns(DeprecationWarning, match="enable_device"):
-            self.device.enable_device(False)
-        assert self.device.available is False
-
     def test_should_run(self) -> None:
         """Test _should_run reflects _is_run."""
         self.device._is_run = True

@@ -1,6 +1,6 @@
 """Midea Lan device test."""
 
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -210,6 +210,46 @@ class TestMideaDevice:
             assert self.device._socket is None
             assert self.device._buffer == b""
 
+    def test_connect_failure_only_closes_its_own_socket(self) -> None:
+        """Test failed connect cleanup does not close a replaced socket."""
+        old_socket = MagicMock()
+        new_socket: Any = MagicMock()
+
+        def fail_after_socket_replaced(*_args: object) -> None:
+            self.device._socket = new_socket
+            raise OSError("connect failed")
+
+        old_socket.connect.side_effect = fail_after_socket_replaced
+        self.device._buffer = b"active"
+        self.device._unsupported_protocol = ["new"]
+        with (
+            patch("socket.socket", return_value=old_socket),
+            patch.object(self.device, "authenticate"),
+            patch.object(self.device, "refresh_status"),
+        ):
+            assert self.device.connect(check_protocol=True) is False
+
+        old_socket.close.assert_called_once()
+        new_socket.close.assert_not_called()
+        assert self.device._socket is new_socket
+        assert self.device._buffer == b"active"
+        assert self.device._unsupported_protocol == ["new"]
+
+    def test_connect_v2_without_protocol_check(self) -> None:
+        """Test successful V2 connect skips auth and protocol checks."""
+        socket_mock = MagicMock()
+        self.device._device_protocol_version = ProtocolVersion.V2
+        with (
+            patch("socket.socket", return_value=socket_mock),
+            patch.object(self.device, "authenticate") as authenticate_mock,
+            patch.object(self.device, "refresh_status") as refresh_mock,
+        ):
+            assert self.device.connect() is True
+
+        authenticate_mock.assert_not_called()
+        refresh_mock.assert_not_called()
+        assert self.device.available is False
+
     def test_authenticate(self) -> None:
         """Test authenticate."""
         socket_mock = MagicMock()
@@ -405,6 +445,18 @@ class TestMideaDevice:
             with pytest.raises(NoSupportedProtocol):
                 self.device.refresh_status(True)  # Unsupported protocol
 
+    def test_refresh_status_without_appliance_or_protocol_check(self) -> None:
+        """Test refresh_status can send queries without response validation."""
+        cmd = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=[cmd]),
+            patch.object(self.device, "build_send") as build_send_mock,
+        ):
+            self.device.refresh_status()
+
+        build_send_mock.assert_called_once_with(cmd, query=True)
+
     def test_parse_message(self) -> None:
         """Test parse message."""
         with (
@@ -442,6 +494,33 @@ class TestMideaDevice:
                 side_effect=[{"power": True}, {}, NotImplementedError()],
             ):
                 assert self.device.parse_message(bytes([])) == MessageResult.SUCCESS
+
+    def test_parse_message_without_appliance_preprocess(self) -> None:
+        """Test parse_message processes payload when appliance query is disabled."""
+        message = bytearray([0x0] * 72)
+        message[4] = 72
+        self.device._appliance_query = False
+        with (
+            patch.object(
+                self.device,
+                "fetch_v2_message",
+                return_value=([message], b""),
+            ),
+            patch.object(
+                self.device._security,
+                "aes_decrypt",
+                return_value=bytearray([0x1] * 16),
+            ),
+            patch.object(
+                self.device,
+                "process_message",
+                return_value={"power": True},
+            ) as process_message_mock,
+        ):
+            self.device._device_protocol_version = ProtocolVersion.V2
+            assert self.device.parse_message(bytes([])) == MessageResult.SUCCESS
+
+        process_message_mock.assert_called_once()
 
     def test_pre_process_message(self) -> None:
         """Test pre process message."""
@@ -516,6 +595,13 @@ class TestMideaDevice:
             self.device.open()
             assert self.device._is_run is True
 
+    def test_open_noop_when_already_running(self) -> None:
+        """Test open does nothing when the thread is already marked running."""
+        self.device._is_run = True
+        with patch("threading.Thread.start") as start_mock:
+            self.device.open()
+        start_mock.assert_not_called()
+
     def test_close(self) -> None:
         """Test close."""
         with patch.object(self.device, "_socket") as socket_mock:
@@ -523,6 +609,13 @@ class TestMideaDevice:
             self.device.close()
             assert self.device._is_run is False
             socket_mock.close.assert_called()
+
+    def test_close_noop_when_not_running(self) -> None:
+        """Test close does nothing when the thread is already stopped."""
+        self.device._is_run = False
+        with patch.object(self.device, "close_socket") as close_socket_mock:
+            self.device.close()
+        close_socket_mock.assert_not_called()
 
     def test_close_socket_close_oserror(self) -> None:
         """Test close_socket swallows OSError raised by socket.close()."""
@@ -533,6 +626,39 @@ class TestMideaDevice:
         socket_mock.close.assert_called_once()
         assert self.device._socket is None
 
+    def test_close_socket_without_socket_clears_connection_state(self) -> None:
+        """Test close_socket clears connection state when no socket exists."""
+        self.device._socket = None
+        self.device._buffer = b"stale"
+        self.device._unsupported_protocol = ["old"]
+        self.device.close_socket()
+        assert self.device._buffer == b""
+        assert self.device._unsupported_protocol == []
+
+    def test_close_socket_close_value_error(self) -> None:
+        """Test close_socket swallows ValueError raised by socket.close()."""
+        socket_mock = MagicMock()
+        socket_mock.close.side_effect = ValueError("invalid file descriptor")
+        self.device._socket = socket_mock
+        self.device.close_socket()
+        socket_mock.close.assert_called_once()
+        assert self.device._socket is None
+
+    def test_close_socket_does_not_clear_replaced_socket(self) -> None:
+        """Test close_socket only clears the same socket it captured."""
+        old_socket = MagicMock()
+        new_socket: Any = MagicMock()
+
+        def replace_socket() -> None:
+            self.device._socket = new_socket
+
+        old_socket.close.side_effect = replace_socket
+        self.device._socket = old_socket
+        self.device.close_socket()
+
+        old_socket.close.assert_called_once()
+        assert self.device._socket is new_socket
+
     def test_set_ip(self) -> None:
         """Test set ip."""
         with patch.object(self.device, "_socket") as socket_mock:
@@ -541,11 +667,26 @@ class TestMideaDevice:
             socket_mock.close.assert_called()
             assert self.device._ip_address == "10.0.0.1"
 
+    def test_set_ip_noop_when_unchanged(self) -> None:
+        """Test set_ip_address does not close the socket when IP is unchanged."""
+        with patch.object(self.device, "close_socket") as close_socket_mock:
+            self.device.set_ip_address("192.168.1.100")
+        close_socket_mock.assert_not_called()
+
     def test_set_mac(self) -> None:
         """Test set mac."""
         assert self.device.mac == "1234567890ab"
         self.device.set_mac("9234567890ab")
         assert self.device.mac == "9234567890ab"
+
+    def test_enable_device(self) -> None:
+        """Test deprecated enable_device delegates to set_available."""
+        with pytest.warns(DeprecationWarning, match="enable_device"):
+            self.device.enable_device(True)
+        assert self.device.available is True
+        with pytest.warns(DeprecationWarning, match="enable_device"):
+            self.device.enable_device(False)
+        assert self.device.available is False
 
     def test_should_run(self) -> None:
         """Test _should_run reflects _is_run."""
@@ -606,6 +747,67 @@ class TestMideaDevice:
 
         assert sleep_calls == [1]
         assert self.device._socket is None
+
+    def test_connect_loop_does_not_close_socket_replaced_during_failed_connect(
+        self,
+    ) -> None:
+        """Test _connect_loop failure handling keeps a concurrently replaced socket."""
+        new_socket: Any = MagicMock()
+        self.device._is_run = True
+        self.device._socket = None
+        self.device._buffer = b"active"
+        self.device._unsupported_protocol = ["new"]
+
+        def failed_connect(**_kwargs: object) -> bool:
+            self.device._socket = new_socket
+            return False
+
+        with (
+            patch.object(self.device, "connect", side_effect=failed_connect),
+            patch("time.sleep"),
+        ):
+            self.device._connect_loop()
+
+        new_socket.close.assert_not_called()
+        assert self.device._socket is new_socket
+        assert self.device._buffer == b"active"
+        assert self.device._unsupported_protocol == ["new"]
+
+    def test_connect_loop_skips_connect_after_stop_request(self) -> None:
+        """Test _connect_loop skips connect if _should_run turns false."""
+        self.device._is_run = True
+        self.device._socket = None
+
+        def stop_before_connect() -> bool:
+            self.device._is_run = False
+            return False
+
+        with (
+            patch.object(self.device, "_should_run", side_effect=stop_before_connect),
+            patch.object(self.device, "connect") as connect_mock,
+        ):
+            self.device._connect_loop()
+
+        connect_mock.assert_not_called()
+
+    def test_connect_loop_sleep_backoff_can_finish_without_stop(self) -> None:
+        """Test _connect_loop can finish the retry sleep without early stop."""
+        self.device._is_run = True
+        self.device._socket = None
+        sleep_calls: list[float] = []
+
+        def finish_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+            if len(sleep_calls) == 5:
+                self.device._socket = MagicMock()
+
+        with (
+            patch.object(self.device, "connect", return_value=False),
+            patch("time.sleep", side_effect=finish_sleep),
+        ):
+            self.device._connect_loop()
+
+        assert sleep_calls == [1, 1, 1, 1, 1]
 
     def test_run_breaks_when_stopped_during_connect_loop(self) -> None:
         """Test run exits immediately if closed while _connect_loop runs."""

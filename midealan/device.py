@@ -8,6 +8,8 @@ from collections.abc import Callable
 from enum import IntEnum, StrEnum
 from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
 
+from typing_extensions import deprecated
+
 from .const import DeviceType, ProtocolVersion
 from .exceptions import SocketException
 from .message import (
@@ -105,6 +107,7 @@ class MideaDevice(threading.Thread):
         self._ip_address = kwargs["ip_address"]
         self._port = kwargs["port"]
         self._security = LocalSecurity()
+        self._socket_lock = threading.Lock()
         self._token = bytes.fromhex(kwargs["token"])
         self._key = bytes.fromhex(kwargs["key"])
         self._buffer = b""
@@ -235,16 +238,19 @@ class MideaDevice(threading.Thread):
     def connect(self, check_protocol: bool = False) -> bool:
         """Connect to device."""
         connected = False
+        sock: socket.socket | None = None
         try:
-            self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self._socket.settimeout(SOCKET_TIMEOUT)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            with self._socket_lock:
+                self._socket = sock
+            sock.settimeout(SOCKET_TIMEOUT)
             _LOGGER.debug(
                 "[%s] Connecting to %s:%s",
                 self._device_id,
                 self._ip_address,
                 self._port,
             )
-            self._socket.connect((self._ip_address, self._port))
+            sock.connect((self._ip_address, self._port))
             _LOGGER.debug("[%s] Connected", self._device_id)
             if self._device_protocol_version == ProtocolVersion.V3:
                 self.authenticate()
@@ -272,8 +278,8 @@ class MideaDevice(threading.Thread):
         finally:
             # Any failure path leaves connected False; release the socket once
             # here instead of repeating close_socket() in every handler.
-            if not connected:
-                self.close_socket()
+            if not connected and sock is not None:
+                self.close_socket(sock)
         # enable/disable device in init connection
         if check_protocol:
             self.set_available(connected)
@@ -640,6 +646,11 @@ class MideaDevice(threading.Thread):
         status = {"available": available}
         self.update_all(status)
 
+    @deprecated("enable_device is replaced by set_available")
+    def enable_device(self, available: bool = True) -> None:
+        """Enable device."""
+        self.set_available(available)
+
     def open(self) -> None:
         """Open thread."""
         if not self._is_run:
@@ -662,12 +673,14 @@ class MideaDevice(threading.Thread):
         """
         return self._is_run
 
-    def close_socket(self) -> None:
+    def close_socket(self, sock: socket.socket | None = None) -> None:
         """Close socket."""
-        self._unsupported_protocol = []
-        self._buffer = b""
-        sock = self._socket
-        # use local variable to avoid race condition with self
+        with self._socket_lock:
+            if sock is None:
+                sock = self._socket
+            if sock is None or self._socket is sock:
+                self._unsupported_protocol = []
+                self._buffer = b""
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)
@@ -686,9 +699,10 @@ class MideaDevice(threading.Thread):
             except (OSError, AttributeError, ValueError) as e:
                 _LOGGER.debug("[%s] Error while closing socket: %s", self._device_id, e)
             finally:
-                # Avoid race condition: only clear self._socket.
-                if self._socket == sock:
-                    self._socket = None
+                with self._socket_lock:
+                    # Avoid clearing a socket installed by a concurrent reconnect.
+                    if self._socket is sock:
+                        self._socket = None
 
     def set_ip_address(self, ip_address: str) -> None:
         """Set IP address."""
@@ -725,7 +739,6 @@ class MideaDevice(threading.Thread):
             # the while guard was evaluated, so skip opening a socket / network
             # I/O once teardown is in progress.
             if self._should_run() and self.connect(check_protocol=True) is False:
-                self.close_socket()
                 connection_retries += 1
                 # Sleep time with exponential backoff, maximum 600 seconds
                 sleep_time = min(5 * (2 ** (connection_retries - 1)), 600)

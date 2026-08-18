@@ -128,15 +128,6 @@ class PowerFormats(IntEnum):
     BCD_ENERGY_BINARY_POWER = 101
 
 
-class NewProtocolQuery(IntEnum):
-    """New protocol tags in query."""
-
-    error_code_query = 0x003F
-    mode_query = 0x0041
-    high_temperature_monitor = 0x0047
-    rate_select = 0x0048
-
-
 class NewProtocolTags(IntEnum):
     """New protocol tags in query and response."""
 
@@ -213,6 +204,9 @@ class NewProtocolTags(IntEnum):
     rate_select = 0x0048
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
+    error_code_query = 0x003F
+    mode_query = 0x0041
+    high_temperature_monitor = 0x0047
 
 
 class MessageACBase(MessageRequest):
@@ -460,7 +454,7 @@ class MessageNewProtocolQuery(MessageACBase):
         NewProtocolTags.wind_ud_angle,
         NewProtocolTags.out_silent,
         NewProtocolTags.buzzer_all,
-        NewProtocolQuery.error_code_query,
+        NewProtocolTags.error_code_query,
     )
 
     def __init__(
@@ -1113,8 +1107,8 @@ class XBXMessageBody(NewProtocolMessageBody):
             self.out_silent = params[NewProtocolTags.out_silent][0] == OUT_SILENT_VALUE
         if NewProtocolTags.buzzer_all in params:
             self.sound = params[NewProtocolTags.buzzer_all][0] > 0
-        if NewProtocolQuery.error_code_query in params:
-            self.error_code = params[NewProtocolQuery.error_code_query][0]
+        if NewProtocolTags.error_code_query in params:
+            self.error_code = params[NewProtocolTags.error_code_query][0]
         if NewProtocolTags.self_clean in params and bt != ListTypes.B5:
             # A B5 body carries this tag as a capability flag (always 1 when the
             # model supports self-clean), so only B0/B1 bodies report live state.

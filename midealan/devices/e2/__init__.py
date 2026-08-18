@@ -240,9 +240,16 @@ class MideaE2Device(MideaDevice):
                     # target_temperature and variable_heating. setattr() would
                     # happily create an unused attribute and the message would
                     # be sent without the requested change, so the command is
-                    # silently lost. Fall back to the new protocol message,
-                    # which carries the remaining attributes.
-                    message = MessageNewProtocolSet(self._message_protocol_version)
+                    # silently lost. Ignore it instead, and tell the user how
+                    # to opt in to the new protocol if the device supports it.
+                    _LOGGER.warning(
+                        "[%s] Attribute %s is not supported by the old protocol "
+                        "and was ignored. If your device supports the new "
+                        'protocol, set customize to {"old_protocol": false}.',
+                        self.device_id,
+                        attr,
+                    )
+                    return
                 setattr(message, str(attr), value)
             else:
                 message = MessageNewProtocolSet(self._message_protocol_version)

@@ -1,5 +1,6 @@
 """Test E2 Device."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -227,19 +228,23 @@ class TestMideaE2Device:
             DeviceAttributes.sleep,
         ],
     )
-    def test_set_attribute_old_protocol_unsupported_falls_back(
+    def test_set_attribute_old_protocol_unsupported_is_ignored(
         self,
         attr: DeviceAttributes,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Old protocol falls back when MessageSet cannot carry the attribute."""
+        """Old protocol ignores and logs attributes MessageSet cannot carry."""
         device = self._device('{"old_protocol": "true"}')
-        with patch.object(device, "build_send") as mock_build_send:
+        with (
+            patch.object(device, "build_send") as mock_build_send,
+            caplog.at_level(logging.WARNING, logger="midealan.devices.e2"),
+        ):
             device.set_attribute(attr.value, True)
-            mock_build_send.assert_called_once()
-            message = mock_build_send.call_args[0][0]
-        # Without the fallback this is a MessageSet and the flag is dropped.
-        assert isinstance(message, MessageNewProtocolSet)
-        assert getattr(message, attr.value) is True
+        # Without this guard a MessageSet went out with the flag silently
+        # dropped, which looks like a working command that does nothing.
+        mock_build_send.assert_not_called()
+        assert attr.value in caplog.text
+        assert '{"old_protocol": false}' in caplog.text
 
     def test_set_attribute_old_protocol_keeps_supported_attributes(self) -> None:
         """Attributes MessageSet does carry must still use the old message."""

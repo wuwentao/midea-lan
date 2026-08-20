@@ -466,6 +466,34 @@ class TestMideaFADevice:
             assert mock_build_send.call_args[0][0].mode is None
 
     @pytest.mark.parametrize(
+        ("customize", "expected_overrides", "expected_body"),
+        [
+            pytest.param("", {}, 0x09, id="no_override"),
+            pytest.param(
+                '{"mode_set_overrides": {"3": 41}}',
+                {3: 41},
+                0x29,
+                id="with_override",
+            ),
+        ],
+    )
+    def test_turn_on_mode_set_overrides(
+        self,
+        customize: str,
+        expected_overrides: dict[int, int],
+        expected_body: int,
+    ) -> None:
+        """Test turn on carries the override table, the second wiring path."""
+        self.device.set_customize(customize)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.turn_on(mode="Comfort")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == 3
+            assert message.mode_set_overrides == expected_overrides
+            assert message._body[3] == expected_body
+
+    @pytest.mark.parametrize(
         ("customize", "expected_speed_count"),
         [
             pytest.param('{"speed_count": 5}', 5, id="speed_count"),

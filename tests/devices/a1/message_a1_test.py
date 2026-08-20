@@ -142,6 +142,12 @@ class TestNewProtocolSet:
         msg_set.light = True
         expected_body = bytearray(b"\xb0\x01[\x00\x01\x01")
         assert msg_set.body[:-2] == expected_body
+        msg_set.light = False
+        expected_body = bytearray(b"\xb0\x01[\x00\x01\x00")
+        assert msg_set.body[:-2] == expected_body
+        msg_set.light = None
+        expected_body = bytearray(b"\xb0\x00")
+        assert msg_set.body[:-2] == expected_body
 
 
 class TestMessageA1Response:
@@ -164,6 +170,7 @@ class TestMessageA1Response:
             ],
         )
         body = bytearray(21)
+        body[0] = 0xA0
         body[1] = 0b00000001  # Power on (1)
         body[2] = 0b00000010  # Mode (2)
         body[3] = 0b00000100  # Fan speed (4)

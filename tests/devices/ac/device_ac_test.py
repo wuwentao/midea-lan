@@ -8,25 +8,25 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.ac import DeviceAttributes, MideaACDevice
 from midealan.devices.ac.message import (
-    MessageCapabilitiesAdditionalQuery,
-    MessageCapabilitiesQuery,
-    MessageGroupOneQuery,
-    MessageGroupSevenQuery,
-    MessageGroupTwoQuery,
-    MessageGroupZeroQuery,
-    MessageHumidityQuery,
-    MessageNewProtocolQuery,
-    MessageNewProtocolSelfCleanQuery,
-    MessagePowerQuery,
+    CapabilitiesAdditionalQuery,
+    CapabilitiesQuery,
+    GroupOneQuery,
+    GroupSevenQuery,
+    GroupTwoQuery,
+    GroupZeroQuery,
+    HumidityQuery,
     MessageQuery,
-    MessageSubProtocolFreshAirSet,
-    MessageSubProtocolQuery,
-    MessageSubProtocolQuery10,
-    MessageSubProtocolQuery11,
-    MessageSubProtocolQuery30,
-    MessageToggleDisplay,
+    NewProtocolQuery,
+    NewProtocolSelfCleanQuery,
     NewProtocolTags,
     PowerFormats,
+    PowerQuery,
+    SubProtocolFreshAirSet,
+    SubProtocolQuery,
+    SubProtocolQuery10,
+    SubProtocolQuery11,
+    SubProtocolQuery30,
+    ToggleDisplay,
 )
 from midealan.message import ListTypes, MessageBase
 
@@ -216,7 +216,7 @@ class TestMideaACDevice:
 
         The firmware exposes a toggle-only command, so setting the switch to
         its current state must send nothing; only a differing request emits a
-        single MessageToggleDisplay.
+        single ToggleDisplay.
         https://github.com/wuwentao/midea_ac_lan/issues/623
         """
         with patch.object(self.device, "build_send") as mock_build_send:
@@ -228,7 +228,7 @@ class TestMideaACDevice:
             # Currently off: turning on sends one toggle.
             self.device.set_attribute(DeviceAttributes.screen_display.value, True)
             mock_build_send.assert_called_once()
-            assert isinstance(mock_build_send.call_args[0][0], MessageToggleDisplay)
+            assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
 
             mock_build_send.reset_mock()
 
@@ -240,7 +240,7 @@ class TestMideaACDevice:
             # Currently on: turning off sends one toggle.
             self.device.set_attribute(DeviceAttributes.screen_display.value, False)
             mock_build_send.assert_called_once()
-            assert isinstance(mock_build_send.call_args[0][0], MessageToggleDisplay)
+            assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
 
     def test_set_attribute_eco_mode_resets_exclusive_modes(self) -> None:
         """Test eco mode set resets comfort and frost protect on general set."""
@@ -305,24 +305,24 @@ class TestMideaACDevice:
         self.device._used_subprotocol = True
         queries = self.device.build_query()
         assert len(queries) == 3
-        assert isinstance(queries[0], MessageSubProtocolQuery)
-        assert isinstance(queries[1], MessageSubProtocolQuery)
-        assert isinstance(queries[2], MessageSubProtocolQuery)
+        assert isinstance(queries[0], SubProtocolQuery)
+        assert isinstance(queries[1], SubProtocolQuery)
+        assert isinstance(queries[2], SubProtocolQuery)
 
         self.device._used_subprotocol = False
         queries = self.device.build_query()
         assert len(queries) == 11
         assert isinstance(queries[0], MessageQuery)
-        assert isinstance(queries[1], MessageNewProtocolQuery)
-        assert isinstance(queries[2], MessageNewProtocolSelfCleanQuery)
-        assert isinstance(queries[3], MessagePowerQuery)
-        assert isinstance(queries[4], MessageHumidityQuery)
-        assert isinstance(queries[5], MessageGroupZeroQuery)
-        assert isinstance(queries[6], MessageGroupOneQuery)
-        assert isinstance(queries[7], MessageGroupTwoQuery)
-        assert isinstance(queries[8], MessageGroupSevenQuery)
-        assert isinstance(queries[9], MessageCapabilitiesQuery)
-        assert isinstance(queries[10], MessageCapabilitiesAdditionalQuery)
+        assert isinstance(queries[1], NewProtocolQuery)
+        assert isinstance(queries[2], NewProtocolSelfCleanQuery)
+        assert isinstance(queries[3], PowerQuery)
+        assert isinstance(queries[4], HumidityQuery)
+        assert isinstance(queries[5], GroupZeroQuery)
+        assert isinstance(queries[6], GroupOneQuery)
+        assert isinstance(queries[7], GroupTwoQuery)
+        assert isinstance(queries[8], GroupSevenQuery)
+        assert isinstance(queries[9], CapabilitiesQuery)
+        assert isinstance(queries[10], CapabilitiesAdditionalQuery)
 
     def test_build_query_omits_rate_select_until_capability_confirmed(self) -> None:
         """Test rate_select stays out of the B1 query until b5_electricity confirms it.
@@ -333,16 +333,12 @@ class TestMideaACDevice:
         self.device._used_subprotocol = False
         assert self.device.capabilities == {}
         queries = self.device.build_query()
-        new_protocol_query = next(
-            q for q in queries if isinstance(q, MessageNewProtocolQuery)
-        )
+        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
         assert NewProtocolTags.rate_select not in new_protocol_query._body
 
         self.device._capabilities["rate_select"] = True
         queries = self.device.build_query()
-        new_protocol_query = next(
-            q for q in queries if isinstance(q, MessageNewProtocolQuery)
-        )
+        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
         assert NewProtocolTags.rate_select in new_protocol_query._body
 
     def test_bb_model_builds_distinct_queries_and_attributes(self) -> None:
@@ -352,9 +348,9 @@ class TestMideaACDevice:
         queries = device.build_query()
 
         assert [type(query) for query in queries] == [
-            MessageSubProtocolQuery10,
-            MessageSubProtocolQuery11,
-            MessageSubProtocolQuery30,
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
         ]
         assert DeviceAttributes.compressor_frequency in device.attributes
         assert DeviceAttributes.target_compressor_frequency in device.attributes
@@ -387,9 +383,7 @@ class TestMideaACDevice:
         assert not any(
             isinstance(
                 query,
-                MessageSubProtocolQuery10
-                | MessageSubProtocolQuery11
-                | MessageSubProtocolQuery30,
+                SubProtocolQuery10 | SubProtocolQuery11 | SubProtocolQuery30,
             )
             for query in queries
         )
@@ -456,14 +450,14 @@ class TestMideaACDevice:
         with patch.object(device, "build_send") as build_send:
             device.set_attribute(DeviceAttributes.fresh_air_mode, "medium")
             intake = build_send.call_args.args[0]
-            assert isinstance(intake, MessageSubProtocolFreshAirSet)
+            assert isinstance(intake, SubProtocolFreshAirSet)
             assert intake.power is True
             assert intake.speed == 60
             assert intake.exhaust is False
 
             device.set_attribute(DeviceAttributes.fresh_air_exhaust_mode, "high")
             exhaust = build_send.call_args.args[0]
-            assert isinstance(exhaust, MessageSubProtocolFreshAirSet)
+            assert isinstance(exhaust, SubProtocolFreshAirSet)
             assert exhaust.power is True
             assert exhaust.speed == 80
             assert exhaust.exhaust is True
@@ -481,7 +475,7 @@ class TestMideaACDevice:
             device.set_attribute(DeviceAttributes.fresh_air_exhaust_power, True)
 
         message = build_send.call_args.args[0]
-        assert isinstance(message, MessageSubProtocolFreshAirSet)
+        assert isinstance(message, SubProtocolFreshAirSet)
         assert message.power is True
         assert message.speed == 80
         assert message.exhaust is True
@@ -492,14 +486,14 @@ class TestMideaACDevice:
         with patch.object(device, "build_send") as build_send:
             device.set_attribute(DeviceAttributes.fresh_air_fan_speed, 55)
             intake = build_send.call_args.args[0]
-            assert isinstance(intake, MessageSubProtocolFreshAirSet)
+            assert isinstance(intake, SubProtocolFreshAirSet)
             assert intake.power is True
             assert intake.speed == 55
             assert intake.exhaust is False
 
             device.set_attribute(DeviceAttributes.fresh_air_exhaust_speed, 30)
             exhaust = build_send.call_args.args[0]
-            assert isinstance(exhaust, MessageSubProtocolFreshAirSet)
+            assert isinstance(exhaust, SubProtocolFreshAirSet)
             assert exhaust.power is True
             assert exhaust.speed == 30
             assert exhaust.exhaust is True

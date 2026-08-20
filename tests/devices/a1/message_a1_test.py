@@ -6,10 +6,10 @@ from midealan.const import ProtocolVersion
 from midealan.devices.a1.message import (
     MessageA1Base,
     MessageA1Response,
-    MessageNewProtocolQuery,
-    MessageNewProtocolSet,
     MessageQuery,
     MessageSet,
+    NewProtocolQuery,
+    NewProtocolSet,
     NewProtocolTags,
 )
 from midealan.message import ListTypes, MessageType
@@ -84,12 +84,12 @@ class TestMessageQuery:
         assert query.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolQuery:
+class TestNewProtocolQuery:
     """Test Message New Protocol Query."""
 
     def test_new_protocol_query_body(self) -> None:
         """Test new protocol query body."""
-        query = MessageNewProtocolQuery(protocol_version=ProtocolVersion.V1)
+        query = NewProtocolQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [0xB1, 1, NewProtocolTags.light & 0xFF, NewProtocolTags.light >> 8],
         )
@@ -133,12 +133,12 @@ class TestMessageSet:
         assert msg_set.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolSet:
+class TestNewProtocolSet:
     """Test Message New Protocol Set."""
 
     def test_new_protocol_set_body(self) -> None:
         """Test new protocol set body."""
-        msg_set = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg_set = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg_set.light = True
         expected_body = bytearray(b"\xb0\x01[\x00\x01\x01")
         assert msg_set.body[:-2] == expected_body

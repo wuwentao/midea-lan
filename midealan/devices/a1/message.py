@@ -97,7 +97,7 @@ class MessageQuery(MessageA1Base):
         )
 
 
-class MessageNewProtocolQuery(MessageA1Base):
+class NewProtocolQuery(MessageA1Base):
     """Message A1 new protocol query."""
 
     def __init__(self, protocol_version: ProtocolVersion) -> None:
@@ -186,7 +186,7 @@ class MessageSet(MessageA1Base):
         )
 
 
-class MessageNewProtocolSet(MessageA1Base):
+class NewProtocolSet(MessageA1Base):
     """Message A1 new protocol set."""
 
     def __init__(self, protocol_version: ProtocolVersion) -> None:

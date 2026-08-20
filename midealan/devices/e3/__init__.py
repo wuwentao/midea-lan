@@ -10,10 +10,10 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
     MessageE3Response,
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -110,7 +110,7 @@ class MideaE3Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea E3 device set attribute."""
-        message: MessagePower | MessageSet | MessageNewProtocolSet | None = None
+        message: MessagePower | MessageSet | NewProtocolSet | None = None
         if attr not in [
             DeviceAttributes.burning_state,
             DeviceAttributes.current_temperature,
@@ -125,7 +125,7 @@ class MideaE3Device(MideaDevice):
                 message = self.make_message_set()
                 setattr(message, str(attr), value)
             else:
-                message = MessageNewProtocolSet(self._message_protocol_version)
+                message = NewProtocolSet(self._message_protocol_version)
                 message.key = str(attr)
                 message.value = value
             self.build_send(message)

@@ -459,6 +459,13 @@ class TestMideaCDDevice:
         )
         assert clean == {}
 
+    def test_sanitize_set_fields_keeps_valid_tr_value_only(self) -> None:
+        """A valid trValue survives while unsafe SET echo fields are dropped."""
+        clean = MideaCDDevice._sanitize_set_fields(
+            {"trValue": "5", "openPTC": 1, "ptcTemp": 2, "byte8": 0x10},
+        )
+        assert clean == {"trValue": "5"}
+
     def test_process_weekly_schedule_message(self) -> None:
         """A weekly schedule frame stores the parsed schedule."""
         body = bytearray(177)
@@ -572,6 +579,29 @@ class TestMideaCDDevice:
         assert DeviceAttributes.disinfection_temperature.value not in status
         assert self.device.attributes[DeviceAttributes.disinfection_temperature] == 67.0
 
+    def test_process_message_empty_sterilize_schedule_fields_are_skipped(self) -> None:
+        """None sterilize schedule values do not publish updates."""
+        self.device._attributes[DeviceAttributes.auto_sterilize_week] = 4
+        self.device._attributes[DeviceAttributes.auto_sterilize_hour] = 8
+        self.device._attributes[DeviceAttributes.auto_sterilize_minute] = 15
+
+        class FakeMessage:
+            auto_sterilize_week = None
+            auto_sterilize_hour = None
+            auto_sterilize_minute = None
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = self.device.process_message(b"")
+        assert DeviceAttributes.auto_sterilize_week.value not in status
+        assert DeviceAttributes.auto_sterilize_hour.value not in status
+        assert DeviceAttributes.auto_sterilize_minute.value not in status
+        assert self.device.attributes[DeviceAttributes.auto_sterilize_week] == 4
+        assert self.device.attributes[DeviceAttributes.auto_sterilize_hour] == 8
+        assert self.device.attributes[DeviceAttributes.auto_sterilize_minute] == 15
+
     def test_process_message_forced_conversions_rsjrac06(self) -> None:
         """RSJRAC06 forces fahrenheit outdoor and old-protocol current temps."""
         device = _make_device(model="RSJRAC06")
@@ -641,9 +671,17 @@ class TestMideaCDDevice:
 
     def test_set_mode_invalid_value_not_sent(self) -> None:
         """Invalid mode values do not send a command."""
-        with patch.object(self.device, "build_send") as mock_send:
+        with (
+            patch.object(self.device, "build_send") as mock_send,
+            patch("midealan.devices.cd._LOGGER.warning") as mock_warning,
+        ):
             self.device.set_attribute(DeviceAttributes.mode.value, "Bogus")
             mock_send.assert_not_called()
+            mock_warning.assert_called_once_with(
+                "[%s] Invalid mode value: %s, not sending command",
+                self.device.device_id,
+                "Bogus",
+            )
 
     def test_set_mode_standard(self) -> None:
         """A valid mode value is mapped to its key and sent."""

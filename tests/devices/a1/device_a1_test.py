@@ -92,6 +92,35 @@ class TestMideaA1Device:
             assert new_status[DeviceAttributes.fan_speed.value] is None
             assert not new_status[DeviceAttributes.tank_full.value]
 
+        with patch("midealan.devices.a1.MessageA1Response") as mock_message_response2:
+            mock_message = mock_message_response2.return_value
+            mock_message.protocol_version = ProtocolVersion.V3
+            mock_message.power = True
+            mock_message.prompt_tone = False
+            mock_message.fan_speed = 80
+            mock_message.target_humidity = 50
+            mock_message.mode = 3
+            mock_message.pump = True
+            mock_message.tank = 60
+            mock_message.water_level_set = "50"
+            mock_message.pump_enable = False
+            new_status = self.device.process_message(b"")
+            assert new_status[DeviceAttributes.power.value]
+            assert not new_status[DeviceAttributes.prompt_tone.value]
+            assert new_status[DeviceAttributes.fan_speed.value] == "High"
+            assert new_status[DeviceAttributes.target_humidity.value] == 50
+            assert new_status[DeviceAttributes.pump.value]
+            assert new_status[DeviceAttributes.tank_full.value]
+            assert new_status[DeviceAttributes.mode.value] == "Auto"
+
+            mock_message.mode = 1
+            mock_message.fan_speed = 102
+            mock_message.tank = 100
+            new_status = self.device.process_message(b"")
+            assert new_status[DeviceAttributes.mode.value] == "Manual"
+            assert new_status[DeviceAttributes.fan_speed.value] == "Auto"
+            assert new_status[DeviceAttributes.tank_full.value]
+
     def test_build_query(self) -> None:
         """Test build query."""
         queries = self.device.build_query()
@@ -135,10 +164,19 @@ class TestMideaA1Device:
             self.device.set_attribute(DeviceAttributes.mode, "Continuous")
             mock_build_send.assert_called_once()
 
+            self.device.set_attribute(DeviceAttributes.mode, "Auto")
+            mock_build_send.assert_called()
+
             self.device.set_attribute(DeviceAttributes.fan_speed, "Medium")
             mock_build_send.assert_called()
 
+            self.device.set_attribute(DeviceAttributes.fan_speed, "Auto")
+            mock_build_send.assert_called()
+
             self.device.set_attribute(DeviceAttributes.water_level_set, "75")
+            mock_build_send.assert_called()
+
+            self.device.set_attribute(DeviceAttributes.water_level_set, "25")
             mock_build_send.assert_called()
 
             self.device.set_attribute(DeviceAttributes.prompt_tone, True)
@@ -176,13 +214,15 @@ class TestMideaA1Device:
         overridable per-device rather than changing the shared default for everyone.
         """
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": false}')
+            customize = '{"prompt_tone": false}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is False
             assert self.device.make_message_set().prompt_tone is False
             mock_update_all.assert_called_once_with({"prompt_tone": False})
 
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": true}')
+            customize = '{"prompt_tone": true}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is True
             assert self.device.make_message_set().prompt_tone is True
             mock_update_all.assert_called_once_with({"prompt_tone": True})
@@ -196,6 +236,7 @@ class TestMideaA1Device:
         a user's intent.
         """
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": "false"}')
+            customize = '{"prompt_tone": "false"}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is True
             mock_update_all.assert_not_called()

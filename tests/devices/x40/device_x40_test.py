@@ -1,5 +1,6 @@
 """Test 40 Device."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -54,6 +55,29 @@ class TestMideaX40Device:
 
             self.device.set_customize("{")  # Test invalid json
             assert self.device.precision_halves is False
+
+    def test_process_message_without_matching_attributes(self) -> None:
+        """Test process message ignores responses without known attributes."""
+        with patch(
+            "midealan.devices.x40.MessageX40Response",
+            return_value=SimpleNamespace(fields={}),
+        ):
+            new_status = self.device.process_message(b"")
+            assert new_status == {}
+
+    def test_set_customize_empty(self) -> None:
+        """Test empty customize keeps defaults without publishing updates."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("")
+            assert self.device.precision_halves is False
+            mock_update_all.assert_not_called()
+
+    def test_set_customize_empty_object(self) -> None:
+        """Test empty customize object publishes the default precision setting."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("{}")
+            assert self.device.precision_halves is False
+            mock_update_all.assert_called_once_with({"precision_halves": False})
 
     def test_directions(self) -> None:
         """Test the available directions."""

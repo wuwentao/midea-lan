@@ -260,6 +260,22 @@ class TestMideaE3Device:
         assert self.device.temperature_step == 0.5
         assert self.device.precision_halves is True
 
+    def test_set_customize_partial_and_empty_object(self) -> None:
+        """Test set customize with partial and empty JSON payloads."""
+        self.device.set_customize('{"precision_halves": true}')
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is True
+
+        self.device.set_customize("{}")
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is False
+
+    def test_set_customize_empty(self) -> None:
+        """Test set customize with empty input keeps defaults."""
+        self.device.set_customize("")
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is False
+
     def test_set_customize_invalid_json(self) -> None:
         """Test set customize with invalid JSON keeps defaults."""
         self.device.set_customize("{")

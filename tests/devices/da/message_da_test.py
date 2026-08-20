@@ -132,3 +132,46 @@ class TestMessageDAResponse:
         assert response.progress == 2
         assert hasattr(response, "time_remaining")
         assert response.time_remaining == 15 + 60
+
+    def test_da_general_response_power_off_has_no_remaining_time(self) -> None:
+        """Test general response keeps remaining time unset when powered off."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        body = bytearray(26)
+        body[0] = 0x04
+        response = MessageDAResponse(bytes(header + body))
+        assert getattr(response, "power", None) is False
+        assert getattr(response, "time_remaining", None) is None
+
+    def test_da_notify1_non_general_body_is_ignored(self) -> None:
+        """Test notify1 response with a non-general body is ignored."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x04,
+            ],
+        )
+        body = bytearray(26)
+        body[0] = 0x03
+        response = MessageDAResponse(bytes(header + body))
+        assert not hasattr(response, "power")

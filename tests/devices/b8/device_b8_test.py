@@ -130,6 +130,30 @@ class TestMideaB8Device:
             self.device.set_attribute(DeviceAttributes.water_level.value, "invalid")
             mock_build_send.assert_not_called()
 
+    def test_set_attribute_unknown_sends_default_message(self) -> None:
+        """Test an unknown attribute still sends current defaults."""
+        with patch.object(self.device, "send_message_v2") as mock_build_send:
+            self.device.set_attribute("unknown", True)
+            mock_build_send.assert_called_once()
+
+    def test_set_attribute_skips_none_default_message(self) -> None:
+        """Test set attribute does not send when default message generation fails."""
+        with (
+            patch.object(self.device, "_gen_set_msg_default_values", return_value=None),
+            patch.object(self.device, "send_message_v2") as mock_build_send,
+        ):
+            self.device.set_attribute("unknown", 10)
+            mock_build_send.assert_not_called()
+
+    def test_set_work_mode_charge_then_work(self) -> None:
+        """Test set work mode routes WORK through set_attribute."""
+        with patch.object(self.device, "set_attribute") as mock_set_attribute:
+            self.device.set_work_mode(B8WorkMode.WORK)
+            mock_set_attribute.assert_called_once_with(
+                DeviceAttributes.clean_mode,
+                self.device.attributes[DeviceAttributes.clean_mode],
+            )
+
     def test_set_work_mode(self) -> None:
         """Test set work mode."""
         with patch.object(self.device, "send_message_v2") as mock_build_send:

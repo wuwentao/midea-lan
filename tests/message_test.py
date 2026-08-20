@@ -274,6 +274,14 @@ class _FilledBodyRequest(MessageRequest):
         return bytearray([0x11, 0x22])
 
 
+class _NoBodyRequest(MessageRequest):
+    """Message request with no body content for testing."""
+
+    @property
+    def _body(self) -> bytearray | None:  # type: ignore[override]
+        return None
+
+
 class TestMessageRequest:
     """Test MessageRequest."""
 
@@ -299,6 +307,27 @@ class TestMessageRequest:
         assert message.body == bytearray([0x01, 0x11, 0x22])
         serialized = message.serialize()
         assert serialized[10:-1] == bytearray([0x01, 0x11, 0x22])
+
+    def test_body_without_body_type(self) -> None:
+        """Test body can omit the body type."""
+        message = _FilledBodyRequest(
+            device_type=DeviceType.AC,
+            protocol_version=3,
+            message_type=MessageType.query,
+            body_type=ListTypes.X01,
+        )
+        message.body_type = None  # type: ignore[assignment]
+        assert message.body == bytearray([0x11, 0x22])
+
+    def test_body_without_body_content(self) -> None:
+        """Test body can omit body content."""
+        message = _NoBodyRequest(
+            device_type=DeviceType.AC,
+            protocol_version=3,
+            message_type=MessageType.query,
+            body_type=ListTypes.X01,
+        )
+        assert message.body == bytearray([0x01])
 
 
 class TestMessageQuestCustom:
@@ -470,3 +499,19 @@ class TestMessageResponse:
         response.set_attr()
         assert response.body == bytearray([0xC0, 0x01])
         assert getattr(response, "power", False) is True
+
+    def test_set_attr_skips_data_key(self) -> None:
+        """Test set_attr does not copy a plain data key."""
+        message = bytearray(
+            [0xAA, 0x0C, 0xAC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xA0, 0xC0, 0x00],
+        )
+        response = MessageApplianceResponse(message)
+
+        class BodyWithData:
+            def __init__(self) -> None:
+                self.data = bytearray([0xC0])
+
+        response.set_body(BodyWithData())  # type: ignore[arg-type]
+        response.set_attr()
+        assert response.body == bytearray([0xC0])
+        assert "data" not in vars(response)

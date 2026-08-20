@@ -141,6 +141,15 @@ class TestParseDiscoverResponse:
         data = b"\xff" * 8 + _build_v2_packet()
         assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
 
+    def test_parse_unexpected_8370_payload(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test 8370 responses without an inner 5a5a packet are rejected."""
+        data = b"\x83\x70" + b"\x00" * 118
+        assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+        assert "Unexpected 8370 discovery response" in caplog.text
+
     def test_parse_decrypt_failure(self) -> None:
         """Test undecryptable encrypt_data is reported as unsupported."""
         data = _build_v2_packet(encrypt_data=b"\xde\xad" * 40)

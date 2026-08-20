@@ -825,13 +825,20 @@ class NewProtocolPackLength(IntEnum):
 class NewProtocolMessageBody(MessageBody):
     """New protocol message body."""
 
-    def __init__(self, body: bytearray, bt: int) -> None:
+    def __init__(self, body: bytearray) -> None:
         """Initialize new protocol message body."""
         super().__init__(body)
-        if bt == ListTypes.B5:
+        if self.body_type == ListTypes.B5:
             self._pack_len = NewProtocolPackLength.FOUR
+        elif self.body_type in [ListTypes.B0, ListTypes.B1]:
+            self._pack_len = NewProtocolPackLength.FIVE
         else:
             self._pack_len = NewProtocolPackLength.FIVE
+            _LOGGER.debug(
+                "unknown body type %s, set len to %s",
+                self.body_type,
+                self._pack_len,
+            )
 
     @staticmethod
     def pack(param: int, value: bytearray, pack_len: int = 4) -> bytearray:

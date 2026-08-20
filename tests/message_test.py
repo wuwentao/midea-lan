@@ -377,34 +377,42 @@ class TestNewProtocolMessageBody:
 
     def test_parse(self) -> None:
         """Test parse with 4 and 5 bytes pack length."""
+        # test B5 body with 4 bytes pack length
         body = NewProtocolMessageBody(
-            bytearray([0xB1, 0x01, 0x34, 0x12, 0x01, 0xAA]),
-            ListTypes.B5,
+            bytearray([0xB5, 0x01, 0x34, 0x12, 0x01, 0xAA]),
         )
         assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test B1 body with 5 bytes pack length
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
-            ListTypes.B1,
+        )
+        assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test B0 body with 5 bytes pack length
+        body = NewProtocolMessageBody(
+            bytearray([0xB0, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
+        )
+        assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test unknown B9 body with 5 bytes pack length
+        body = NewProtocolMessageBody(
+            bytearray([0xB9, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
         )
         assert body.parse() == {0x1234: bytearray([0xAA])}
 
     def test_parse_truncated_param(self) -> None:
         """Test parse stops when a declared param is missing."""
         body = NewProtocolMessageBody(
-            bytearray([0xB1, 0x02, 0x01, 0x00, 0x01, 0xAA]),
-            ListTypes.B5,
+            bytearray([0xB5, 0x02, 0x01, 0x00, 0x01, 0xAA]),
         )
         assert body.parse() == {0x0001: bytearray([0xAA])}
 
     def test_parse_truncated_after_param_id(self) -> None:
         """Test parse stops when the body ends after the param id."""
-        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]), ListTypes.B5)
+        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]))
         assert body.parse() == {}
-        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]), ListTypes.B1)
+        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]))
         assert body.parse() == {}
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x01, 0x00, 0x00]),
-            ListTypes.B1,
         )
         assert body.parse() == {}
 
@@ -412,7 +420,6 @@ class TestNewProtocolMessageBody:
         """Test parse stops when the value is shorter than its length."""
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x01, 0x00, 0x05, 0xAA]),
-            ListTypes.B5,
         )
         assert body.parse() == {}
 
@@ -420,7 +427,6 @@ class TestNewProtocolMessageBody:
         """Test parse skips params with a zero length value."""
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x01, 0x00, 0x00]),
-            ListTypes.B5,
         )
         assert body.parse() == {}
 
@@ -431,7 +437,7 @@ class TestNewProtocolMessageBody:
         leaves `param_count` unbound, so the debug log after the handler
         raises UnboundLocalError instead of returning an empty result.
         """
-        body = NewProtocolMessageBody(bytearray([0xB1]), ListTypes.B5)
+        body = NewProtocolMessageBody(bytearray([0xB1]))
         with pytest.raises(UnboundLocalError):
             body.parse()
 

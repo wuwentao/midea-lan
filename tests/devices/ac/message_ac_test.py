@@ -5,6 +5,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.crc8 import calculate
 from midealan.devices.ac.message import (
+    A1_MIN_BODY_LENGTH,
     CapabilitiesQuery,
     GroupDataQuery,
     GroupOneQuery,
@@ -796,6 +797,46 @@ class TestMessageACResponse:
         assert response.indoor_temperature == -1.3  # ((49 - 50) / 2) - 0.3 = -1.3
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature == -6.5  # ((40 - 50) / 2) - 1.5 = -6.5
+
+    def test_message_notify1_a1_short_body(self) -> None:
+        """Test Message parse notify1 A1 with a body too short to parse."""
+        self.header[9] = 0x04
+        # Real frame from a 00000Q1B / subtype 44204 unit: 7-byte body
+        # (last byte is the checksum and is stripped by MessageResponse).
+        # XA1MessageBody reads up to body[17], so it must be skipped, not parsed.
+        body = bytearray([0xA1, 0x00, 0x03, 0x8A, 0x95, 0xB6, 0xC1, 0x02])
+        response = MessageACResponse(self.header + body)
+
+        assert not hasattr(response, "indoor_temperature")
+        assert not hasattr(response, "outdoor_temperature")
+        assert not hasattr(response, "indoor_humidity")
+        assert not hasattr(response, "current_work_time")
+
+    def test_message_notify1_a1_body_length_boundary(self) -> None:
+        """Test Message parse notify1 A1 boundary at A1_MIN_BODY_LENGTH."""
+        self.header[9] = 0x04
+
+        # One byte short of the minimum: skipped, and must not raise.
+        # +1 accounts for the trailing checksum byte stripped by MessageResponse.
+        body = bytearray(A1_MIN_BODY_LENGTH - 1 + 1)
+        body[0] = 0xA1
+        response = MessageACResponse(self.header + body)
+        assert not hasattr(response, "indoor_temperature")
+
+        # Exactly the minimum: parsed.
+        body = bytearray(A1_MIN_BODY_LENGTH + 1)
+        body[0] = 0xA1
+        body[13] = 100  # Indoor temperature byte
+        body[14] = 60  # Outdoor temperature byte
+        body[17] = 50  # Indoor humidity byte
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "indoor_temperature")
+        assert response.indoor_temperature == 25.0  # (100 - 50) / 2
+        assert hasattr(response, "outdoor_temperature")
+        assert response.outdoor_temperature == 5.0  # (60 - 50) / 2
+        assert hasattr(response, "indoor_humidity")
+        assert response.indoor_humidity == 50
 
     def test_message_query_b5(self) -> None:
         """Test message query b5."""

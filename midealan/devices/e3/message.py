@@ -131,7 +131,7 @@ class MessageSet(MessageE3Base):
         )
 
 
-class MessageNewProtocolSet(MessageE3Base):
+class NewProtocolSet(MessageE3Base):
     """E3 message new protocol set."""
 
     def __init__(self, protocol_version: int) -> None:

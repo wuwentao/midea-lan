@@ -1,5 +1,6 @@
 """Test x26 Device."""
 
+from typing import Self
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +26,19 @@ def _build_message(message_type: MessageType, body: bytearray) -> bytes:
         [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [message_type],
     )
     return bytes(header + body + bytearray([0x00]))
+
+
+class _UnmatchedSettableAttribute(str):
+    """A settable-looking attribute that fails exact branch matching."""
+
+    __slots__ = ()
+    __hash__ = str.__hash__
+
+    def __new__(cls) -> Self:
+        return str.__new__(cls, DeviceAttributes.direction.value)
+
+    def __eq__(self, other: object) -> bool:
+        return False
 
 
 class TestMidea26Device:
@@ -230,6 +244,7 @@ class TestMidea26Device:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageSet)
             assert message.mode == 3
+            assert message.direction == 0xFD
 
     def test_set_attribute_direction(self) -> None:
         """Test set attribute direction converts the name to degrees."""
@@ -241,6 +256,35 @@ class TestMidea26Device:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageSet)
             assert message.direction == 90
+
+    def test_set_attribute_keeps_existing_light_state(self) -> None:
+        """Test settable attributes without special handling reuse current state."""
+        self.device._attributes[DeviceAttributes.mode] = "Off"
+        self.device._attributes[DeviceAttributes.direction] = "Oscillate"
+        self.device._attributes[DeviceAttributes.main_light] = False
+        self.device._attributes[DeviceAttributes.night_light] = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.night_light.value, False)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.main_light is False
+            assert message.night_light is False
+
+    def test_set_attribute_unmatched_settable_logs_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test unmatched settable attributes log and send current defaults."""
+        self.device._attributes[DeviceAttributes.mode] = "Off"
+        self.device._attributes[DeviceAttributes.direction] = "Oscillate"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(_UnmatchedSettableAttribute(), "90")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.direction == 0xFD
+        assert "Unsupported settable attribute" in caplog.text
 
     def test_set_attribute_uses_last_fields(self) -> None:
         """Test set attribute reuses fields from the last response."""

@@ -7,10 +7,10 @@ from midealan.devices.e2.message import (
     E2GeneralMessageBody,
     MessageE2Base,
     MessageE2Response,
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 from midealan.message import ListTypes, MessageType
 
@@ -66,7 +66,7 @@ class TestMessagePower:
         assert msg.body_type == ListTypes.X02
 
 
-class TestMessageNewProtocolSet:
+class TestNewProtocolSet:
     """Test E2 Message New Protocol Set."""
 
     @pytest.mark.parametrize(
@@ -106,7 +106,7 @@ class TestMessageNewProtocolSet:
         byte13: int,
     ) -> None:
         """Test new protocol set body for each single attribute."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         setattr(msg, attr, value)
         assert msg._body == bytearray([byte12, byte13])
 
@@ -116,7 +116,7 @@ class TestMessageNewProtocolSet:
     )
     def test_body_memory(self, memory: bool, flag: int) -> None:
         """Test new protocol set body for the memory command."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.memory = memory
         assert msg._body == bytearray(
             [0x03, 0x00, 0x00, flag, 0x00, 0x00, 0x00, 0x00, 0x00],
@@ -124,7 +124,7 @@ class TestMessageNewProtocolSet:
 
     def test_body_defaults(self) -> None:
         """Test new protocol set body with no attribute set."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         assert msg._body == bytearray([0x00, 0x00])
 
 

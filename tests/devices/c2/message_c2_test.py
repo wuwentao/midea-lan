@@ -91,6 +91,12 @@ class TestMessageSet:
         assert msg.body[1:] == expected
         assert msg.body_type == ListTypes.X14
 
+    def test_set_body_without_attribute_raises(self) -> None:
+        """Test set body without a selected attribute raises."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1)
+        with pytest.raises(KeyError):
+            _ = msg.body
+
 
 class TestC2Notify1MessageBody:
     """Test C2 Notify1 Message Body."""

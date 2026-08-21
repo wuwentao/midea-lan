@@ -5,10 +5,10 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.e3.message import (
     MessageE3Base,
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 from midealan.message import ListTypes, MessageType
 
@@ -84,7 +84,7 @@ class TestMessageSet:
         assert msg.body_type == ListTypes.X04
 
 
-class TestMessageNewProtocolSet:
+class TestNewProtocolSet:
     """Test E3 Message New Protocol Set."""
 
     @pytest.mark.parametrize(
@@ -104,7 +104,7 @@ class TestMessageNewProtocolSet:
         expected_value: int,
     ) -> None:
         """Test new protocol set body for each parameter."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.key = key
         msg.value = value
         expected = bytearray([expected_key, expected_value] + [0x00] * 17)

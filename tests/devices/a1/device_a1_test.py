@@ -92,6 +92,77 @@ class TestMideaA1Device:
             assert new_status[DeviceAttributes.fan_speed.value] is None
             assert not new_status[DeviceAttributes.tank_full.value]
 
+        with patch("midealan.devices.a1.MessageA1Response") as mock_message_response2:
+            mock_message = mock_message_response2.return_value
+            mock_message.protocol_version = ProtocolVersion.V3
+            mock_message.power = True
+            mock_message.prompt_tone = False
+            mock_message.fan_speed = 80
+            mock_message.target_humidity = 50
+            mock_message.mode = 3
+            mock_message.pump = True
+            mock_message.tank = 60
+            mock_message.water_level_set = "50"
+            mock_message.pump_enable = False
+            new_status = self.device.process_message(b"")
+            assert new_status[DeviceAttributes.power.value]
+            assert not new_status[DeviceAttributes.prompt_tone.value]
+            assert new_status[DeviceAttributes.fan_speed.value] == "High"
+            assert new_status[DeviceAttributes.target_humidity.value] == 50
+            assert new_status[DeviceAttributes.pump.value]
+            assert new_status[DeviceAttributes.tank_full.value]
+            assert new_status[DeviceAttributes.mode.value] == "Auto"
+
+            mock_message.mode = 1
+            mock_message.fan_speed = 102
+            mock_message.tank = 100
+            new_status = self.device.process_message(b"")
+            assert new_status[DeviceAttributes.mode.value] == "Manual"
+            assert new_status[DeviceAttributes.fan_speed.value] == "Auto"
+            assert new_status[DeviceAttributes.tank_full.value]
+            assert not self.device.make_message_set().pump_enable
+
+    def test_process_message_without_pump_enable(self) -> None:
+        """Test process message without a pump_enable attribute."""
+        with patch("midealan.devices.a1.MessageA1Response") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.protocol_version = ProtocolVersion.V3
+            mock_message.power = True
+            mock_message.prompt_tone = True
+            mock_message.fan_speed = 40
+            mock_message.target_humidity = 40
+            mock_message.mode = 1
+            mock_message.pump = True
+            mock_message.tank = 60
+            mock_message.water_level_set = "50"
+            mock_message.pump_enable = True
+            self.device.process_message(b"")
+
+        response = bytearray(15)
+        response[0] = 0xB0
+        response[1] = 0x01
+        response[2] = 0x34
+        response[3] = 0x12
+        response[5] = 0x01
+        response[6] = 0x01
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xA1,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        new_status = self.device.process_message(bytes(header + response))
+        assert new_status == {}
+        assert self.device.make_message_set().pump_enable
+
     def test_build_query(self) -> None:
         """Test build query."""
         queries = self.device.build_query()
@@ -133,22 +204,44 @@ class TestMideaA1Device:
         """Test set attribute."""
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.mode, "Continuous")
-            mock_build_send.assert_called_once()
+            assert mock_build_send.call_args.args[0].mode == 2
+
+            self.device.set_attribute(DeviceAttributes.mode, "Auto")
+            assert mock_build_send.call_args.args[0].mode == 3
 
             self.device.set_attribute(DeviceAttributes.fan_speed, "Medium")
-            mock_build_send.assert_called()
+            assert mock_build_send.call_args.args[0].fan_speed == 60
+
+            self.device.set_attribute(DeviceAttributes.fan_speed, "Auto")
+            assert mock_build_send.call_args.args[0].fan_speed == 102
 
             self.device.set_attribute(DeviceAttributes.water_level_set, "75")
-            mock_build_send.assert_called()
+            assert mock_build_send.call_args.args[0].water_level_set == 75
+
+            self.device.set_attribute(DeviceAttributes.water_level_set, "25")
+            assert mock_build_send.call_args.args[0].water_level_set == 25
 
             self.device.set_attribute(DeviceAttributes.prompt_tone, True)
-            mock_build_send.assert_called()
+            assert mock_build_send.call_count == 6
+            assert self.device.attributes[DeviceAttributes.prompt_tone] is True
 
             self.device.set_attribute(DeviceAttributes.swing, True)
-            mock_build_send.assert_called()
+            assert mock_build_send.call_args.args[0].swing is True
 
             self.device.set_attribute(DeviceAttributes.pump, True)
-            mock_build_send.assert_called()
+            assert mock_build_send.call_args.args[0].pump is True
+
+    def test_set_attribute_ignores_invalid_values(self) -> None:
+        """Test set attribute keeps defaults for invalid values."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode, "Invalid Mode")
+            self.device.set_attribute(DeviceAttributes.fan_speed, "Turbo")
+            self.device.set_attribute(DeviceAttributes.water_level_set, "10")
+
+            assert mock_build_send.call_count == 3
+            assert mock_build_send.call_args_list[0].args[0].mode == 1
+            assert mock_build_send.call_args_list[1].args[0].fan_speed == 60
+            assert mock_build_send.call_args_list[2].args[0].water_level_set == 50
 
     def test_set_customize(self) -> None:
         """Test set customize with valid speeds and modes."""
@@ -176,13 +269,15 @@ class TestMideaA1Device:
         overridable per-device rather than changing the shared default for everyone.
         """
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": false}')
+            customize = '{"prompt_tone": false}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is False
             assert self.device.make_message_set().prompt_tone is False
             mock_update_all.assert_called_once_with({"prompt_tone": False})
 
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": true}')
+            customize = '{"prompt_tone": true}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is True
             assert self.device.make_message_set().prompt_tone is True
             mock_update_all.assert_called_once_with({"prompt_tone": True})
@@ -196,6 +291,17 @@ class TestMideaA1Device:
         a user's intent.
         """
         with patch.object(self.device, "update_all") as mock_update_all:
-            self.device.set_customize('{"prompt_tone": "false"}')
+            customize = '{"prompt_tone": "false"}'
+            self.device.set_customize(customize)
             assert self.device.attributes[DeviceAttributes.prompt_tone] is True
+            mock_update_all.assert_not_called()
+
+    def test_set_customize_ignores_empty_and_empty_object(self) -> None:
+        """Test set customize ignores empty input and an empty JSON object."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("")
+            mock_update_all.assert_not_called()
+
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("{}")
             mock_update_all.assert_not_called()

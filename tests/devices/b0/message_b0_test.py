@@ -301,6 +301,12 @@ class TestB0MessageBodies:
         assert body.pre_heat == "End"
         assert body.error_code == 1
 
+    def test_31_body_short(self) -> None:
+        """Test 31 body with a too short payload sets nothing."""
+        body = B0Message31Body(bytearray(10))
+        assert not hasattr(body, "status")
+        assert not hasattr(body, "cloudmenuid")
+
 
 class TestMessageB0Response:
     """Test B0 Message Response."""

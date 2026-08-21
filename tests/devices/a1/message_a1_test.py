@@ -6,10 +6,10 @@ from midealan.const import ProtocolVersion
 from midealan.devices.a1.message import (
     MessageA1Base,
     MessageA1Response,
-    MessageNewProtocolQuery,
-    MessageNewProtocolSet,
     MessageQuery,
     MessageSet,
+    NewProtocolQuery,
+    NewProtocolSet,
     NewProtocolTags,
 )
 from midealan.message import ListTypes, MessageType
@@ -84,16 +84,42 @@ class TestMessageQuery:
         assert query.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolQuery:
+class TestNewProtocolQuery:
     """Test Message New Protocol Query."""
 
     def test_new_protocol_query_body(self) -> None:
         """Test new protocol query body."""
-        query = MessageNewProtocolQuery(protocol_version=ProtocolVersion.V1)
+        query = NewProtocolQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [0xB1, 1, NewProtocolTags.light & 0xFF, NewProtocolTags.light >> 8],
         )
         assert query.body[:-2] == expected_body
+
+    def test_new_protocol_query_body_without_light(self) -> None:
+        """Test new protocol query body without light in the response."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xA1,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x03,
+            ],
+        )
+        body = bytearray(10)
+        body[0] = 0xB0
+        body[1] = 0x01
+        body[2] = 0x34
+        body[3] = 0x12
+        body[5] = 0x01
+        body[6] = 0x01
+        response = MessageA1Response(header + body)
+        assert not hasattr(response, "light")
 
 
 class TestMessageSet:
@@ -133,14 +159,20 @@ class TestMessageSet:
         assert msg_set.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolSet:
+class TestNewProtocolSet:
     """Test Message New Protocol Set."""
 
     def test_new_protocol_set_body(self) -> None:
         """Test new protocol set body."""
-        msg_set = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg_set = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg_set.light = True
         expected_body = bytearray(b"\xb0\x01[\x00\x01\x01")
+        assert msg_set.body[:-2] == expected_body
+        msg_set.light = False
+        expected_body = bytearray(b"\xb0\x01[\x00\x01\x00")
+        assert msg_set.body[:-2] == expected_body
+        msg_set.light = None
+        expected_body = bytearray(b"\xb0\x00")
         assert msg_set.body[:-2] == expected_body
 
 
@@ -164,6 +196,7 @@ class TestMessageA1Response:
             ],
         )
         body = bytearray(21)
+        body[0] = 0xA0
         body[1] = 0b00000001  # Power on (1)
         body[2] = 0b00000010  # Mode (2)
         body[3] = 0b00000100  # Fan speed (4)
@@ -223,6 +256,33 @@ class TestMessageA1Response:
         response = MessageA1Response(header + body)
         assert hasattr(response, "light")
         assert response.light
+
+    def test_a1_notify2_ignored_when_body_type_is_not_a0(self) -> None:
+        """Test notify2 messages with non-A0 bodies fall through unchanged."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xA1,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x05,
+            ],
+        )
+        body = bytearray(8)
+        body[0] = 0xB0
+        body[1] = 0x01
+        body[2] = 0x5B
+        body[3] = 0x00
+        body[5] = 0x01
+        body[6] = 0x01
+        response = MessageA1Response(header + body)
+        assert not hasattr(response, "light")
+        assert not hasattr(response, "power")
 
     def test_a1_general_notify_response(self) -> None:
         """Test general notify response."""

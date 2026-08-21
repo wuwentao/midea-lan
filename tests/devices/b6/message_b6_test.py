@@ -385,6 +385,12 @@ class TestMessageB6Response:
         msg = MessageB6Response(_build_message(0x01, MessageType.notify1, body))
         assert not hasattr(msg, "oilcup_full")
 
+    def test_notify1_unhandled_body(self) -> None:
+        """Test notify1 response with an unhandled body type."""
+        body = bytearray([0x02, 0x01, 0x00])
+        msg = MessageB6Response(_build_message(0x01, MessageType.notify1, body))
+        assert not hasattr(msg, "power")
+
     def test_exception2_response(self) -> None:
         """Test exception2 response is ignored."""
         body = bytearray([0xA1, 0x00, 0x00])

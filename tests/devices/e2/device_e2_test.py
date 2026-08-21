@@ -13,10 +13,10 @@ from midealan.devices.e2 import (
     OldProtocol,
 )
 from midealan.devices.e2.message import (
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 
 
@@ -268,7 +268,7 @@ class TestMideaE2Device:
             device.set_attribute(DeviceAttributes.target_temperature.value, 45)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-        assert isinstance(message, MessageNewProtocolSet)
+        assert isinstance(message, NewProtocolSet)
         assert message.target_temperature == 45
         assert message._body == bytearray([0x07, 45])
 
@@ -314,5 +314,5 @@ class TestMideaE2Device:
             device.set_attribute(DeviceAttributes.sterilization.value, True)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-        assert isinstance(message, MessageNewProtocolSet)
+        assert isinstance(message, NewProtocolSet)
         assert message.sterilization is True

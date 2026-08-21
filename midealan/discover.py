@@ -198,7 +198,9 @@ def _parse_discover_response(
     ip = addr[0]
     _LOGGER.debug("Received response from %s: %s", addr, data.hex())
     if len(data) >= DISCOVERY_MIN_RESPONSE_LENGTH and (
-        data[:2].hex() == "5a5a" or data[8:10].hex() == "5a5a"
+        data[:2].hex() == "5a5a"
+        or data[:2].hex() == "8370"
+        or data[8:10].hex() == "5a5a"
     ):
         if data[:2].hex() == "5a5a":
             protocol = 2
@@ -206,6 +208,9 @@ def _parse_discover_response(
             protocol = 3
             if data[8:10].hex() == "5a5a":
                 data = data[8:-16]
+            else:
+                _LOGGER.error("Unexpected 8370 discovery response: %s", data.hex())
+                return 0, None
         else:
             return 0, None
         device_id = int.from_bytes(

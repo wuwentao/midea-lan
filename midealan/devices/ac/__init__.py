@@ -12,43 +12,43 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import ListTypes
 
 from .message import (
+    CapabilitiesAdditionalQuery,
+    CapabilitiesQuery,
+    GroupOneQuery,
+    GroupSevenQuery,
+    GroupTwoQuery,
+    GroupZeroQuery,
+    HumidityQuery,
     MessageACResponse,
-    MessageCapabilitiesAdditionalQuery,
-    MessageCapabilitiesQuery,
-    MessageGeneralSet,
-    MessageGroupOneQuery,
-    MessageGroupSevenQuery,
-    MessageGroupTwoQuery,
-    MessageGroupZeroQuery,
-    MessageHumidityQuery,
-    MessageNewProtocolQuery,
-    MessageNewProtocolSelfCleanQuery,
-    MessageNewProtocolSet,
-    MessagePowerQuery,
     MessageQuery,
-    MessageSubProtocolFreshAirSet,
-    MessageSubProtocolQuery,
-    MessageSubProtocolQuery10,
-    MessageSubProtocolQuery11,
-    MessageSubProtocolQuery30,
+    MessageSet,
     MessageSubProtocolSet,
-    MessageToggleDisplay,
+    NewProtocolQuery,
+    NewProtocolSelfCleanQuery,
+    NewProtocolSet,
+    PowerQuery,
+    SubProtocolFreshAirSet,
+    SubProtocolQuery,
+    SubProtocolQuery10,
+    SubProtocolQuery11,
+    SubProtocolQuery30,
+    ToggleDisplay,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 ACQuery = (
-    MessageSubProtocolQuery
+    SubProtocolQuery
     | MessageQuery
-    | MessageNewProtocolQuery
-    | MessagePowerQuery
-    | MessageHumidityQuery
-    | MessageGroupZeroQuery
-    | MessageGroupOneQuery
-    | MessageGroupTwoQuery
-    | MessageGroupSevenQuery
-    | MessageCapabilitiesQuery
-    | MessageCapabilitiesAdditionalQuery
+    | NewProtocolQuery
+    | PowerQuery
+    | HumidityQuery
+    | GroupZeroQuery
+    | GroupOneQuery
+    | GroupTwoQuery
+    | GroupSevenQuery
+    | CapabilitiesQuery
+    | CapabilitiesAdditionalQuery
 )
 
 # AC mode constants
@@ -378,29 +378,29 @@ class MideaACDevice(MideaDevice):
             # its own identity so an unsupported response for one group does not
             # suppress later status groups.
             return [
-                MessageSubProtocolQuery10(self._message_protocol_version),
-                MessageSubProtocolQuery11(self._message_protocol_version),
-                MessageSubProtocolQuery30(self._message_protocol_version),
+                SubProtocolQuery10(self._message_protocol_version),
+                SubProtocolQuery11(self._message_protocol_version),
+                SubProtocolQuery30(self._message_protocol_version),
             ]
         queries: list[ACQuery] = [
             MessageQuery(self._message_protocol_version),
-            MessageNewProtocolQuery(
+            NewProtocolQuery(
                 self._message_protocol_version,
                 supports_rate_select=self._capabilities.get("rate_select", False),
             ),
             # Queried on its own so an empty response for the combined
             # new-protocol query does not suppress the self-clean state.
-            MessageNewProtocolSelfCleanQuery(self._message_protocol_version),
-            MessagePowerQuery(self._message_protocol_version),
-            MessageHumidityQuery(self._message_protocol_version),
-            MessageGroupZeroQuery(self._message_protocol_version),
+            NewProtocolSelfCleanQuery(self._message_protocol_version),
+            PowerQuery(self._message_protocol_version),
+            HumidityQuery(self._message_protocol_version),
+            GroupZeroQuery(self._message_protocol_version),
             # Devices that do not answer a group query are detected during the
             # initial protocol check and the query is skipped from then on.
-            MessageGroupOneQuery(self._message_protocol_version),
-            MessageGroupTwoQuery(self._message_protocol_version),
-            MessageGroupSevenQuery(self._message_protocol_version),
-            MessageCapabilitiesQuery(self._message_protocol_version),
-            MessageCapabilitiesAdditionalQuery(self._message_protocol_version),
+            GroupOneQuery(self._message_protocol_version),
+            GroupTwoQuery(self._message_protocol_version),
+            GroupSevenQuery(self._message_protocol_version),
+            CapabilitiesQuery(self._message_protocol_version),
+            CapabilitiesAdditionalQuery(self._message_protocol_version),
         ]
         return queries
 
@@ -602,9 +602,9 @@ class MideaACDevice(MideaDevice):
             DeviceAttributes.max_temperature.value: maximum,
         }
 
-    def make_message_set(self) -> MessageGeneralSet:
+    def make_message_set(self) -> MessageSet:
         """Midea AC device make message set."""
-        message = MessageGeneralSet(self._message_protocol_version)
+        message = MessageSet(self._message_protocol_version)
         message.power = self._attributes[DeviceAttributes.power]
         message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
         message.mode = self._attributes[DeviceAttributes.mode]
@@ -632,9 +632,9 @@ class MideaACDevice(MideaDevice):
         self,
         attr: str,
         value: bool | float | str,
-    ) -> MessageNewProtocolSet:
+    ) -> NewProtocolSet:
         """Midea AC device make newprotocol message set."""
-        message = MessageNewProtocolSet(self._message_protocol_version)
+        message = NewProtocolSet(self._message_protocol_version)
 
         # wind_lr_angle
         if attr == DeviceAttributes.wind_lr_angle:
@@ -728,7 +728,7 @@ class MideaACDevice(MideaDevice):
         self,
         attr: str,
         value: bool | float | str,
-    ) -> MessageSubProtocolFreshAirSet:
+    ) -> SubProtocolFreshAirSet:
         """Build a BB fresh-air intake or exhaust single-control command."""
         exhaust = attr in {
             DeviceAttributes.fresh_air_exhaust_power,
@@ -778,16 +778,16 @@ class MideaACDevice(MideaDevice):
             if requested_speed is not None:
                 power = requested_speed > 0
                 speed = requested_speed or current_speed
-        return MessageSubProtocolFreshAirSet(
+        return SubProtocolFreshAirSet(
             self._message_protocol_version,
             power,
             speed,
             exhaust=exhaust,
         )
 
-    def make_message_uniq_set(self) -> MessageSubProtocolSet | MessageGeneralSet:
+    def make_message_uniq_set(self) -> MessageSubProtocolSet | MessageSet:
         """Midea AC device make message unique set."""
-        message: MessageSubProtocolSet | MessageGeneralSet
+        message: MessageSubProtocolSet | MessageSet
         if self._used_subprotocol:
             message = self.make_subprotocol_message_set()
         else:
@@ -798,11 +798,11 @@ class MideaACDevice(MideaDevice):
         """Midea AC device set attribute."""
         # if nat a sensor
         message: (
-            MessageToggleDisplay
-            | MessageNewProtocolSet
-            | MessageSubProtocolFreshAirSet
+            ToggleDisplay
+            | NewProtocolSet
+            | SubProtocolFreshAirSet
             | MessageSubProtocolSet
-            | MessageGeneralSet
+            | MessageSet
             | None
         ) = None
         optimistic_self_clean: bool | None = None
@@ -841,7 +841,7 @@ class MideaACDevice(MideaDevice):
                 if bool(value) != bool(
                     self._attributes[DeviceAttributes.screen_display],
                 ):
-                    message = MessageToggleDisplay(self._message_protocol_version)
+                    message = ToggleDisplay(self._message_protocol_version)
                     message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
             elif self._model_capabilities.has_bb_fresh_air and attr in {
                 DeviceAttributes.fresh_air_power,
@@ -885,7 +885,7 @@ class MideaACDevice(MideaDevice):
                     DeviceAttributes.eco_mode,
                 ]:
                     message.boost_mode = False
-                    if isinstance(message, MessageGeneralSet):
+                    if isinstance(message, MessageSet):
                         message.power_saving = False
                     message.sleep_mode = False
                     message.eco_mode = False
@@ -927,9 +927,7 @@ class MideaACDevice(MideaDevice):
         zone: int | None = None,  # noqa: ARG002
     ) -> None:
         """Midea AC device set target temperature."""
-        message: MessageSubProtocolSet | MessageGeneralSet = (
-            self.make_message_uniq_set()
-        )
+        message: MessageSubProtocolSet | MessageSet = self.make_message_uniq_set()
         message.target_temperature = target_temperature
         if mode is not None:
             message.power = True
@@ -938,10 +936,8 @@ class MideaACDevice(MideaDevice):
 
     def set_swing(self, swing_vertical: bool, swing_horizontal: bool) -> None:
         """Midea AC device set swing."""
-        message: MessageSubProtocolSet | MessageGeneralSet = (
-            self.make_message_uniq_set()
-        )
-        if isinstance(message, MessageGeneralSet):
+        message: MessageSubProtocolSet | MessageSet = self.make_message_uniq_set()
+        if isinstance(message, MessageSet):
             message.swing_vertical = swing_vertical
             message.swing_horizontal = swing_horizontal
         self.build_send(message)

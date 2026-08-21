@@ -156,7 +156,15 @@ class Midea26Device(MideaDevice):
                 message.mode = Midea26Device._modes.index(str(value))
             elif attr == DeviceAttributes.direction:
                 message.direction = self._convert_to_midea_direction(str(value))
+            else:
+                _LOGGER.warning(
+                    "[%s] Unsupported settable attribute: %s",
+                    self.device_id,
+                    attr,
+                )
             self.build_send(message)
+        else:
+            _LOGGER.warning("[%s] Unsupported attribute: %s", self.device_id, attr)
 
 
 class MideaAppliance(Midea26Device):

@@ -267,6 +267,48 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.auto_sterilize_minute.value] == 5
 
     # ------------------------------------------------------------------ #
+    # power must survive a SET echo (midea_ac_lan#768)                    #
+    # ------------------------------------------------------------------ #
+
+    def test_set_echo_does_not_clobber_power(self) -> None:
+        """A SET echo with power=False must not overwrite a trusted ON state.
+
+        Otherwise the stale OFF is replayed into the next temperature/mode
+        control frame and silently switches the unit off.
+        """
+        self.device._attributes[DeviceAttributes.power] = True
+
+        class FakeSetEcho:
+            message_type = MessageType.set
+            power = False
+
+        with patch(
+            "midealocal.devices.cd.MessageCDResponse",
+            return_value=FakeSetEcho(),
+        ):
+            status = self.device.process_message(b"")
+
+        assert self.device._attributes[DeviceAttributes.power] is True
+        assert status[DeviceAttributes.power.value] is True
+
+    def test_status_frame_updates_power(self) -> None:
+        """A genuine status/notify frame still updates the power state."""
+        self.device._attributes[DeviceAttributes.power] = True
+
+        class FakeStatus:
+            message_type = MessageType.notify1
+            power = False
+
+        with patch(
+            "midealocal.devices.cd.MessageCDResponse",
+            return_value=FakeStatus(),
+        ):
+            status = self.device.process_message(b"")
+
+        assert self.device._attributes[DeviceAttributes.power] is False
+        assert status[DeviceAttributes.power.value] is False
+
+    # ------------------------------------------------------------------ #
     # disinfection_temperature is read-only for CD                         #
     # ------------------------------------------------------------------ #
 

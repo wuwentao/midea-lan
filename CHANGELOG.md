@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026.8.1](https://github.com/wuwentao/midea-lan/compare/midea-lan-v2026.8.0...midea-lan-v2026.8.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* **ed:** cancel queued tea bar heating after filling ([#5](https://github.com/wuwentao/midea-lan/issues/5)) ([2b8bec7](https://github.com/wuwentao/midea-lan/commit/2b8bec7baf1c3e1b66aa2589cb6436d892eb688b))
+
 ## [2026.8.0](https://github.com/wuwentao/midea-lan/compare/midea-lan-v2026.7.0...midea-lan-v2026.8.0) (2026-08-12)
 
 

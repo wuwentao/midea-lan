@@ -396,9 +396,10 @@ class MideaDevice(threading.Thread):
 
     def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status."""
-        cmds: list = self.build_query()
+        real_cmds: list = self.build_query()
+        cmds = real_cmds
         if self._appliance_query:
-            cmds = [MessageQueryAppliance(self.device_type), *cmds]
+            cmds = [MessageQueryAppliance(self.device_type), *real_cmds]
         error_count = 0
         _LOGGER.debug(
             "[%s] refresh_status with cmds: %s, check_protocol %s, "
@@ -447,7 +448,8 @@ class MideaDevice(threading.Thread):
                     # only catch TimoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
                     except TimeoutError:
-                        error_count += 1
+                        if cmd in real_cmds:
+                            error_count += 1
                         self._unsupported_protocol.append(cmd.__class__.__name__)
                         _LOGGER.debug(
                             "[%s] Does not supports the protocol %s, cmd %s, ignored",
@@ -457,7 +459,8 @@ class MideaDevice(threading.Thread):
                         )
                     except ResponseException:
                         # parse msg error
-                        error_count += 1
+                        if cmd in real_cmds:
+                            error_count += 1
                         _LOGGER.debug(
                             "[%s] refresh_status ResponseException %s, cmd %s",
                             self._device_id,
@@ -470,9 +473,15 @@ class MideaDevice(threading.Thread):
                     self._device_id,
                     cmd,
                 )
-                error_count += 1
-            # all the query failed
-            if error_count == len(cmds):
+                if cmd in real_cmds:
+                    error_count += 1
+            # All the REAL status queries failed. The appliance query is excluded: it
+            # answers even when the device serves no status protocol, so counting it
+            # left error_count one short of len(cmds) and the failure was masked --
+            # connect() returned True and the device came up available with no data.
+            # `real_cmds and` keeps the check vacuously false for a device whose
+            # build_query() is empty, which would otherwise raise on 0 == 0.
+            if real_cmds and error_count == len(real_cmds):
                 _LOGGER.warning(
                     "[%s] all the query cmds failed %s, please report bug",
                     self._device_id,
@@ -687,6 +696,10 @@ class MideaDevice(threading.Thread):
                 sock = self._socket
             if sock is None or self._socket is sock:
                 self._unsupported_protocol = []
+                # Re-arm the appliance query too. It is cleared in
+                # pre_process_message and was never set back, so a reconnected device
+                # would skip protocol detection and re-probe with build_query() alone.
+                self._appliance_query = True
                 self._buffer = b""
         if sock is not None:
             try:
@@ -831,11 +844,18 @@ class MideaDevice(threading.Thread):
                     self.close_socket()
                     break
                 except NoSupportedProtocol:
+                    # Drop the socket and reconnect, as every other exception here
+                    # does. Continuing on the same socket could never recover: once
+                    # every command is in _unsupported_protocol, refresh_status takes
+                    # the SKIP branch for all of them and performs NO socket I/O, so
+                    # no socket error can ever be raised to break the loop and the
+                    # device stayed stuck until Home Assistant restarted.
+                    # close_socket() clears _unsupported_protocol and re-arms
+                    # _appliance_query, so the reconnect is a genuine fresh probe --
+                    # the same effect as the user power-cycling the device.
                     _LOGGER.debug("[%s] No Supported protocol", self._device_id)
-                    # sleep 1 seconds to prevent high cpu usage in for loop
-                    time.sleep(1)
-                    # ignore and continue loop
-                    continue
+                    self.close_socket()
+                    break
                 except ConnectionResetError:  # refresh_status -> build_send exception
                     _LOGGER.debug("[%s] Connection reset by peer", self._device_id)
                     self.close_socket()

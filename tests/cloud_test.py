@@ -211,14 +211,17 @@ class CloudTest(IsolatedAsyncioTestCase):
         response = Mock()
         response.read = AsyncMock(
             side_effect=[
+                # get_cloud_keys() lists homes first, then queries the v2
+                # endpoint per method until one home returns keys.
+                self.responses["meijucloud_list_home.json"],
                 self.responses["meijucloud_get_keys1.json"],
                 self.responses["meijucloud_get_keys2.json"],
+                self.responses["meijucloud_list_home.json"],
                 self.responses["meijucloud_get_keys1.json"],
                 self.responses["cloud_invalid_response.json"],
+                self.responses["meijucloud_list_home.json"],
                 self.responses["cloud_invalid_response.json"],
                 self.responses["meijucloud_get_keys2.json"],
-                self.responses["cloud_invalid_response.json"],
-                self.responses["cloud_invalid_response.json"],
             ],
         )
         session.request = AsyncMock(return_value=response)
@@ -260,6 +263,66 @@ class CloudTest(IsolatedAsyncioTestCase):
         keys = await cloud.get_default_keys()
         assert len(keys) == 1
         assert keys == DEFAULT_KEYS
+
+    async def test_meijucloud_get_keys_v2_fallback_to_v1(self) -> None:
+        """Test MeijuCloud falls back to the v1 endpoint when v2 returns nothing."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["meijucloud_list_home.json"],
+                # v2, home 1: both methods come back empty
+                self.responses["cloud_invalid_response.json"],
+                self.responses["cloud_invalid_response.json"],
+                # v2, home 2: same
+                self.responses["cloud_invalid_response.json"],
+                self.responses["cloud_invalid_response.json"],
+                # v1 fallback
+                self.responses["meijucloud_get_keys1.json"],
+                self.responses["meijucloud_get_keys2.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+
+        keys: dict = await cloud.get_cloud_keys(100)
+        assert keys[1]["token"] == "method1_return_token1"
+        assert keys[1]["key"] == "method1_return_key1"
+        assert keys[2]["token"] == "method2_return_token2"
+        assert keys[2]["key"] == "method2_return_key2"
+        assert len(keys) == 2
+
+    async def test_meijucloud_get_keys_no_home(self) -> None:
+        """Test MeijuCloud get_cloud_keys when the home list is unavailable."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                # list_home fails, so v2 is skipped entirely
+                self.responses["cloud_invalid_response.json"],
+                # v1 fallback
+                self.responses["meijucloud_get_keys1.json"],
+                self.responses["cloud_invalid_response.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+
+        keys: dict = await cloud.get_cloud_keys(100)
+        assert keys[1]["token"] == "method1_return_token1"
+        assert len(keys) == 1
 
     async def test_meijucloud_list_home(self) -> None:
         """Test MeijuCloud list_home."""

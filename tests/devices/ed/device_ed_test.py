@@ -18,6 +18,7 @@ from midealan.devices.ed.message import (
     MessageQuery09,
     MessageQueryFF,
 )
+from midealan.message import ListTypes
 
 TEST_AUTH_VALUE = "AA"
 
@@ -98,6 +99,32 @@ class TestMideaEDDevice:
             assert new_status[DeviceAttributes.out_tds.value] == 15
             assert new_status[DeviceAttributes.filter1.value] == 15
             assert new_status[DeviceAttributes.life3.value] == 15
+
+    def test_process_message_with_device_class(self) -> None:
+        """Test process message populates device_class when present."""
+
+        class FakeMessage:
+            device_class = ListTypes.X01
+            power = True
+
+        with patch("midealan.devices.ed.MessageEDResponse") as mock_message_response:
+            mock_message_response.return_value = FakeMessage()
+            result = self.device.process_message(b"")
+
+        assert result[DeviceAttributes.power.value]
+        assert self.device._device_class == ListTypes.X01
+
+    def test_process_message_without_tea_bar_fields(self) -> None:
+        """Test process message on a non-tea-bar subtype with no extra fields."""
+
+        class FakeMessage:
+            power = True
+
+        with patch("midealan.devices.ed.MessageEDResponse") as mock_message_response:
+            mock_message_response.return_value = FakeMessage()
+            result = self.device.process_message(b"")
+
+        assert result[DeviceAttributes.power.value] is True
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -337,6 +364,54 @@ class TestMideaEDDevice:
         assert tea_bar.attributes[DeviceAttributes.boil_temperature] == 80
         assert tea_bar.attributes[DeviceAttributes.boiling] is True
 
+    def test_tea_bar_status_without_control_fields(self) -> None:
+        """Ignore tea bar status updates when no control fields are present."""
+
+        class FakeMessage:
+            pass
+
+        tea_bar = MideaEDDevice(
+            name="Tea Bar",
+            device_id=2,
+            ip_address="192.0.2.1",
+            port=6444,
+            token=TEST_AUTH_VALUE,
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model="63000622",
+            subtype=395,
+            customize="",
+        )
+        with patch("midealan.devices.ed.MessageEDResponse") as response:
+            response.return_value = FakeMessage()
+            status = tea_bar.process_message(b"")
+
+        assert status == {}
+
+    def test_tea_bar_status_with_target_only(self) -> None:
+        """Mirror target temperature even without a heating field."""
+        tea_bar = MideaEDDevice(
+            name="Tea Bar",
+            device_id=2,
+            ip_address="192.0.2.1",
+            port=6444,
+            token=TEST_AUTH_VALUE,
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model="63000622",
+            subtype=395,
+            customize="",
+        )
+
+        class FakeMessage:
+            target_temperature = 80
+
+        with patch("midealan.devices.ed.MessageEDResponse") as response:
+            response.return_value = FakeMessage()
+            status = tea_bar.process_message(b"")
+
+        assert status[DeviceAttributes.boil_temperature] == 80
+
     def test_tea_bar_heating_switch_uses_official_tea_heat_command(self) -> None:
         """Start at 100 degrees and stop without re-queuing that target."""
         tea_bar = MideaEDDevice(
@@ -389,6 +464,26 @@ class TestMideaEDDevice:
                     0x00,
                 ],
             )
+
+    def test_leak_water_protection_value_preserves_switch(self) -> None:
+        """Leak-water protection value writes carry the switch state forward."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.leak_water_protection, True)
+            self.device.set_attribute(DeviceAttributes.leak_water_protection_value, 400)
+
+        message = mock_build_send.call_args.args[0]
+        assert message.leak_water_protection is True
+        assert message.leak_water_protection_value == 400
+
+    def test_timing_regeneration_hour_and_minute_are_kept_together(self) -> None:
+        """Timing regeneration writes preserve both hour and minute."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.timing_regeneration_min, 30)
+            self.device.set_attribute(DeviceAttributes.timing_regeneration_hour, 2)
+
+        message = mock_build_send.call_args.args[0]
+        assert message.timing_regeneration_hour == 2
+        assert message.timing_regeneration_min == 30
 
     def test_tea_bar_stop_during_fill_cancels_queued_heating_once(self) -> None:
         """Repeat the verified stop once after the firmware finishes filling."""
@@ -880,6 +975,26 @@ class TestMideaEDDeviceSoftWater:
             sent_message = mock_build_send.call_args[0][0]
             assert sent_message.leak_water_protection_value == 400
             assert sent_message.leak_water_protection is True
+
+    def test_set_attribute_leak_water_protection_value_without_switch(self) -> None:
+        """Test setting leak_water_protection_value without a stored switch."""
+        self.device._attributes[DeviceAttributes.leak_water_protection] = None
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.leak_water_protection_value, 400)
+            mock_build_send.assert_called_once()
+            sent_message = mock_build_send.call_args[0][0]
+            assert sent_message.leak_water_protection_value == 400
+            assert sent_message.leak_water_protection is None
+
+    def test_set_attribute_timing_regeneration_hour_without_min(self) -> None:
+        """Test setting timing_regeneration_hour without a stored minute."""
+        self.device._attributes[DeviceAttributes.timing_regeneration_min] = None
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.timing_regeneration_hour, 2)
+            mock_build_send.assert_called_once()
+            sent_message = mock_build_send.call_args[0][0]
+            assert sent_message.timing_regeneration_hour == 2
+            assert sent_message.timing_regeneration_min is None
 
     def test_set_attribute_old_set(self) -> None:
         """Test set attribute with the old set message."""

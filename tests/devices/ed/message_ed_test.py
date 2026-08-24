@@ -917,6 +917,26 @@ class TestEDMessageBodyFF:
         assert hasattr(message, "life3")
         assert message.life3 == 3
 
+    def test_ed_message_ff_short_body_breaks(self) -> None:
+        """Test EDMessageBodyFF stops on a short body."""
+        body = bytearray([0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01])
+        message = EDMessageBodyFF(body=body)
+        assert message.body_type == 255
+
+    def test_ed_message_ff_life_only_breaks(self) -> None:
+        """Test EDMessageBodyFF stops after a life-only body."""
+        body = bytearray([0xFF, 0x01, 0x07, 0x10, 0x40, 0x01, 0x02, 0x03, 0x00])
+        message = EDMessageBodyFF(body=body)
+        assert message.life1 == 1
+        assert message.life2 == 2
+        assert message.life3 == 3
+
+    def test_ed_message_ff_unknown_attr_breaks(self) -> None:
+        """Test EDMessageBodyFF stops after an unknown attribute."""
+        body = bytearray([0xFF, 0x01, 0x07, 0x99, 0x40, 0x00, 0x00, 0x00, 0x00])
+        message = EDMessageBodyFF(body=body)
+        assert message.body_type == 255
+
 
 class TestMessageEDResponse:
     """Test Message ED Response."""
@@ -1076,3 +1096,43 @@ class TestMessageEDResponse:
         assert message.velocity == 0
         assert hasattr(message, "water_consumption")
         assert message.water_consumption == 0
+
+    def test_ed_notify2_falls_through(self) -> None:
+        """Test response dispatch falls through for notify2."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x05,
+            ],
+        )
+        body = bytearray([ListTypes.X09] + [0x00] * 59)
+        message = MessageEDResponse(bytes(header + body))
+        assert message.body_type == ListTypes.X09
+
+    def test_ed_unhandled_body_type_falls_through(self) -> None:
+        """Test response dispatch falls through for unhandled body type."""
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xDA,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x02,
+            ],
+        )
+        body = bytearray([0x08, 0x00, 0x00, 0x00])
+        message = MessageEDResponse(bytes(header + body))
+        assert message.body_type == 0x08

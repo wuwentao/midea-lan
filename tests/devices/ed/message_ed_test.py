@@ -919,7 +919,7 @@ class TestEDMessageBodyFF:
 
     def test_ed_message_ff_short_body_breaks(self) -> None:
         """Test EDMessageBodyFF stops on a short body."""
-        body = bytearray([0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01])
+        body = bytearray([0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])
         message = EDMessageBodyFF(body=body)
         assert message.body_type == 255
 

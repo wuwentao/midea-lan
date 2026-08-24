@@ -1,5 +1,6 @@
 """Midea Lan device test."""
 
+import contextlib
 import threading
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -437,8 +438,12 @@ class TestMideaDevice:
             self.device.refresh_status()  # build_query not implemented
 
         socket_mock = MagicMock()
+        # One REAL status query rather than the appliance query, so the command count
+        # per refresh_status is unchanged and the mock side_effects still line up.
+        self.device._appliance_query = False
+        real_cmd = MagicMock()
         with (
-            patch.object(self.device, "build_query", return_value=[]),
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(
                 socket_mock,
                 "recv",
@@ -480,6 +485,278 @@ class TestMideaDevice:
                 self.device.refresh_status(True)  # Timeout
             with pytest.raises(NoSupportedProtocol):
                 self.device.refresh_status(True)  # Unsupported protocol
+
+    def test_appliance_query_success_does_not_mask_failed_status_queries(
+        self,
+    ) -> None:
+        """A successful appliance query must not hide every status query failing.
+
+        The appliance query answers even when the device serves no status protocol.
+        Counting it toward error_count left the total one short of len(cmds), so
+        NoSupportedProtocol was never raised, connect() returned True, and the device
+        came up available with data that never updated.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[bytearray([0x0]), TimeoutError()],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            assert self.device._appliance_query is True
+            with pytest.raises(NoSupportedProtocol):
+                self.device.refresh_status(True)
+
+    def test_appliance_query_failure_alone_does_not_fail_the_device(self) -> None:
+        """A failed appliance query must not count against the status queries.
+
+        Ungated, its timeout increments error_count to 1, which already equals
+        len(real_cmds) on the first iteration -- so a device whose real status query
+        works perfectly well would be declared to support no protocol at all.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[TimeoutError(), bytearray([0x0])],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            assert self.device._appliance_query is True
+            self.device.refresh_status(True)  # must not raise
+            # The timed-out appliance query must still be blacklisted, which is what
+            # stops it being re-sent on the next refresh. close_socket() re-arms
+            # _appliance_query, so this list is the only thing holding it back on a
+            # device that never answers it.
+            assert "MessageQueryAppliance" in self.device._unsupported_protocol
+
+    def test_garbled_appliance_reply_does_not_fail_the_device(self) -> None:
+        """Third path into the same trap: a ResponseException on the appliance query.
+
+        A V3 decode returning an error for the appliance reply raises
+        ResponseException. Ungated that increments too, so with one real command the
+        per-iteration check raises on the appliance iteration -- before the real query
+        has even been sent -- tearing down a device whose status queries are fine.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[bytearray([0x0]), bytearray([0x0])],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                # appliance reply is garbled, the real query answers cleanly
+                side_effect=[MessageResult.ERROR, MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)  # must not raise
+
+    def test_skipped_appliance_query_does_not_fail_the_device(self) -> None:
+        """Same, via the "already unsupported, SKIP" branch.
+
+        Once the appliance query is blacklisted it takes the SKIP path, which also
+        increments error_count. Ungated that alone reaches len(real_cmds) and fails a
+        healthy device.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        self.device._unsupported_protocol = ["MessageQueryAppliance"]
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)  # must not raise
+
+    def test_empty_build_query_does_not_raise(self) -> None:
+        """A device with no status queries must not report every query as failed.
+
+        With build_query() empty, error_count and len(real_cmds) are both 0. Without
+        the `real_cmds and` guard that compares equal and raises, failing a connect
+        whose only command -- the appliance query -- had succeeded.
+        """
+        socket_mock = MagicMock()
+        with (
+            patch.object(self.device, "build_query", return_value=[]),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)
+
+    def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
+        """NoSupportedProtocol must drop the socket, like every other error here.
+
+        Continuing on the same socket could never recover: once every command is in
+        _unsupported_protocol, refresh_status takes the SKIP branch for all of them
+        and performs no socket I/O, so no socket error can ever be raised to break
+        the loop. The device stayed stuck until Home Assistant restarted.
+
+        The discriminator is how many times the refresh is attempted: breaking out
+        reconnects after one, whereas continuing spins on the same dead socket. A
+        socket mock is required -- without one the loop raises SocketException at the
+        top and never reaches this handler at all.
+        """
+        attempts = 0
+        connects = 0
+
+        def refresh(_now: float) -> None:
+            nonlocal attempts
+            attempts += 1
+            # Guarantee termination if the break is ever removed. It has to be an
+            # exception the loop does NOT handle: the inner `while True` never
+            # consults _is_run, so clearing that would spin forever instead of
+            # failing.
+            if attempts > 3:
+                raise SystemExit
+            raise NoSupportedProtocol
+
+        def connect_loop() -> None:
+            # Let the outer loop run once more so the RECONNECT is observable, then
+            # stop the service. Ending it inside close_socket() instead would exit
+            # before _connect_loop() could be reached, which is what made the old
+            # version of this test prove only that the socket was dropped.
+            nonlocal connects
+            connects += 1
+            if connects == 2:
+                self.device._is_run = False
+
+        with (
+            patch.object(self.device, "_connect_loop", side_effect=connect_loop),
+            # _should_run() is deliberately NOT patched: the outer loop reads
+            # _is_run directly, but the early `if not self._should_run(): break`
+            # right after _connect_loop() is what lets connect_loop() stop the
+            # service. Patching it to True would defer the stop by one refresh
+            # cycle (the outer `while` still exits), failing `attempts == 1`.
+            patch.object(self.device, "_check_refresh", side_effect=refresh),
+            patch.object(self.device, "close_socket") as close_mock,
+        ):
+            self.device._socket = MagicMock()
+            self.device._is_run = True
+            with contextlib.suppress(SystemExit):
+                self.device.run()
+
+        assert attempts == 1
+        # The point of the fix: the socket is dropped AND the loop dials again.
+        # Asserting only the first would pass even if recovery never happened.
+        assert connects == 2
+        close_mock.assert_called_once()
+
+    def test_one_failing_query_among_several_does_not_fail_the_device(self) -> None:
+        """Only ALL the status queries failing may raise.
+
+        Every other test here uses a single status query, which cannot tell
+        accumulation apart from assignment: with `error_count = 1` instead of `+= 1`
+        the check still passes for one command but can never be reached for a real
+        device -- an AC builds eleven -- so the whole guard would be inert. And with
+        the count over-incremented, "all failed" silently becomes "any failed", so one
+        timed-out group query during the initial probe fails connect() and a working
+        device never comes online.
+        """
+        socket_mock = MagicMock()
+        # Distinct classes on purpose: _unsupported_protocol keys off
+        # cmd.__class__.__name__, so two MagicMocks would share a name and the second
+        # would take the "already unsupported, SKIP" path instead of the one under
+        # test.
+        cmd_ok = type("QueryOk", (), {})()
+        cmd_bad = type("QueryBad", (), {})()
+        with (
+            patch.object(
+                self.device,
+                "build_query",
+                return_value=[cmd_ok, cmd_bad],
+            ),
+            patch.object(
+                socket_mock,
+                "recv",
+                # appliance ok, first real ok, second real times out
+                side_effect=[bytearray([0x0]), bytearray([0x0]), TimeoutError()],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS, MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)  # must not raise
+
+    def test_all_queries_failing_among_several_raises(self) -> None:
+        """The sibling of the above: every real query failing must still raise."""
+        socket_mock = MagicMock()
+        cmd_a = type("QueryA", (), {})()
+        cmd_b = type("QueryB", (), {})()
+        with (
+            patch.object(self.device, "build_query", return_value=[cmd_a, cmd_b]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
+            ),
+            patch.object(self.device, "build_send", return_value=None),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            with pytest.raises(NoSupportedProtocol):
+                self.device.refresh_status(True)
+            # Both must have failed on their own timeout. If they shared a class name
+            # the second would take the SKIP path, consuming only two of the three
+            # recv side effects and testing a different branch than this one claims.
+            assert self.device._unsupported_protocol == ["QueryA", "QueryB"]
+            assert socket_mock.recv.call_count == 3
+
+    def test_close_socket_rearms_appliance_query(self) -> None:
+        """close_socket must re-arm the appliance query for the next connection.
+
+        _appliance_query is cleared in pre_process_message and was never set back, so
+        a reconnected device skipped protocol detection entirely.
+        """
+        self.device._socket = None
+        self.device._appliance_query = False
+        self.device.close_socket()
+        assert self.device._appliance_query is True
 
     def test_refresh_status_without_appliance_or_protocol_check(self) -> None:
         """Test refresh_status can send queries without response validation."""
@@ -880,21 +1157,25 @@ class TestMideaDevice:
 
         def fake_connect_loop() -> None:
             connect_loop_calls["n"] += 1
-            if connect_loop_calls["n"] > 5:
+            if connect_loop_calls["n"] > 6:
                 self.device._is_run = False
 
+        # NoSupportedProtocol now closes the socket and breaks rather than continuing
+        # on the same one, so it gets its own pass at the end -- if it stayed mid-pass
+        # it would end that pass early and the SUCCESS/heartbeat-timeout script below
+        # would never run.
         check_refresh_side_effect = (
             [None, None, None, None]  # passes 1-4: no refresh due
-            + [NoSupportedProtocol()]  # pass 5, iter a: continue
-            + [None]  # pass 5, iter b: refresh ok, then SUCCESS recv
-            + [None] * RESPONSE_TIMEOUT  # pass 5, iters c..: timeouts
+            + [None]  # pass 5, iter a: refresh ok, then SUCCESS recv
+            + [None] * RESPONSE_TIMEOUT  # pass 5, iters b..: timeouts
+            + [NoSupportedProtocol()]  # pass 6: close_socket + break
         )
         recv_side_effect = [
             b"",  # pass 1: empty -> ConnectionResetError
             b"\x01",  # pass 2: parsed as ERROR
             OSError("boom"),  # pass 3
             ValueError("boom"),  # pass 4
-            b"\x01",  # pass 5, iter b: parsed as SUCCESS
+            b"\x01",  # pass 5, iter a: parsed as SUCCESS
             *([TimeoutError()] * RESPONSE_TIMEOUT),  # pass 5: hits the threshold
         ]
         parse_message_side_effect = [MessageResult.ERROR, MessageResult.SUCCESS]
@@ -918,7 +1199,7 @@ class TestMideaDevice:
         ):
             self.device.run()
 
-        assert connect_loop_calls["n"] == 6
+        assert connect_loop_calls["n"] == 7
         assert self.device._is_run is False
 
     def test_set_attribute(self) -> None:

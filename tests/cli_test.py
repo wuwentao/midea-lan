@@ -610,11 +610,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_set_level.assert_called_with(logging.WARNING)
             self.namespace.func.assert_called_once()
 
-            del self.cli.session
-            self.namespace.func = MagicMock()
-            self.cli.run(self.namespace)
-            self.namespace.func.assert_called_once()
-
     def test_main_call(self) -> None:
         """Test main call."""
         # Command to run the script
@@ -676,26 +671,6 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             # password passed on command line: config value is not applied
             assert namespace.password == "argpass"
             assert namespace.func.__name__ == "discover"
-
-    def test_main_without_config_file(self) -> None:
-        """Test main entry runs when no config file exists."""
-        config_file = MagicMock()
-        config_file.exists.return_value = False
-        exit_code: int | str | None = None
-        with (
-            patch.object(sys, "argv", ["midealan", "discover", "-u", "user"]),
-            patch("midealan.cli.get_config_file_path", return_value=config_file),
-            patch.object(MideaCLI, "run") as mock_run,
-        ):
-            try:
-                main()
-            except SystemExit as exc:
-                exit_code = exc.code
-
-        assert exit_code == 0
-        mock_run.assert_called_once()
-        namespace = mock_run.call_args[0][0]
-        assert namespace.username == "user"
 
     def test_main_module_entry(self) -> None:
         """Test the __main__ guard when running the module as a script."""

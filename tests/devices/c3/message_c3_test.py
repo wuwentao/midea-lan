@@ -270,6 +270,90 @@ class TestMessageC3Response:
             assert hasattr(response, "error_code")
             assert response.error_code == 0x0
 
+    def test_message_unit_para_response(self) -> None:
+        """Test message unit-parameter response."""
+        header = bytearray(self.header)
+        header[-1] = 0x02
+        body = bytearray(90)
+        body[0] = ListTypes.X10
+        body[1] = 7
+        body[2] = 3
+        body[4] = 4
+        body[6] = 11
+        body[7] = 12
+        body[8] = 13
+        body[9] = 14
+        body[10] = 15
+        body[11] = 16
+        body[12] = 17
+        body[13] = 18
+        body[17] = 1
+        body[18] = 2
+        body[19] = 3
+        body[20] = 4
+        body[21] = 5
+        body[33] = 19
+        body[34] = 20
+        body[35] = 21
+        body[36] = 22
+        body[37] = 23
+        body[38] = 24
+        body[39] = 25
+        body[40] = 26
+        body[41] = 27
+        body[42] = 28
+        body[43] = 29
+        body[44] = 30
+        body[45] = 31
+        body[46] = 32
+        body[47] = 33
+        body[48] = 34
+        body[49] = 35
+        body[51] = 36
+        body[52] = 37
+        body[53] = 38
+        body[54] = 39
+        body[55] = 40
+        body[56] = 41
+        body[57] = 42
+        body[59] = 43
+        body[60] = 44
+        body[61] = 45
+        body[63] = 46
+        body[66] = 0
+        body[67] = 1
+        body[68] = 2
+        body[69] = 3
+        body[70] = 4
+        body[71] = 5
+        body[72] = 6
+        body[73] = 7
+        body[74] = 8
+        body[75] = 9
+        body[76] = 10
+        body[77] = 11
+        body[78] = 12
+        body[79] = 13
+        body[80] = 14
+        body[81] = 15
+        body[82] = 16
+        body[83] = 17
+
+        response = MessageC3Response(bytes(header + body + bytearray([0x00])))
+
+        assert response.body_type == ListTypes.X10
+        assert response.__dict__["comp_run_freq"] == 7
+        assert response.__dict__["unit_mode_run"] == 3
+        assert response.__dict__["fan_speed"] == 40
+
+    def test_message_unhandled_body_type_falls_through(self) -> None:
+        """Test response dispatch when body type is not handled."""
+        header = bytearray(self.header)
+        header[-1] = 0x02
+        body = bytearray([0x08, 0x00, 0x00])
+        response = MessageC3Response(bytes(header + body))
+        assert response.body_type == 0x08
+
     def test_message_notify1_x04_response(self) -> None:
         """Test message notify1 x04 response."""
         self.header[-1] = MessageType.notify1

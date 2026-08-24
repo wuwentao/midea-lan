@@ -223,6 +223,34 @@ class TestMideaC3Device:
 
             assert result[DeviceAttributes.mode.value] == 3
 
+    def test_process_message_without_zone_temp_type(self) -> None:
+        """Test process message without zone temperature metadata."""
+
+        class FakeMessage:
+            zone1_power = True
+            zone2_power = False
+            dhw_power = True
+
+        with patch("midealan.devices.c3.MessageC3Response") as mock_message_response:
+            mock_message_response.return_value = FakeMessage()
+
+            result = self.device.process_message(b"")
+
+        assert result[DeviceAttributes.zone1_power.value] is True
+        assert DeviceAttributes.zone_temp_type.value not in result
+
+    def test_process_message_without_any_known_attributes(self) -> None:
+        """Test process message when no known attributes are present."""
+
+        class FakeMessage:
+            pass
+
+        with patch("midealan.devices.c3.MessageC3Response") as mock_message_response:
+            mock_message_response.return_value = FakeMessage()
+            result = self.device.process_message(b"")
+
+        assert result == {}
+
     def test_set_target_temperature(self) -> None:
         """Test set target temperature."""
         with pytest.raises(ValueError):  # noqa: PT011
@@ -262,6 +290,47 @@ class TestMideaC3Device:
             message = mock_build_send.call_args[0][0]
             assert message.zone2_power is True
             assert message.mode == C3DeviceMode.HEAT
+
+    def test_set_mode_none_target_uses_existing_zone_state(self) -> None:
+        """Test set target temperature without mode keeps power untouched."""
+        self.device._attributes[DeviceAttributes.mode] = C3DeviceMode.HEAT
+        self.device._attributes[DeviceAttributes.zone2_power] = True
+        existing_zone2_power = self.device._attributes[DeviceAttributes.zone2_power]
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_target_temperature(23, None, 1)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.room_target_temp == 23
+            assert message.mode == C3DeviceMode.HEAT
+            assert message.zone2_power == existing_zone2_power
+
+    def test_set_attribute_unknown_value_is_ignored(self) -> None:
+        """Unknown attributes do not build a message."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute("unknown_attribute", True)
+        mock_build_send.assert_not_called()
+
+    def test_set_silent_level_ignores_non_string_value(self) -> None:
+        """Silent level updates ignore non-string inputs."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.silent_level.value, True)
+        mock_build_send.assert_not_called()
+
+    def test_set_customize_without_temperature_step(self) -> None:
+        """Customize JSON without temperature_step still updates defaults."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize('{"other": 1}')
+        mock_update_all.assert_called_once_with(
+            {"temperature_step": self.device._default_temperature_step},
+        )
+        assert self.device.temperature_step == self.device._default_temperature_step
+
+    def test_set_customize_empty_string_keeps_default(self) -> None:
+        """Empty customize input resets to default without updating state."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("")
+        mock_update_all.assert_not_called()
+        assert self.device.temperature_step == self.device._default_temperature_step
 
     def test_invalid_customize_format(self) -> None:
         """Test invalid customize format."""

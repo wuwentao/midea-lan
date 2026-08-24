@@ -298,8 +298,8 @@ class MideaC3Device(MideaDevice):
             DeviceAttributes.silent_mode.value,
             DeviceAttributes.silent_level.value,
         ]:
-            message = MessageSetSilent(self._message_protocol_version)
             if attr == DeviceAttributes.silent_mode.value and isinstance(value, bool):
+                message = MessageSetSilent(self._message_protocol_version)
                 message.silent_mode = bool(value)
                 message.silent_level = (
                     C3SilentLevel.SILENT
@@ -309,6 +309,7 @@ class MideaC3Device(MideaDevice):
                     else C3SilentLevel[self._attributes[DeviceAttributes.silent_level]]
                 )
             elif attr == DeviceAttributes.silent_level.value and isinstance(value, str):
+                message = MessageSetSilent(self._message_protocol_version)
                 message.silent_level = C3SilentLevel[value]
                 message.silent_mode = value != C3SilentLevel.OFF.name
         if message is not None:

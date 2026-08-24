@@ -293,12 +293,16 @@ class TestMideaC3Device:
 
     def test_set_mode_none_target_uses_existing_zone_state(self) -> None:
         """Test set target temperature without mode keeps power untouched."""
+        self.device._attributes[DeviceAttributes.mode] = C3DeviceMode.HEAT
+        self.device._attributes[DeviceAttributes.zone2_power] = True
+        existing_zone2_power = self.device._attributes[DeviceAttributes.zone2_power]
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_target_temperature(23, None, 1)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
             assert message.room_target_temp == 23
-            assert message.mode == self.device.attributes[DeviceAttributes.mode]
+            assert message.mode == C3DeviceMode.HEAT
+            assert message.zone2_power == existing_zone2_power
 
     def test_set_attribute_unknown_value_is_ignored(self) -> None:
         """Unknown attributes do not build a message."""
@@ -310,19 +314,23 @@ class TestMideaC3Device:
         """Silent level updates ignore non-string inputs."""
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.silent_level.value, True)
-            mock_build_send.assert_called_once()
+        mock_build_send.assert_not_called()
 
     def test_set_customize_without_temperature_step(self) -> None:
         """Customize JSON without temperature_step still updates defaults."""
         with patch.object(self.device, "update_all") as mock_update_all:
             self.device.set_customize('{"other": 1}')
-        mock_update_all.assert_called_once()
+        mock_update_all.assert_called_once_with(
+            {"temperature_step": self.device._default_temperature_step},
+        )
+        assert self.device.temperature_step == self.device._default_temperature_step
 
     def test_set_customize_empty_string_keeps_default(self) -> None:
         """Empty customize input resets to default without updating state."""
         with patch.object(self.device, "update_all") as mock_update_all:
             self.device.set_customize("")
         mock_update_all.assert_not_called()
+        assert self.device.temperature_step == self.device._default_temperature_step
 
     def test_invalid_customize_format(self) -> None:
         """Test invalid customize format."""

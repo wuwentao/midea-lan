@@ -388,12 +388,34 @@ class TestMideaFADevice:
             mock_build_send.assert_called_once()
             assert mock_build_send.call_args[0][0].fan_speed == 3
 
-    def test_set_attribute_mode(self) -> None:
-        """Test set attribute mode."""
+    @pytest.mark.parametrize(
+        ("customize", "mode_name", "expected_mode", "expected_overrides"),
+        [
+            pytest.param("", "Sleep", 2, {}, id="no_override"),
+            pytest.param(
+                '{"mode_set_overrides": {"3": 41}}',
+                "Comfort",
+                3,
+                {3: 41},
+                id="with_override",
+            ),
+        ],
+    )
+    def test_set_attribute_mode(
+        self,
+        customize: str,
+        mode_name: str,
+        expected_mode: int,
+        expected_overrides: dict[int, int],
+    ) -> None:
+        """Test set attribute mode, with and without a customized override table."""
+        self.device.set_customize(customize)
         with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.mode.value, "Sleep")
+            self.device.set_attribute(DeviceAttributes.mode.value, mode_name)
             mock_build_send.assert_called_once()
-            assert mock_build_send.call_args[0][0].mode == 2
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == expected_mode
+            assert message.mode_set_overrides == expected_overrides
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "invalid")
@@ -443,17 +465,88 @@ class TestMideaFADevice:
             mock_build_send.assert_called_once()
             assert mock_build_send.call_args[0][0].mode is None
 
-    def test_set_customize(self) -> None:
+    @pytest.mark.parametrize(
+        ("customize", "expected_overrides", "expected_body"),
+        [
+            pytest.param("", {}, 0x09, id="no_override"),
+            pytest.param(
+                '{"mode_set_overrides": {"3": 41}}',
+                {3: 41},
+                0x29,
+                id="with_override",
+            ),
+        ],
+    )
+    def test_turn_on_mode_set_overrides(
+        self,
+        customize: str,
+        expected_overrides: dict[int, int],
+        expected_body: int,
+    ) -> None:
+        """Test turn on carries the override table, the second wiring path."""
+        self.device.set_customize(customize)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.turn_on(mode="Comfort")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == 3
+            assert message.mode_set_overrides == expected_overrides
+            assert message._body[3] == expected_body
+
+    @pytest.mark.parametrize(
+        ("customize", "expected_speed_count"),
+        [
+            pytest.param('{"speed_count": 5}', 5, id="speed_count"),
+            pytest.param("{}", 3, id="empty_params"),
+            pytest.param("{", 3, id="invalid_json"),
+        ],
+    )
+    def test_set_customize(
+        self,
+        customize: str,
+        expected_speed_count: int,
+    ) -> None:
         """Test set customize."""
-        self.device.set_customize('{"speed_count": 5}')
-        assert self.device.speed_count == 5
+        self.device.set_customize(customize)
+        assert self.device.speed_count == expected_speed_count
 
-    def test_set_customize_empty_params(self) -> None:
-        """Test set customize with an empty JSON object."""
+    def test_set_customize_mode_set_overrides(self) -> None:
+        """Test set customize parses and resets the mode set override table."""
+        self.device.set_customize('{"mode_set_overrides": {"3": 41}}')
+        assert self.device._mode_set_overrides == {3: 41}
+
         self.device.set_customize("{}")
-        assert self.device.speed_count == 3
+        assert self.device._mode_set_overrides == {}
 
-    def test_set_customize_invalid(self) -> None:
-        """Test set customize with invalid JSON keeps defaults."""
-        self.device.set_customize("{")
-        assert self.device.speed_count == 3
+    @pytest.mark.parametrize(
+        "customize",
+        [
+            pytest.param('{"mode_set_overrides": {"3": 256}}', id="above_a_byte"),
+            pytest.param('{"mode_set_overrides": {"3": -1}}', id="below_a_byte"),
+            pytest.param('{"mode_set_overrides": {"3": 1.5}}', id="fraction"),
+            pytest.param('{"mode_set_overrides": {"3": true}}', id="bool"),
+            pytest.param(
+                '{"mode_set_overrides": {"3": 41, "4": 256}}',
+                id="one_entry_out_of_range",
+            ),
+        ],
+    )
+    def test_set_customize_mode_set_overrides_not_a_byte(
+        self,
+        customize: str,
+    ) -> None:
+        """Test an override that is not a byte is rejected, not carried into a set."""
+        self.device.set_customize(customize)
+        assert self.device._mode_set_overrides == {}
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "Comfort")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert message.mode_set_overrides == {}
+            assert message._body[3] == 0x09
+
+    def test_set_customize_mode_set_overrides_integral_float(self) -> None:
+        """Test a float that is a whole number is still a usable byte."""
+        self.device.set_customize('{"mode_set_overrides": {"3": 41.0}}')
+        assert self.device._mode_set_overrides == {3: 41}

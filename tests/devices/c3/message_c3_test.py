@@ -389,9 +389,9 @@ class TestMessageC3Response:
         assert hasattr(response, "status_heating")
         assert response.status_heating is True
         assert hasattr(response, "total_energy_consumption")
-        assert response.total_energy_consumption == 214750114754
+        assert response.total_energy_consumption == 840610754
         assert hasattr(response, "total_produced_energy")
-        assert response.total_produced_energy == 90195765805
+        assert response.total_produced_energy == 353774125
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature == 30
         assert hasattr(response, "zone1_temp_set")
@@ -637,3 +637,69 @@ class TestC3UnitParaFanSpeed:
         assert post_run.fan_speed > 0
         assert stopped.comp_run_freq == 0
         assert stopped.fan_speed == 0
+
+
+class TestC3Energy32BitCounters:
+    """The 32 bit energy counters against the official C3 lua protocol.
+
+    Reference: `T_0000_C3_171H120F_2023062601.lua`. Every one of these counters
+    is built as `_bodyBytes[n] * 16777216 + _bodyBytes[n+1] * 65536 +
+    _bodyBytes[n+2] * 256 + _bodyBytes[n+3]`, so the most significant byte is
+    shifted by 24, not 32. The bug only shows once a counter passes 2 ** 24,
+    which is why the existing fixtures never caught it.
+    """
+
+    HEADER = bytearray([0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00])
+
+    def _response(self, msg_type: int, values: dict[int, int]) -> MessageC3Response:
+        """Build a C3 response with the given body bytes set."""
+        header = bytearray(self.HEADER)
+        header[-1] = msg_type
+        body = bytearray(96)
+        body[0] = ListTypes.X04 if msg_type == MessageType.notify1 else ListTypes.X10
+        for index, value in values.items():
+            body[index] = value
+        return MessageC3Response(bytes(header + body))
+
+    def test_notify_energy_counters_are_32_bit(self) -> None:
+        """Test the notify1 0x04 totals use a 24 bit shift on the top byte."""
+        response = self._response(
+            MessageType.notify1,
+            {2: 0x01, 3: 0x02, 4: 0x03, 5: 0x04, 6: 0x0A, 7: 0x0B, 8: 0x0C, 9: 0x0D},
+        )
+        assert hasattr(response, "total_energy_consumption")
+        assert hasattr(response, "total_produced_energy")
+        assert response.total_energy_consumption == 0x01020304
+        assert response.total_produced_energy == 0x0A0B0C0D
+
+    def test_unit_para_energy_counters_are_32_bit(self) -> None:
+        """Test the X10 totals use a 24 bit shift on the top byte."""
+        response = self._response(
+            MessageType.query,
+            {
+                67: 0x01,
+                68: 0x02,
+                69: 0x03,
+                70: 0x04,
+                71: 0x05,
+                72: 0x06,
+                73: 0x07,
+                74: 0x08,
+                75: 0x09,
+                76: 0x0A,
+                77: 0x0B,
+                78: 0x0C,
+                79: 0x0D,
+                80: 0x0E,
+                81: 0x0F,
+                82: 0x10,
+            },
+        )
+        assert hasattr(response, "total_electricity0")
+        assert hasattr(response, "total_thermal0")
+        assert hasattr(response, "heat_elec_total_consum0")
+        assert hasattr(response, "heat_elec_total_capacity0")
+        assert response.total_electricity0 == 0x01020304
+        assert response.total_thermal0 == 0x05060708
+        assert response.heat_elec_total_consum0 == 0x090A0B0C
+        assert response.heat_elec_total_capacity0 == 0x0D0E0F10

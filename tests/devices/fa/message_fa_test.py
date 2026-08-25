@@ -91,11 +91,18 @@ class TestMessageSet:
         msg.lock = lock
         assert msg._body[2] == expected
 
-    def test_body_mode(self) -> None:
+    @pytest.mark.parametrize(
+        ("mode", "expected"),
+        [
+            (3, 0x07),  # Sleep
+            (20, 0x29),  # Self_Selection
+        ],
+    )
+    def test_body_mode(self, mode: int, expected: int) -> None:
         """Test set body mode."""
         msg = MessageSet(ProtocolVersion.V1, 1)
-        msg.mode = 2
-        assert msg._body[3] == 0x07
+        msg.mode = mode
+        assert msg._body[3] == expected
 
     def test_body_fan_speed_valid(self) -> None:
         """Test set body with a valid fan speed."""
@@ -188,12 +195,12 @@ class TestFAGeneralMessageBody:
         body = FAGeneralMessageBody(bytearray(10))
         assert body.child_lock is False
         assert body.power is False
+        assert body.mode == 0
         assert body.fan_speed == 0
         assert body.tilting_angle == 0
         assert body.humidify is False
         assert body.waterions is False
         assert body.display_on_off is False
-        assert not hasattr(body, "mode")
 
 
 class TestMessageFAResponse:
@@ -210,8 +217,19 @@ class TestMessageFAResponse:
         )
         assert getattr(msg, "power", None) is True
         assert getattr(msg, "child_lock", None) is True
-        assert getattr(msg, "mode", None) == 0
+        assert getattr(msg, "mode", None) == 1
         assert getattr(msg, "fan_speed", None) == 3
+
+    def test_query_response_extended_mode(self) -> None:
+        """Test parsing an extended FA mode."""
+        body = bytearray(36)
+        body[4] = 0x29  # Self_Selection
+
+        msg = MessageFAResponse(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert getattr(msg, "mode", None) == 20
 
     def test_notify2_response_ignored(self) -> None:
         """Test notify2 response is not parsed."""

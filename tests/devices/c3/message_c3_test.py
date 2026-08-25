@@ -637,3 +637,85 @@ class TestC3UnitParaFanSpeed:
         assert post_run.fan_speed > 0
         assert stopped.comp_run_freq == 0
         assert stopped.fan_speed == 0
+
+
+class TestC3UnitParaNotify:
+    """The MSG_TYPE_UP_UNITPARA notify body (message type 0x04, body 0x05).
+
+    The frame below is a real capture from a Hyundai HYHC-V30W/D2RN8
+    (OEM-equivalent Midea MHC-V30W/D2RN8, protocol 3, module 171H120F). The
+    unit pushes this message unsolicited between polls; 41 of them appeared
+    alongside 782 X10 query responses in the same session.
+
+    Every value asserted here was cross-checked against the X10 query response
+    captured immediately before it, and agreed to within sampling drift.
+    """
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.notify1],
+    )
+
+    BODY = bytes.fromhex(
+        "05213f24264d0d0b0400e10b1909081919041000640b2237ffff0000000000000000"
+        "002fa000000000000000000000000001010000000000000b94630200000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00",
+    )
+
+    def test_notify_unit_para_is_parsed(self) -> None:
+        """Test the notify body decodes into the shared runtime attributes."""
+        response = MessageC3Response(bytes(self.HEADER + self.BODY + bytes([0x00])))
+
+        assert response.body_type == ListTypes.X05
+        assert hasattr(response, "unit_mode_run")
+        assert hasattr(response, "comp_run_freq")
+        assert hasattr(response, "fan_speed")
+        assert hasattr(response, "temp_t3")
+        assert hasattr(response, "temp_t4")
+        assert hasattr(response, "temp_tp")
+        assert hasattr(response, "temp_tw_in")
+        assert hasattr(response, "temp_tw_out")
+        assert hasattr(response, "odu_comp_current")
+        assert hasattr(response, "odu_voltage")
+        assert hasattr(response, "temp_t1")
+        assert hasattr(response, "temp_t2")
+        assert hasattr(response, "temp_t2b")
+        assert hasattr(response, "pressure_high")
+        assert hasattr(response, "pressure_low")
+        assert hasattr(response, "odu_target_fre")
+        assert hasattr(response, "temp_tf")
+        assert hasattr(response, "total_electricity0")
+        assert response.comp_run_freq == 33
+        assert response.fan_speed == 630
+        assert response.unit_mode_run == C3DeviceMode.COOL
+        assert response.temp_t3 == 36
+        assert response.temp_t4 == 38
+        assert response.temp_tp == 77
+        assert response.temp_tw_in == 13
+        assert response.temp_tw_out == 11
+        assert response.odu_comp_current == 4
+        assert response.odu_voltage == 225
+        assert response.temp_t1 == 11
+        assert response.temp_t2 == 9
+        assert response.temp_t2b == 8
+        assert response.pressure_high == 1040
+        assert response.pressure_low == 100
+        assert response.odu_target_fre == 34
+        assert response.temp_tf == 55
+        assert response.total_electricity0 == 12192
+
+    def test_query_x05_is_still_the_silence_body(self) -> None:
+        """Test a query 0x05 still parses as silence, not as unit parameters."""
+        header = bytearray(self.HEADER)
+        header[-1] = MessageType.query
+        body = bytearray.fromhex("050b170016320e001100")
+        response = MessageC3Response(bytes(header + body + bytes([0x00])))
+
+        assert response.body_type == ListTypes.X05
+        assert hasattr(response, "silent_mode")
+        assert response.silent_mode is True
+        assert not hasattr(response, "comp_run_freq")

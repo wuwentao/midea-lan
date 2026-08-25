@@ -493,6 +493,83 @@ class C3UnitParaBody(MessageBody):
         )
 
 
+class C3UnitParaUpBody(MessageBody):
+    """C3 UnitPara notify (MSG_TYPE_UP_UNITPARA) message body.
+
+    The unit pushes this unsolicited between polls. It carries the same
+    quantities as the X10 query response but in its own, shorter layout, so
+    the attribute names deliberately match C3UnitParaBody: whichever message
+    arrives last refreshes the same device attributes.
+
+    Layout from the official C3 lua for the 171H120F module,
+    MSG_TYPE_UP_UNITPARA block. The lua is 1-indexed, so _bodyBytes[N] is
+    body[data_offset + N - 1].
+
+    Only the fields C3UnitParaBody already exposes are decoded here. The lua
+    block continues with a long Sys* energy-analysis section that reuses the
+    same byte ranges for several different names, so it is not parsed.
+    """
+
+    def __init__(self, body: bytearray, data_offset: int = 0) -> None:
+        """Initialize C3 UnitPara notify message body."""
+        super().__init__(body)
+        self.comp_run_freq = body[data_offset]
+        self.fan_speed = body[data_offset + 1] * FAN_SPEED_FACTOR
+        self.temp_t3 = body[data_offset + 2]
+        self.temp_t4 = body[data_offset + 3]
+        self.temp_tp = body[data_offset + 4]
+        self.temp_tw_in = body[data_offset + 5]
+        self.temp_tw_out = body[data_offset + 6]
+        self.odu_comp_current = body[data_offset + 7]
+        self.odu_voltage = body[data_offset + 8] * 256 + body[data_offset + 9]
+        self.temp_t1 = body[data_offset + 10]
+        self.temp_tw2 = body[data_offset + 11]
+        self.temp_t2 = body[data_offset + 12]
+        self.temp_t2b = body[data_offset + 13]
+        self.temp_t5 = body[data_offset + 14]
+        self.temp_ta = body[data_offset + 15]
+        self.pressure_high = body[data_offset + 16] * 256 + body[data_offset + 17]
+        self.pressure_low = body[data_offset + 18] * 256 + body[data_offset + 19]
+        self.temp_th = body[data_offset + 20]
+        self.odu_target_fre = body[data_offset + 21]
+        self.temp_tf = body[data_offset + 22]
+        self.idu_t1s1 = body[data_offset + 23]
+        self.idu_t1s2 = body[data_offset + 24]
+        self.water_flower = body[data_offset + 25] * 256 + body[data_offset + 26]
+        self.current_unit_capacity = (
+            body[data_offset + 27] * 256 + body[data_offset + 28]
+        )
+        self.water_pressure = body[data_offset + 29] * 256 + body[data_offset + 30]
+        self.room_rel_hum = body[data_offset + 31]
+        self.total_electricity0 = (
+            (body[data_offset + 32] << 24)
+            + (body[data_offset + 33] << 16)
+            + (body[data_offset + 34] << 8)
+            + (body[data_offset + 35])
+        )
+        self.total_thermal0 = (
+            (body[data_offset + 36] << 24)
+            + (body[data_offset + 37] << 16)
+            + (body[data_offset + 38] << 8)
+            + (body[data_offset + 39])
+        )
+        # NOTE: _bodyBytes[41..48] are given two conflicting meanings by the
+        # lua (heatElecTotConsum0 / heatTotCapacity0 overlap SysHeatDay*), and
+        # on a real unit heatElecTotConsum0 reads 0 here while the X10 query
+        # reports 2249 at the same moment. Not decoded.
+        self.instant_power0 = (body[data_offset + 48] << 8) + (body[data_offset + 49])
+        self.instant_renew_power0 = (body[data_offset + 50] << 8) + (
+            body[data_offset + 51]
+        )
+        self.total_renew_power0 = (
+            (body[data_offset + 52] << 24)
+            + (body[data_offset + 53] << 16)
+            + (body[data_offset + 54] << 8)
+            + (body[data_offset + 55])
+        )
+        self.unit_mode_run = body[data_offset + 59]
+
+
 class MessageC3Response(MessageResponse):
     """C3 message response."""
 
@@ -511,6 +588,10 @@ class MessageC3Response(MessageResponse):
             self.set_body(C3EnergyBody(super().body, data_offset=1))
         elif self.message_type == MessageType.query and self.body_type == ListTypes.X05:
             self.set_body(C3SilenceBody(super().body, data_offset=1))
+        elif (
+            self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
+        ):
+            self.set_body(C3UnitParaUpBody(super().body, data_offset=1))
         elif self.body_type == ListTypes.X07:
             self.set_body(C3ECOBody(super().body, data_offset=1))
         elif self.body_type == ListTypes.X09:

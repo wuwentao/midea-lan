@@ -68,6 +68,9 @@ class DeviceAttributes(StrEnum):
     outdoor_temperature = "outdoor_temperature"
     temp_tw_in = "temp_tw_in"
     temp_tw_out = "temp_tw_out"
+    comp_run_freq = "comp_run_freq"
+    unit_mode_run = "unit_mode_run"
+    fan_speed = "fan_speed"
     instant_power0 = "instant_power0"
     silent_mode = "silent_mode"
     silent_level = "silent_level"
@@ -138,6 +141,9 @@ class MideaC3Device(MideaDevice):
                 DeviceAttributes.outdoor_temperature: None,
                 DeviceAttributes.temp_tw_in: None,
                 DeviceAttributes.temp_tw_out: None,
+                DeviceAttributes.comp_run_freq: None,
+                DeviceAttributes.unit_mode_run: None,
+                DeviceAttributes.fan_speed: None,
                 DeviceAttributes.instant_power0: None,
                 DeviceAttributes.error_code: 0,
             },

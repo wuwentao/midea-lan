@@ -336,3 +336,23 @@ class TestMideaC3Device:
         """Test invalid customize format."""
         self.device.set_customize("{")
         self.device.set_customize('{"temperature_step":"10"}')
+
+    def test_process_message_unit_para_exposes_odu_runtime(self) -> None:
+        """Test X10 outdoor-unit runtime values reach the device attributes."""
+        # Real-device X10 (UNITPARA) frame: compressor 0x39 = 57 Hz, mode
+        # 0x02 = cooling, outdoor fan 0x40 = 640 RPM.
+        header = bytearray(
+            [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03],
+        )
+        body = bytearray(88)  # body type + 86 data bytes + CRC
+        body[0] = 0x10
+        body[1:5] = b"\x39\x02\x40\x02"
+
+        new_status = self.device.process_message(bytes(header + body))
+
+        assert new_status[DeviceAttributes.comp_run_freq.value] == 57
+        assert new_status[DeviceAttributes.unit_mode_run.value] == C3DeviceMode.COOL
+        assert new_status[DeviceAttributes.fan_speed.value] == 640
+        assert self.device.attributes[DeviceAttributes.comp_run_freq] == 57
+        assert self.device.attributes[DeviceAttributes.unit_mode_run] == 2
+        assert self.device.attributes[DeviceAttributes.fan_speed] == 640

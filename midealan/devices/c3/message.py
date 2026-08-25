@@ -12,6 +12,8 @@ from midealan.message import (
 )
 
 TEMP_NEG_VALUE = 127
+# Outdoor fan speed is transmitted as RPM / 10.
+FAN_SPEED_FACTOR = 10
 
 
 class C3SilentLevel(IntEnum):
@@ -410,7 +412,12 @@ class C3UnitParaBody(MessageBody):
         super().__init__(body)
         self.comp_run_freq = body[data_offset]
         self.unit_mode_run = body[data_offset + 1]
-        self.fan_speed = body[data_offset + 3] * 10
+        # Outdoor fan speed, transmitted as RPM / 10 in a single byte.
+        # It lives at data_offset + 2, directly after unit_mode_run; the
+        # previous data_offset + 3 read a neighbouring byte that is small and
+        # nearly constant while the unit runs, so fan_speed was reported as a
+        # fixed low value (typically 20) regardless of the real fan command.
+        self.fan_speed = body[data_offset + 2] * FAN_SPEED_FACTOR
         self.fg_capacity_need = body[data_offset + 5]
         self.temp_t3 = body[data_offset + 6]
         self.temp_t4 = body[data_offset + 7]

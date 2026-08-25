@@ -278,7 +278,8 @@ class TestMessageC3Response:
         body[0] = ListTypes.X10
         body[1] = 7
         body[2] = 3
-        body[4] = 4
+        body[3] = 4  # fan_speed / 10
+        body[4] = 2  # not fan_speed, must not leak into it
         body[6] = 11
         body[7] = 12
         body[8] = 13
@@ -503,7 +504,8 @@ class TestMessageC3Response:
         body[0] = ListTypes.X10
         body[1] = 50  # comp_run_freq
         body[2] = 2  # unit_mode_run
-        body[4] = 8  # fan_speed / 10
+        body[3] = 8  # fan_speed / 10
+        body[4] = 2  # not fan_speed, must not leak into it
         body[6] = 9  # fg_capacity_need
         body[8] = 30  # temp_t4
         body[10] = 40  # temp_tw_in
@@ -541,3 +543,97 @@ class TestMessageC3Response:
         assert response.total_electricity0 == 10
         assert hasattr(response, "instant_power0")
         assert response.instant_power0 == 500
+
+
+class TestC3UnitParaFanSpeed:
+    """Regression tests for the X10 (UNITPARA) outdoor fan speed offset.
+
+    The frames below are taken from LAN captures of a Hyundai HYHC-V30W/D2RN8
+    monobloc heat pump (OEM-equivalent Midea MHC-V30W/D2RN8, device type 0xC3,
+    protocol version 3, Wi-Fi module 171H120F). Only the first four X10 data
+    bytes are pinned, because those are the ones the capture confirms:
+
+    * data[0] - compressor running frequency in Hz
+    * data[1] - unit running mode (2 = cooling)
+    * data[2] - outdoor fan speed in RPM / 10
+    * data[3] - a different, near-constant quantity that the pre-fix parser
+      mistakenly reported as the fan speed
+
+    The remaining data bytes are left at zero; this test intentionally asserts
+    only on the fields the captures verify.
+    """
+
+    HEADER = bytearray(
+        [
+            0xAA,
+            0x00,
+            0xC3,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x03,  # protocol version 3
+            MessageType.query,
+        ],
+    )
+
+    @staticmethod
+    def _build_response(data_head: bytes) -> MessageC3Response:
+        """Build an X10 query response whose payload starts with data_head."""
+        body = bytearray(88)  # body type + 86 data bytes + CRC
+        body[0] = ListTypes.X10
+        body[1 : 1 + len(data_head)] = data_head
+        return MessageC3Response(
+            bytes(TestC3UnitParaFanSpeed.HEADER + body),
+        )
+
+    @pytest.mark.parametrize(
+        ("data_head", "comp_run_freq", "fan_speed"),
+        [
+            # Cooling at 57 Hz, fan command 0x40 -> 640 RPM (Super Silent).
+            (b"\x39\x02\x40\x02", 57, 640),
+            # Cooling at 35 Hz, fan command 0x3f -> 630 RPM (Super Silent).
+            (b"\x23\x02\x3f\x02", 35, 630),
+            # Compressor thermo-off: the outdoor fan keeps running for a short
+            # post-run at 0x4a -> 740 RPM while the compressor is already at 0.
+            (b"\x00\x02\x4a\x02", 0, 740),
+            # Post-run finished: fan command 0 and the fans physically stopped.
+            (b"\x00\x02\x00\x02", 0, 0),
+        ],
+        ids=["cooling_57hz", "cooling_35hz", "thermo_off_fan_post_run", "fan_stopped"],
+    )
+    def test_fan_speed_is_read_after_unit_mode_run(
+        self,
+        data_head: bytes,
+        comp_run_freq: int,
+        fan_speed: int,
+    ) -> None:
+        """Test fan speed comes from the byte right after the running mode."""
+        response = self._build_response(data_head)
+
+        assert response.body_type == ListTypes.X10
+        assert hasattr(response, "comp_run_freq")
+        assert hasattr(response, "unit_mode_run")
+        assert hasattr(response, "fan_speed")
+        assert response.comp_run_freq == comp_run_freq
+        assert response.unit_mode_run == C3DeviceMode.COOL
+        assert response.unit_mode_run == 2
+        assert response.fan_speed == fan_speed
+
+    def test_fan_speed_is_independent_of_compressor_state(self) -> None:
+        """Test a stopped compressor does not force the fan speed to zero."""
+        running = self._build_response(b"\x39\x02\x40\x02")
+        post_run = self._build_response(b"\x00\x02\x4a\x02")
+        stopped = self._build_response(b"\x00\x02\x00\x02")
+        assert hasattr(running, "comp_run_freq")
+        assert hasattr(post_run, "comp_run_freq")
+        assert hasattr(post_run, "fan_speed")
+        assert hasattr(stopped, "comp_run_freq")
+        assert hasattr(stopped, "fan_speed")
+
+        assert running.comp_run_freq > 0
+        assert post_run.comp_run_freq == 0
+        assert post_run.fan_speed > 0
+        assert stopped.comp_run_freq == 0
+        assert stopped.fan_speed == 0

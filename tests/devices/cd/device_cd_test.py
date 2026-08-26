@@ -283,7 +283,7 @@ class TestMideaCDDevice:
             power = False
 
         with patch(
-            "midealocal.devices.cd.MessageCDResponse",
+            "midealan.devices.cd.MessageCDResponse",
             return_value=FakeSetEcho(),
         ):
             status = self.device.process_message(b"")
@@ -300,7 +300,7 @@ class TestMideaCDDevice:
             power = False
 
         with patch(
-            "midealocal.devices.cd.MessageCDResponse",
+            "midealan.devices.cd.MessageCDResponse",
             return_value=FakeStatus(),
         ):
             status = self.device.process_message(b"")
@@ -477,6 +477,8 @@ class TestMideaCDDevice:
 
     def test_process_set_echo_updates_fields(self) -> None:
         """A controlType=0x01 SET echo stores fields for later writes."""
+        # Pre-set power so the SET echo guard doesn't change test behavior
+        self.device._attributes[DeviceAttributes.power] = True
         body = bytearray([0x01, 0x01, 0x01, 0x02, 110, 1, 2, 3, 0x10, 0x00, 30])
         new_status = self.device.process_message(
             _build_message(MessageType.set, body),
@@ -487,6 +489,7 @@ class TestMideaCDDevice:
             "ptcTemp": 3,
             "byte8": 0x10,
         }
+        # Power is not updated from SET echoes (midea_ac_lan#768 fix)
         assert self.device.attributes[DeviceAttributes.power] is True
         assert self.device.attributes[DeviceAttributes.mode] == "Standard"
         assert self.device.attributes[DeviceAttributes.target_temperature] == 40

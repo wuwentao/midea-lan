@@ -922,6 +922,10 @@ class TestEDMessageBodyFF:
         body = bytearray([0xFF, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01])
         message = EDMessageBodyFF(body=body)
         assert message.body_type == 255
+        # The CHILD_LOCK record is truncated (reading body[8] would raise),
+        # so parsing must stop before setting child_lock/power.
+        assert not hasattr(message, "child_lock")
+        assert not hasattr(message, "power")
 
     def test_ed_message_ff_life_only_breaks(self) -> None:
         """Test EDMessageBodyFF stops after a life-only body."""
@@ -1116,6 +1120,9 @@ class TestMessageEDResponse:
         body = bytearray([ListTypes.X09] + [0x00] * 59)
         message = MessageEDResponse(bytes(header + body))
         assert message.body_type == ListTypes.X09
+        # notify2 is not dispatched, so the X09 body must not be parsed:
+        # the response keeps the generic body and never gains velocity.
+        assert not hasattr(message, "velocity")
 
     def test_ed_unhandled_body_type_falls_through(self) -> None:
         """Test response dispatch falls through for unhandled body type."""

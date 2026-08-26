@@ -8,9 +8,11 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
+    WORK_MODE_MAP,
     MessageBFResponse,
     MessageQuery,
     MessageSet,
+    WorkStatus,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ class DeviceAttributes(StrEnum):
     high_temperature = "high_temperature"
     probe_mode = "probe_mode"
     probe = "probe"
-    error_code = "error_code"
+    error = "error"
     ramadan = "ramadan"
     # Multi-stage cooking
     totalstep = "totalstep"
@@ -127,6 +129,26 @@ _WORK_MODE_SETTABLE_ATTRS: frozenset[DeviceAttributes] = frozenset(
     },
 )
 
+# Numeric attributes serialized with bit-shift / mask operations on MessageSet.
+# Callers (e.g. Home Assistant number entities) may pass floats, so coerce to int
+# before assignment to avoid a TypeError during serialization.
+_INT_ATTRS: frozenset[DeviceAttributes] = frozenset(
+    {
+        DeviceAttributes.temperature,
+        DeviceAttributes.temperature_above,
+        DeviceAttributes.temperature_underside,
+        DeviceAttributes.probe_temperature,
+        DeviceAttributes.steam_quantity,
+        DeviceAttributes.weight,
+        DeviceAttributes.people_number,
+        DeviceAttributes.screen_luminance,
+        DeviceAttributes.volume,
+        DeviceAttributes.hour_set,
+        DeviceAttributes.minute_set,
+        DeviceAttributes.second_set,
+    },
+)
+
 
 class MideaBFDevice(MideaDevice):
     """Midea BF device."""
@@ -171,6 +193,11 @@ class MideaBFDevice(MideaDevice):
         """
         message = MessageSet(self._message_protocol_version)
         message.work_mode = self._attributes[DeviceAttributes.work_mode]
+        # Carry the configured cook time so a work-mode resend keeps it instead
+        # of defaulting to zero (see _build_work_mode_control).
+        message.work_hour = self._attributes[DeviceAttributes.hour_set]
+        message.work_minute = self._attributes[DeviceAttributes.minute_set]
+        message.work_second = self._attributes[DeviceAttributes.second_set]
         message.fire_power = self._attributes[DeviceAttributes.fire_power]
         message.temperature = self._attributes[DeviceAttributes.temperature]
         message.temperature_above = self._attributes[DeviceAttributes.temperature_above]
@@ -197,6 +224,15 @@ class MideaBFDevice(MideaDevice):
                     value,
                 )
                 return
+            # Reject names not in WorkStatus so an unknown status is not silently
+            # serialized as the 0xFF no-change sentinel.
+            if value not in WorkStatus.__members__:
+                _LOGGER.warning(
+                    "[%s] Unsupported status value: %s",
+                    self.device_id,
+                    value,
+                )
+                return
             message = MessageSet(self._message_protocol_version)
             message.work_status = value
             self.build_send(message)
@@ -206,12 +242,30 @@ class MideaBFDevice(MideaDevice):
             _LOGGER.warning("[%s] Unsupported attribute: %s", self.device_id, attr)
             return
 
+        # Reject work_mode names not in the mapping so they are not silently sent
+        # as a no-op (0xFF) command with no state change.
+        if attr == DeviceAttributes.work_mode and value not in WORK_MODE_MAP:
+            _LOGGER.warning(
+                "[%s] Unsupported work_mode value: %s",
+                self.device_id,
+                value,
+            )
+            return
+
         # Work-mode-related attributes need the current work_mode context so the
         # MessageSet routes to workModeControl instead of an empty setControl.
         if attr in _WORK_MODE_SETTABLE_ATTRS:
             message = self.make_message_set()
         else:
             message = MessageSet(self._message_protocol_version)
+        # Coerce numeric fields to int: MessageSet serializes them with >> and &,
+        # which raise TypeError on float input from callers like HA number entities.
+        if attr in _INT_ATTRS and isinstance(value, (int, float)):
+            value = int(value)
+        # A caller-set people_number must clear weight, otherwise the shared
+        # parse (weight always set) makes _build_work_mode_control prefer weight.
+        if attr == DeviceAttributes.people_number:
+            message.weight = None
         setattr(message, attr, value)
         self.build_send(message)
 

@@ -386,11 +386,8 @@ class MessageSet(MessageBFBase):
     def body(self) -> bytearray:
         """Message body. Override to set body_type from control type."""
         content = self._body  # determines and sets self.body_type
-        body = bytearray([])
-        if self.body_type is not None:
-            body.append(self.body_type)
-        if content is not None:
-            body.extend(content)
+        body = bytearray([self.body_type])
+        body.extend(content)
         return body
 
     @property
@@ -400,7 +397,26 @@ class MessageSet(MessageBFBase):
         Priority: work_mode > notWorkMode fields > setControl fields.
         body_type is dynamically set to match Lua's bodyBytes[0] control type.
         """
-        if self.work_mode is not None:
+        # work_mode and its parameter fields all route to workModeControl so a
+        # single parameter change (e.g. fire_power) still emits a valid body.
+        # hot_wind stays with notWorkMode below to match the Lua protocol.
+        work_mode_fields = [
+            self.work_mode,
+            self.work_hour,
+            self.work_minute,
+            self.work_second,
+            self.fire_power,
+            self.temperature,
+            self.temperature_above,
+            self.temperature_underside,
+            self.probe_temperature,
+            self.steam_quantity,
+            self.weight,
+            self.people_number,
+            self.pre_heat,
+            self.turntable,
+        ]
+        if any(field is not None for field in work_mode_fields):
             self.body_type = ListTypes.X01  # workModeControl
             return self._build_work_mode_control()
         not_work_mode_fields = [
@@ -464,8 +480,11 @@ class MessageSet(MessageBFBase):
             BYTE_DOOR_OPEN,
             BYTE_DOOR_CLOSE,
         )
-        screen_byte = self.screen_luminance or BYTE_FF
-        volume_byte = self.volume or BYTE_FF
+        # Use is None checks so a valid 0 value is preserved (0 != no-change).
+        screen_byte = (
+            BYTE_FF if self.screen_luminance is None else self.screen_luminance
+        )
+        volume_byte = BYTE_FF if self.volume is None else self.volume
         hot_wind_byte = self._bool_to_byte(
             self.hot_wind,
             BYTE_HOT_WIND_ON,
@@ -549,8 +568,8 @@ class MessageSet(MessageBFBase):
             probe_high = (self.probe_temperature >> 8) & BYTE_FF
             probe_low = self.probe_temperature & BYTE_FF
 
-        # Steam quantity
-        steam_byte = self.steam_quantity or BYTE_FF
+        # Steam quantity (is None check keeps a valid 0 from meaning no-change)
+        steam_byte = BYTE_FF if self.steam_quantity is None else self.steam_quantity
 
         # Weight / people number
         if self.weight is not None:
@@ -766,7 +785,13 @@ class MessageBFBody(MessageBody):
         )
 
     def _parse_steam_weight(self, body: bytearray) -> None:
-        """Parse steam_quantity and weight/people_number from body."""
+        """Parse steam_quantity and weight/people_number from body.
+
+        The protocol packs weight and people count into the same byte
+        (OFFSET_WEIGHT_PEOPLE); only one applies to the active work mode. Both
+        derived values are exposed, so consumers must read the field that
+        matches the current mode and ignore the other.
+        """
         sq = self.read_byte(body, OFFSET_STEAM_QUANTITY, BYTE_FF)
         self.steam_quantity = sq if sq != MAX_BYTE_VALUE else None
         b = self.read_byte(body, OFFSET_WEIGHT_PEOPLE, BYTE_FF)
@@ -823,7 +848,9 @@ class MessageBFBody(MessageBody):
         self.tank_ejected = bool(b & BIT_TANK_EJECTED)
         self.water_shortage = bool(b & BIT_WATER_SHORTAGE)
         self.water_change_reminder = bool(b & BIT_WATER_CHANGE)
-        self.error_code = bool(b & BIT_ERROR_CODE)
+        # Presence flag only (the protocol byte exposes no numeric code here),
+        # so name it `error` rather than implying a readable error code.
+        self.error = bool(b & BIT_ERROR_CODE)
         self.pre_heat = bool(b & BIT_PREHEAT)
 
     def _parse_byte33_flags(self, body: bytearray) -> None:

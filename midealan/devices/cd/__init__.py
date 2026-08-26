@@ -510,6 +510,13 @@ class MideaCDDevice(MideaDevice):
 
             elif attr == DeviceAttributes.power:
                 message.power = bool(value)
+                # Persist the explicitly requested power state now.  The
+                # process_message SET-echo guard distrusts the power bit from
+                # echoes, so without this the user's power request would not be
+                # stored until the next genuine status frame; a temperature or
+                # mode write in that window would read the stale value and
+                # replay it as an OFF command (midea_ac_lan#768).
+                self._attributes[DeviceAttributes.power] = bool(value)
 
             elif attr == DeviceAttributes.target_temperature:
                 message.target_temperature = float(value)

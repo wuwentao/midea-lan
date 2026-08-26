@@ -308,6 +308,30 @@ class TestMideaCDDevice:
         assert self.device._attributes[DeviceAttributes.power] is False
         assert status[DeviceAttributes.power.value] is False
 
+    def test_set_power_persists_requested_state(self) -> None:
+        """A power write must store the requested state immediately.
+
+        The SET-echo guard distrusts the power bit from echoes, so the
+        explicitly requested power must be persisted in set_attribute.
+        Otherwise a temperature/mode write before the next genuine status
+        frame would replay the stale value as an OFF command (midea_ac_lan#768).
+        """
+        self.device._attributes[DeviceAttributes.power] = False
+
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+
+        assert self.device._attributes[DeviceAttributes.power] is True
+
+    def test_set_power_off_persists_requested_state(self) -> None:
+        """A power-off write is persisted immediately too."""
+        self.device._attributes[DeviceAttributes.power] = True
+
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(DeviceAttributes.power.value, False)
+
+        assert self.device._attributes[DeviceAttributes.power] is False
+
     # ------------------------------------------------------------------ #
     # disinfection_temperature is read-only for CD                         #
     # ------------------------------------------------------------------ #

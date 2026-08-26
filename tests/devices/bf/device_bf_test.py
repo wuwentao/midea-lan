@@ -381,6 +381,12 @@ class TestMideaBFDevice:
             self.device.set_attribute(DeviceAttributes.work_mode, "not_a_mode")
             mock_build_send.assert_not_called()
 
+    def test_set_attribute_fire_power_unsupported_value(self) -> None:
+        """Unknown fire_power name is rejected instead of sent as a no-op."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.fire_power, "bogus")
+            mock_build_send.assert_not_called()
+
     def test_set_attribute_float_coerced_to_int(self) -> None:
         """Numeric attributes coerce float input to int before serialization.
 

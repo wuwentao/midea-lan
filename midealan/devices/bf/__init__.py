@@ -9,6 +9,7 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
     WORK_MODE_MAP,
+    FirePower,
     MessageBFResponse,
     MessageQuery,
     MessageSet,
@@ -247,6 +248,16 @@ class MideaBFDevice(MideaDevice):
         if attr == DeviceAttributes.work_mode and value not in WORK_MODE_MAP:
             _LOGGER.warning(
                 "[%s] Unsupported work_mode value: %s",
+                self.device_id,
+                value,
+            )
+            return
+
+        # Same for fire_power: an unknown name maps to the 0xFF no-change sentinel
+        # in MessageSet, which would silently re-issue the program unchanged.
+        if attr == DeviceAttributes.fire_power and value not in FirePower.__members__:
+            _LOGGER.warning(
+                "[%s] Unsupported fire_power value: %s",
                 self.device_id,
                 value,
             )

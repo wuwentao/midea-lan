@@ -133,82 +133,86 @@ class PowerFormats(IntEnum):
 class NewProtocolTags(IntEnum):
     """New protocol tags in query and response."""
 
+    wind_ud_angle = 0x0009
+    wind_lr_angle = 0x000A
     indoor_humidity = 0x0015  # queryType == "indoor_humidity"
     screen_display = 0x0017
     breezeless = 0x0018  # queryType == "fn_no_wind_sense"
     prompt_tone = 0x001A  # buzzerValue
-    indirect_wind = 0x0042  # prevent_straight_wind
-    fresh_air_1 = 0x0233
-    fresh_air_2 = 0x004B  # queryType == "fresh_air"
-    prevent_super_cool = 0x0049
-    auto_prevent_straight_wind = 0x0226
-    # Live self-clean status. Reported in B0 (set echo) and B1 (query) bodies.
-    # The same tag in a B5 capability body only advertises support, not state.
-    self_clean = 0x0039
+    voice_control = 0x0020
+    cool_hot_sense = 0x0021
+    volume_control = 0x0024
+    security = 0x0029
+    nobody_energy_save = 0x0030
+    intelligent_control = 0x0031
     wind_straight = 0x0032
     wind_avoid = 0x0033
     intelligent_wind = 0x0034
+    # Live self-clean status. Reported in B0 (set echo) and B1 (query) bodies.
+    # The same tag in a B5 capability body only advertises support, not state.
+    self_clean = 0x0039
     child_prevent_cold_wind = 0x003A
-    little_angel = 0x021B
-    cool_hot_sense = 0x0021
-    even_wind = 0x004E
-    security = 0x0029
-    voice_control = 0x0020
-    single_tuyere = 0x004F
-    extreme_wind = 0x004C
-    pre_cool_hot = 0x0201
-    water_washing = 0x004A
+    error_code_query = 0x003F
+    mode_query = 0x0041
+    indirect_wind = 0x0042  # prevent_straight_wind
     gentle_wind_sense = 0x0043
-    parent_control = 0x0051
-    nobody_energy_save = 0x0030
-    filter_level = 0x0409
-    prevent_straight_wind_lr = 0x0058
-    pm25_value = 0x020B
-    water_pump = 0x0050
-    intelligent_control = 0x0031
-    volume_control = 0x0024
-    wind_ud_angle = 0x0009
-    wind_lr_angle = 0x000A
     face_register = 0x0044
+    high_temperature_monitor = 0x0047
+    rate_select = 0x0048
+    prevent_super_cool = 0x0049
+    water_washing = 0x004A
+    fresh_air_2 = 0x004B  # queryType == "fresh_air"
+    extreme_wind = 0x004C
+    even_wind = 0x004E
+    single_tuyere = 0x004F
+    water_pump = 0x0050
+    parent_control = 0x0051
+    prevent_straight_wind_lr = 0x0058
+    wind_around = 0x0059
     degerming = 0x005A
     light = 0x005B
-    wind_top = 0x0061
-    wind_around = 0x0059
-    remote_control_lock = 0x0227  # power_lock?
-    ptc_lock = 0x0229
-    offline_operating_time = 0x022B
-    operating_time = 0x0228
     child_lock = 0x005C
-    buzzer_all = 0x022C
     self_remove_odor_phase = 0x005D
     high_temp_remove_odor_alone = 0x005E
     ozone = 0x005F
+    wind_top = 0x0061
     soft_warm = 0x0063
-    fresh_air_parm = 0x0250
+    jet_cool = 0x0067
     rewarming_dry = 0x0068
     arom = 0x0069
-    # b5 device
-    b5_mode = 0x0214
-    b5_strong_wind = 0x021A
-    b5_wind_speed = 0x0210
-    b5_humidity = 0x021F
-    b5_temperature = 0x0225
-    b5_eco = 0x0212
-    b5_filter_remind = 0x0217
-    b5_filter_check = 0x0221
-    b5_fahrenheit = 0x0222
-    b5_electricity = 0x0216
-    b5_ptc = 0x0219
-    b5_wind_swing = 0x0215
-    b5_screen_display = 0x0224
-    b5_anion = 0x021E
-    b5_sound = 0x022C
-    rate_select = 0x0048
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
-    error_code_query = 0x003F
-    mode_query = 0x0041
-    high_temperature_monitor = 0x0047
+    ieco_switch = 0x00E3
+    pre_cool_hot = 0x0201
+    pm25_value = 0x020B
+    b5_wind_speed = 0x0210
+    b5_eco = 0x0212
+    b5_8_heat = 0x0213
+    # b5 device
+    b5_mode = 0x0214
+    b5_wind_swing = 0x0215
+    b5_electricity = 0x0216
+    b5_filter_remind = 0x0217
+    b5_ptc = 0x0219
+    b5_strong_wind = 0x021A
+    little_angel = 0x021B
+    b5_anion = 0x021E
+    b5_humidity = 0x021F
+    b5_filter_check = 0x0221
+    b5_fahrenheit = 0x0222
+    b5_screen_display = 0x0224
+    b5_temperature = 0x0225
+    auto_prevent_straight_wind = 0x0226
+    remote_control_lock = 0x0227  # power_lock?
+    operating_time = 0x0228
+    ptc_lock = 0x0229
+    offline_operating_time = 0x022B
+    buzzer_all = 0x022C  # b5_sound
+    twins_machine = 0x0232
+    fresh_air_1 = 0x0233
+    body_check = 0x0234
+    fresh_air_parm = 0x0250
+    filter_level = 0x0409
 
 
 class MessageACBase(MessageRequest):
@@ -1217,8 +1221,9 @@ class CapabilityBody(NewProtocolMessageBody):
             self.temperature_limits = {1: auto, 2: cool, 3: cool, 4: heat, 5: cool}
         if NewProtocolTags.b5_screen_display in params:
             self.b5_screen_display = params[NewProtocolTags.b5_screen_display][0]
-        if NewProtocolTags.b5_sound in params:
-            self.b5_sound = params[NewProtocolTags.b5_sound][0]
+        if NewProtocolTags.buzzer_all in params:
+            # b5_sound/buzzer_all
+            self.b5_sound = params[NewProtocolTags.buzzer_all][0]
         if NewProtocolTags.b5_humidity in params:
             self.b5_humidity = params[NewProtocolTags.b5_humidity][0]
         self._parse_capabilities(params)

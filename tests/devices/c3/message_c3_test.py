@@ -703,8 +703,8 @@ class TestC3Energy32BitCounters:
         assert response.total_thermal0 == 0x05060708
         assert response.heat_elec_total_consum0 == 0x090A0B0C
         assert response.heat_elec_total_capacity0 == 0x0D0E0F10
-        
-        
+
+
 class TestC3UnitParaNotify:
     """The MSG_TYPE_UP_UNITPARA notify body (message type 0x04, body 0x05).
 

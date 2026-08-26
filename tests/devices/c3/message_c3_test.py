@@ -506,7 +506,8 @@ class TestMessageC3Response:
         body[2] = 2  # unit_mode_run
         body[3] = 8  # fan_speed / 10
         body[4] = 2  # not fan_speed, must not leak into it
-        body[6] = 9  # fg_capacity_need
+        body[5] = 9  # fg_capacity_need
+        body[6] = 3  # tempset, disabled in the lua; must not leak into it
         body[8] = 30  # temp_t4
         body[10] = 40  # temp_tw_in
         body[11] = 35  # temp_tw_out
@@ -785,3 +786,62 @@ class TestC3UnitParaNotify:
         assert hasattr(response, "silent_mode")
         assert response.silent_mode is True
         assert not hasattr(response, "comp_run_freq")
+
+
+class TestC3UnitParaLuaOffsets:
+    """Offsets in the X10 body checked against the official C3 lua protocol.
+
+    Reference: `T_0000_C3_171H120F_2023062601.lua`, `MSG_TYPE_QUERY_UNITPARA`.
+    The lua is 1-indexed, so `_bodyBytes[N]` is `body[data_offset + N - 1]`.
+    Each case places a distinct decoy on the byte the parser used to read, so
+    a regression cannot pass by picking up the neighbouring value.
+    """
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.query],
+    )
+
+    @staticmethod
+    def _build_response(values: dict[int, int]) -> MessageC3Response:
+        """Build an X10 query response with the given body bytes set."""
+        body = bytearray(96)
+        body[0] = ListTypes.X10
+        for index, value in values.items():
+            body[index] = value
+        return MessageC3Response(bytes(TestC3UnitParaLuaOffsets.HEADER + body))
+
+    def test_fg_capacity_need_lua_byte_5(self) -> None:
+        """Test fg_capacity_need is lua _bodyBytes[5], not the tempset byte."""
+        response = self._build_response({5: 9, 6: 3})
+        assert hasattr(response, "fg_capacity_need")
+        assert response.fg_capacity_need == 9
+
+    def test_current_unit_capacity_is_16_bit(self) -> None:
+        """Test current_unit_capacity is lua _bodyBytes[58] * 256 + [59]."""
+        response = self._build_response({58: 2, 59: 44})
+        assert hasattr(response, "current_unit_capacity")
+        assert response.current_unit_capacity == 556
+
+    def test_pwm_pump_out_lua_byte_65(self) -> None:
+        """Test pwm_pump_out is lua _bodyBytes[65], decoded independently."""
+        response = self._build_response({64: 46, 65: 80, 66: 99})
+        assert hasattr(response, "room_rel_hum")
+        assert hasattr(response, "pwm_pump_out")
+        assert response.room_rel_hum == 46
+        assert response.pwm_pump_out == 80
+
+    def test_total_renew_power0_is_32_bit(self) -> None:
+        """Test total_renew_power0 is lua _bodyBytes[87..90], not [85..86]."""
+        response = self._build_response({85: 1, 86: 244, 89: 1, 90: 2})
+        assert hasattr(response, "instant_renew_power0")
+        assert hasattr(response, "total_renew_power0")
+        assert response.instant_renew_power0 == 500
+        assert response.total_renew_power0 == 258
+
+    def test_short_body_does_not_raise(self) -> None:
+        """Test a body that stops at the old maximum still parses."""
+        body = bytearray(88)  # body type + 86 data bytes + CRC
+        body[0] = ListTypes.X10
+        response = MessageC3Response(bytes(self.HEADER + body))
+        assert hasattr(response, "total_renew_power0")
+        assert response.total_renew_power0 == 0

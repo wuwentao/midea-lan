@@ -420,7 +420,8 @@ class C3UnitParaBody(MessageBody):
         # nearly constant while the unit runs, so fan_speed was reported as a
         # fixed low value (typically 20) regardless of the real fan command.
         self.fan_speed = body[data_offset + 2] * FAN_SPEED_FACTOR
-        self.fg_capacity_need = body[data_offset + 5]
+        # lua _bodyBytes[5]; data_offset + 5 is the disabled `tempset` byte.
+        self.fg_capacity_need = body[data_offset + 4]
         self.temp_t3 = body[data_offset + 6]
         self.temp_t4 = body[data_offset + 7]
         self.temp_tp = body[data_offset + 8]
@@ -456,12 +457,21 @@ class C3UnitParaBody(MessageBody):
         self.idu_t1s2 = body[data_offset + 53]
         self.water_flower = body[data_offset + 54] * 256 + body[data_offset + 55]
         self.odu_plan_vol_lmt = body[data_offset + 56]
-        self.current_unit_capacity = body[data_offset + 57]
+        # lua _bodyBytes[58] * 256 + _bodyBytes[59]; the low byte was dropped.
+        self.current_unit_capacity = (
+            body[data_offset + 57] * 256 + body[data_offset + 58]
+        )
         self.sphera_ahs_voltage = body[data_offset + 59]
         self.temp_t4a_ver = body[data_offset + 60]
         self.water_pressure = body[data_offset + 61] * 256 + body[data_offset + 62]
         self.room_rel_hum = body[data_offset + 63]
-        self.pwm_pump_out = body[data_offset + 63]
+        # lua _bodyBytes[65]; data_offset + 63 duplicated room_rel_hum.
+        # On a 171H120F this byte reads 0 while the MSG_TYPE_UP_UNITPARA
+        # notify reports pwmPumpOut = 99, so this firmware appears not to
+        # populate it in the query response. _bodyBytes[66], which happens
+        # to hold a constant 99, is marked reserved by the lua and is not
+        # used here.
+        self.pwm_pump_out = body[data_offset + 64]
         self.total_electricity0 = (
             (body[data_offset + 66] << 24)
             + (body[data_offset + 67] << 16)
@@ -490,8 +500,15 @@ class C3UnitParaBody(MessageBody):
         self.instant_renew_power0 = (body[data_offset + 84] << 8) + (
             body[data_offset + 85]
         )
-        self.total_renew_power0 = (body[data_offset + 84] << 8) + (
-            body[data_offset + 85]
+        # lua _bodyBytes[87..90] as a 32 bit value; data_offset + 84,85
+        # duplicated instant_renew_power0. Read defensively: the lua frame runs
+        # to _bodyBytes[191] but this parser previously stopped at
+        # data_offset + 85, so shorter bodies must not raise.
+        self.total_renew_power0 = (
+            (self.read_byte(body, data_offset + 86) << 24)
+            + (self.read_byte(body, data_offset + 87) << 16)
+            + (self.read_byte(body, data_offset + 88) << 8)
+            + self.read_byte(body, data_offset + 89)
         )
 
 

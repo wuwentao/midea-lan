@@ -356,3 +356,50 @@ class TestMideaC3Device:
         assert self.device.attributes[DeviceAttributes.comp_run_freq] == 57
         assert self.device.attributes[DeviceAttributes.unit_mode_run] == 2
         assert self.device.attributes[DeviceAttributes.fan_speed] == 640
+
+    def test_process_message_unit_para_exposes_odu_telemetry(self) -> None:
+        """Test the X10 telemetry values reach the device attributes.
+
+        Real capture from a Hyundai HYHC-V30W/D2RN8 (OEM-equivalent Midea
+        MHC-V30W/D2RN8, protocol 3, module 171H120F). The unit serial in the
+        tail of the frame has been replaced with zeroes; no parsed field is
+        affected.
+        """
+        header = bytearray(
+            [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03],
+        )
+        body = bytes.fromhex(
+            "1021023f0205002426500d0b7f070000000300e200881e0100000000040081482048"
+            "0b190a0919197f7f64042400640f03220c3536ffff00000000000000000000006300"
+            "002fa000000000000008c90000000000e600000000000000000015172d2d2d2d2d2d"
+            "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d"
+            "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d30303030303030303030"
+            "303030303030303030303030303030303030303030300000000000000000",
+        )
+
+        new_status = self.device.process_message(bytes(header + body + bytes(1)))
+
+        expected = {
+            "comp_run_freq": 33,
+            "unit_mode_run": 2,
+            "fan_speed": 630,
+            "fg_capacity_need": 5,
+            "temp_t3": 36,
+            "temp_tp": 80,
+            "temp_tw_in": 13,
+            "temp_tw_out": 11,
+            "odu_comp_current": 3,
+            "odu_voltage": 226,
+            "exv_current": 136,
+            "temp_t1": 11,
+            "temp_t2": 10,
+            "temp_t2b": 9,
+            "pressure_high": 1060,
+            "pressure_low": 100,
+            "temp_th": 15,
+            "odu_target_fre": 34,
+            "temp_tf": 54,
+        }
+        for name, value in expected.items():
+            assert new_status[name] == value, name
+            assert self.device.attributes[DeviceAttributes[name]] == value, name

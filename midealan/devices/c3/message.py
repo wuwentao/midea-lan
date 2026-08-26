@@ -431,7 +431,9 @@ class C3UnitParaBody(MessageBody):
         self.hydbox_subtype = body[data_offset + 12]
         self.fg_usb_info_connect = body[data_offset + 13]
         # self.usb_index_max  body[data_offset + 14]
-        # self.odu_comp_current  body[data_offset + 16]
+        # lua _bodyBytes[17], compressor current in A. Already decoded by
+        # C3UnitParaUpBody; enabled here so the polled response carries it too.
+        self.odu_comp_current = body[data_offset + 16]
         self.odu_voltage = body[data_offset + 17] * 256 + body[data_offset + 18]
         self.exv_current = body[data_offset + 19] * 256 + body[data_offset + 20]
         self.odu_model = body[data_offset + 21]

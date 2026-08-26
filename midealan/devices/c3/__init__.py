@@ -71,6 +71,20 @@ class DeviceAttributes(StrEnum):
     comp_run_freq = "comp_run_freq"
     unit_mode_run = "unit_mode_run"
     fan_speed = "fan_speed"
+    temp_t1 = "temp_t1"
+    temp_t2 = "temp_t2"
+    temp_t2b = "temp_t2b"
+    temp_t3 = "temp_t3"
+    temp_tp = "temp_tp"
+    temp_th = "temp_th"
+    temp_tf = "temp_tf"
+    pressure_high = "pressure_high"
+    pressure_low = "pressure_low"
+    odu_voltage = "odu_voltage"
+    odu_comp_current = "odu_comp_current"
+    odu_target_fre = "odu_target_fre"
+    exv_current = "exv_current"
+    fg_capacity_need = "fg_capacity_need"
     instant_power0 = "instant_power0"
     silent_mode = "silent_mode"
     silent_level = "silent_level"
@@ -144,6 +158,20 @@ class MideaC3Device(MideaDevice):
                 DeviceAttributes.comp_run_freq: None,
                 DeviceAttributes.unit_mode_run: None,
                 DeviceAttributes.fan_speed: None,
+                DeviceAttributes.temp_t1: None,
+                DeviceAttributes.temp_t2: None,
+                DeviceAttributes.temp_t2b: None,
+                DeviceAttributes.temp_t3: None,
+                DeviceAttributes.temp_tp: None,
+                DeviceAttributes.temp_th: None,
+                DeviceAttributes.temp_tf: None,
+                DeviceAttributes.pressure_high: None,
+                DeviceAttributes.pressure_low: None,
+                DeviceAttributes.odu_voltage: None,
+                DeviceAttributes.odu_comp_current: None,
+                DeviceAttributes.odu_target_fre: None,
+                DeviceAttributes.exv_current: None,
+                DeviceAttributes.fg_capacity_need: None,
                 DeviceAttributes.instant_power0: None,
                 DeviceAttributes.error_code: 0,
             },

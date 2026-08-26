@@ -825,17 +825,37 @@ class NewProtocolPackLength(IntEnum):
 class NewProtocolMessageBody(MessageBody):
     """New protocol message body."""
 
-    def __init__(self, body: bytearray, bt: int) -> None:
+    def __init__(self, body: bytearray) -> None:
         """Initialize new protocol message body."""
         super().__init__(body)
-        if bt == ListTypes.B5:
+        if self.body_type == ListTypes.B5:
             self._pack_len = NewProtocolPackLength.FOUR
+        elif self.body_type in [ListTypes.B0, ListTypes.B1]:
+            self._pack_len = NewProtocolPackLength.FIVE
         else:
             self._pack_len = NewProtocolPackLength.FIVE
+            _LOGGER.debug(
+                "unknown body type %s, set len to %s",
+                self.body_type,
+                self._pack_len,
+            )
 
     @staticmethod
     def pack(param: int, value: bytearray, pack_len: int = 4) -> bytearray:
-        """Pack for new protocol."""
+        """Pack for new protocol.
+
+        Note: pack() defaults to the 4-byte format, while parse() infers the
+        length from body_type and uses the 5-byte format for B0/B1 bodies (and
+        for unknown types). This read/write asymmetry is intentional and
+        pre-existing: all current AC (devices/ac/message.py) and A1
+        (devices/a1/message.py) set-message producers build B0 set bodies with
+        the default pack_len=4, and real devices accept that wire format. The
+        5-byte branch here is therefore not exercised by any device today; it
+        exists only to mirror the 5-byte layout that parse() reads back from
+        B0/B1 notify/response bodies. Do not switch the producers to pack_len=5
+        without first confirming the on-wire format against a real device, as it
+        would change the bytes sent and may break working appliances.
+        """
         length = len(value)
         if pack_len == NewProtocolPackLength.FOUR:
             stream = bytearray([param & 0xFF, param >> 8, length]) + value
@@ -853,6 +873,10 @@ class NewProtocolMessageBody(MessageBody):
     def parse(self) -> dict[int, bytearray]:
         """Parse new protocol body."""
         result = {}
+        # Initialize before the try so a body too short to hold the param count
+        # (e.g. bytearray([0xB1])) returns {} instead of leaving param_count
+        # unbound for the debug log below (would raise UnboundLocalError).
+        param_count = 0
         try:
             pos = 2  # # 跳过协议头(b1)和参数数量
             param_count = self.data[1]  # 参数数量

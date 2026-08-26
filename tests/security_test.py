@@ -1,6 +1,6 @@
 """Midea local security test."""
 
-from hashlib import sha256
+from hashlib import md5, sha256
 
 import pytest
 from Crypto.Util.strxor import strxor
@@ -94,6 +94,13 @@ class TestCloudSecurity:
         encrypted = security.aes_encrypt(b"hello world")
         assert security.aes_decrypt(encrypted) == "hello world"
 
+    def test_set_aes_keys_with_bytes(self) -> None:
+        """Test AES keys can be provided as bytes."""
+        security = CloudSecurity("login_key", None, None)
+        security.set_aes_keys(b"0123456789abcdef", b"fedcba9876543210")
+        assert security._aes_key == b"0123456789abcdef"
+        assert security._aes_iv == b"fedcba9876543210"
+
     def test_aes_ecb_with_fixed_key(self) -> None:
         """Test AES ECB round trip with a fixed key and no IV."""
         security = CloudSecurity(
@@ -172,6 +179,16 @@ class TestMideaAirSecurity:
         assert (
             security.sign("http://host/v1/path", {"b": "2", "a": "1"}, "random")
             == "caf39a6385856d05eeb52e12657c753c95199834960a6b8ffdd69cd2c0b9c195"
+        )
+
+    def test_decrypt_appliance_lua(self) -> None:
+        """Test the legacy lua blob decrypts with the md5(app_key) ECB key."""
+        security = MideaAirSecurity("login_key")
+        # md5 mirrors the production key derivation; not used for security here.
+        key = md5(b"login_key").hexdigest()[:16].encode("ascii")  # noqa: S324
+        encrypted = security.aes_encrypt(b"function test() return 1 end", key).hex()
+        assert (
+            security.decrypt_appliance_lua(encrypted) == "function test() return 1 end"
         )
 
 
@@ -258,6 +275,21 @@ class TestLocalSecurity:
         assert incomplete == b""
         assert self.security._request_count == 1
         assert self.security._response_count == 0
+
+    def test_encode_decode_8370_encrypted_without_padding(self) -> None:
+        """Test 8370 round trip for encrypted data that needs no padding."""
+        self._authenticate()
+        data = bytes(range(14))
+        plain = self.security._request_count.to_bytes(2, "big") + data
+        header = bytearray([0x83, 0x70])
+        header += (len(plain) + 30).to_bytes(2, "big")
+        header += bytearray([0x20, MSGTYPE_ENCRYPTED_REQUEST])
+        sign = sha256(header + plain).digest()
+        encrypted = self.security.aes_cbc_encrypt(plain, self.security._tcp_key)
+        packet = bytes(header + encrypted + sign)
+        packets, incomplete = self.security.decode_8370(packet)
+        assert packets == [data]
+        assert incomplete == b""
 
     def test_encode_8370_request_count_rollover(self) -> None:
         """Test the request count rolls over at the maximum value."""

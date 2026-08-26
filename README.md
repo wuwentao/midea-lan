@@ -63,14 +63,100 @@ ac.set_target_temperature(23.0, None)
 ac.set_swing(False, False)
 ```
 
-### command line tool
+### Command line tool
 
-```python3
-# for local install without uv/venv
-python3 -m midealan.cli -h
-# for uv development venv
+The package installs a `midealan` console command. From a clone of this repository, create
+the development environment, install the package in editable mode, and activate the virtual
+environment first:
+
+```bash
+# Linux / macOS / WSL2
+git clone https://github.com/wuwentao/midea-lan.git
+cd midea-lan
+./scripts/setup.sh
+uv pip install -e .
+source .venv/bin/activate
+
+midealan --help
+```
+
+On Windows PowerShell, run `scripts\setup.ps1`, then `uv pip install -e .` and
+`.\.venv\Scripts\Activate.ps1` before using `midealan --help`. The console command is
+installed inside `.venv`, so use `uv run` when the virtual environment is not activated:
+
+```bash
 uv run python -m midealan.cli -h
 ```
+
+Available commands are `discover`, `decode`, `save`, `download`, and `setattr`. Run
+`midealan <command> --help` (or the `uv run` equivalent) for command-specific options.
+
+### Downloading cloud Lua and plugin files
+
+The `download` command signs in to a supported Midea cloud account, downloads the Lua
+protocol file for each selected appliance, then tries to download its plugin. Files are
+written to the current working directory. Use a separate empty directory if you want to
+keep the downloads together.
+
+Collected Lua files are published for reference in
+[wuwentao/midea-lua](https://github.com/wuwentao/midea-lua); contributions with additional
+device Lua files are welcome there.
+
+```text
+midealan download [--debug] --username USERNAME --password PASSWORD \
+  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
+```
+
+When working from a checkout, replace `midealan` in the examples below with
+`uv run python -m midealan.cli`.
+
+Supported `--cloud-name` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
+and `Ariston Clima`.
+
+Download for a device discovered at a LAN address:
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --host 192.0.2.121
+```
+
+Download for one serial number from the cloud account:
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-sn "0000005112429652937220340014X2X3"
+```
+
+Pass an explicit hexadecimal device type when the serial number does not identify the
+device type correctly:
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-sn "0000005112429652937220340014X2X3" --device-type AC
+```
+
+Omit both `--host` and `--device-sn` to process every appliance in the cloud account:
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password"
+```
+
+`--host` takes precedence when it is supplied with `--device-sn`; LAN discovery provides
+the serial number, type, and model. For a serial-number download, the device type is
+resolved in this order: `--device-type`, a matching appliance in the cloud account, then
+the legacy type byte in the serial number. A malformed or unsupported serial-number
+fallback uses type `0`, so pass `--device-type` when known.
+
+Each appliance is handled independently during account-wide downloads. A Lua or plugin
+failure is logged and later appliances continue to be processed. `美的美居` and
+`SmartHome` support Lua and plugin downloads. The legacy `Midea Air`, `NetHome Plus`, and
+`Ariston Clima` backend supports Lua downloads but not plugin downloads; the command logs
+a warning after a successful Lua download. Add `--debug` when diagnosing a failed request,
+and verify the files actually created in the working directory.
 
 ## Development
 

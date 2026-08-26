@@ -231,6 +231,16 @@ class TestMideaCEDevice:
         self.device.set_customize('{"speed_count": 5}')
         assert self.device.speed_count == 5
 
+    def test_set_customize_empty_object(self) -> None:
+        """Test set customize with an empty JSON object keeps the default."""
+        self.device.set_customize("{}")
+        assert self.device.speed_count == 7
+
+    def test_set_customize_empty(self) -> None:
+        """Test set customize with empty input keeps the default."""
+        self.device.set_customize("")
+        assert self.device.speed_count == 7
+
     def test_set_customize_invalid_json(self) -> None:
         """Test set customize with invalid JSON keeps the default."""
         self.device.set_customize("{")

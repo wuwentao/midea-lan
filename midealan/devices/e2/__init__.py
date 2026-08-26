@@ -11,10 +11,10 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
     MessageE2Response,
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 
 
@@ -81,12 +81,6 @@ class DeviceAttributes(StrEnum):
     day_water_consumption = "day_water_consumption"
     volume = "volume"
     rate = "rate"
-
-
-# E2 subtype 255 devices use literal Celsius values in the target-temperature
-# command.  Other E2 variants use the legacy half-degree wire representation
-# unless ``precision_halves`` is explicitly enabled.
-_LITERAL_TEMPERATURE_SUBTYPES = frozenset({255})
 
 
 class MideaE2Device(MideaDevice):
@@ -193,6 +187,16 @@ class MideaE2Device(MideaDevice):
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
                 if (
+                    self._precision_halves
+                    and value is not None
+                    and status
+                    in (
+                        DeviceAttributes.current_temperature,
+                        DeviceAttributes.target_temperature,
+                    )
+                ):
+                    value = value / 2
+                if (
                     status == DeviceAttributes.heating_power
                     and value is not None
                     and self._heating_power_multiplier != 1.0
@@ -217,27 +221,38 @@ class MideaE2Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea E2 device set attribute."""
-        message: MessagePower | MessageSet | MessageNewProtocolSet | None = None
+        message: MessagePower | MessageSet | NewProtocolSet | None = None
         if attr not in [
             DeviceAttributes.heating,
             DeviceAttributes.keep_warm,
             DeviceAttributes.current_temperature,
         ]:
             old_protocol = self._normalize_old_protocol(self._old_protocol)
-            if (
-                attr == DeviceAttributes.target_temperature
-                and not self._precision_halves
-                and self.subtype not in _LITERAL_TEMPERATURE_SUBTYPES
-            ):
+            if self._precision_halves and attr == DeviceAttributes.target_temperature:
                 value = value * 2
             if attr == DeviceAttributes.power:
                 message = MessagePower(self._message_protocol_version)
                 message.power = bool(value)
             elif old_protocol == OldProtocol.true:
                 message = self.make_message_set()
+                if not hasattr(message, str(attr)):
+                    # MessageSet only carries protection, whole_tank_heating,
+                    # target_temperature and variable_heating. setattr() would
+                    # happily create an unused attribute and the message would
+                    # be sent without the requested change, so the command is
+                    # silently lost. Ignore it instead, and tell the user how
+                    # to opt in to the new protocol if the device supports it.
+                    _LOGGER.warning(
+                        "[%s] Attribute %s is not supported by the old protocol "
+                        "and was ignored. If your device supports the new "
+                        'protocol, set customize to {"old_protocol": false}.',
+                        self.device_id,
+                        attr,
+                    )
+                    return
                 setattr(message, str(attr), value)
             else:
-                message = MessageNewProtocolSet(self._message_protocol_version)
+                message = NewProtocolSet(self._message_protocol_version)
                 setattr(message, str(attr), value)
             self.build_send(message)
 

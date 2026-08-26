@@ -1,5 +1,6 @@
 """Test E6 device."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -67,6 +68,15 @@ class TestMideaE6Device:
             assert result[DeviceAttributes.cold_water_dot.value] is False
             assert result[DeviceAttributes.heating_modes.value] == "home_mode"
 
+    def test_process_message_without_matching_attributes(self) -> None:
+        """Test process message ignores responses without known attributes."""
+        with patch(
+            "midealan.devices.e6.MessageE6Response",
+            return_value=SimpleNamespace(),
+        ):
+            result = self.device.process_message(b"")
+        assert result == {}
+
     def test_temperature_step(self) -> None:
         """Test temperature_step property reflects customize."""
         assert self.device.temperature_step == 1.0
@@ -128,3 +138,13 @@ class TestMideaE6Device:
             customize="not-valid-json",
         )
         assert device.temperature_step is None
+
+    def test_set_customize_empty_and_empty_object(self) -> None:
+        """Test set_customize ignores empty input and updates empty JSON."""
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("")
+            mock_update_all.assert_not_called()
+
+        with patch.object(self.device, "update_all") as mock_update_all:
+            self.device.set_customize("{}")
+            mock_update_all.assert_called_once_with({"temperature_step": 1.0})

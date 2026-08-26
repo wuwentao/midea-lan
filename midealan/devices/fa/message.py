@@ -177,7 +177,7 @@ class MessageSet(MessageFABase):
             else:
                 _body_return[2] = 2
         if self.mode is not None:
-            _body_return[3] = 1 | (((self.mode + 1) << 1) & 0x1E)
+            _body_return[3] = 1 | ((self.mode << 1) & 0x3E)
         if self.fan_speed is not None and 1 <= self.fan_speed <= MAX_FAN_SPEED:
             _body_return[4] = self.fan_speed
         if self.oscillate is not None:
@@ -228,9 +228,7 @@ class FAGeneralMessageBody(MessageBody):
         else:
             self.child_lock = False
         self.power = (body[4] & 0x01) > 0
-        mode = (body[4] & 0x1E) >> 1
-        if mode > 0:
-            self.mode = mode - 1
+        self.mode = (body[4] & 0x3E) >> 1
         fan_speed = body[5]
         if 1 <= fan_speed <= MAX_FAN_SPEED:
             self.fan_speed = fan_speed

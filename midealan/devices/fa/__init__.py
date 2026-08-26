@@ -62,21 +62,29 @@ class MideaFADevice(MideaDevice):
         "Reserved",
         "Both",
     ]
-    _modes: ClassVar[list[str]] = [
-        "Normal",
-        "Natural",
-        "Sleep",
-        "Comfort",
-        "Silent",
-        "Baby",
-        "Induction",
-        "Circulation",
-        "Strong",
-        "Soft",
-        "Customize",
-        "Warm",
-        "Smart",
-    ]
+    _modes: ClassVar[dict[int, str]] = {
+        0x00: "Invalid",
+        0x01: "Normal",
+        0x02: "Natural",
+        0x03: "Sleep",
+        0x04: "Comfort",
+        0x05: "Mute",
+        0x06: "Baby",
+        0x07: "Feel",
+        0x08: "Storm",
+        0x09: "Strong",
+        0x0A: "Soft",
+        0x0B: "Customize",
+        0x0C: "Warm",
+        0x0D: "Smart",
+        0x0E: "Ionic",
+        0x0F: "AI_Smart",
+        0x10: "Double_Area",
+        0x11: "Purified_Wind",
+        0x12: "Sleeping_Wind",
+        0x13: "Purify_Only",
+        0x14: "Self_Selection",
+    }
 
     def __init__(
         self,
@@ -129,7 +137,7 @@ class MideaFADevice(MideaDevice):
     @property
     def preset_modes(self) -> list[str]:
         """Return a list of preset modes."""
-        return self._modes
+        return list(MideaFADevice._modes.values())
 
     def build_query(self) -> list[MessageQuery]:
         """Midea FA device build query."""
@@ -163,10 +171,7 @@ class MideaFADevice(MideaDevice):
                     else:
                         self._attributes[status] = None
                 elif status == DeviceAttributes.mode:
-                    if value < len(MideaFADevice._modes):
-                        self._attributes[status] = MideaFADevice._modes[value]
-                    else:
-                        self._attributes[status] = None
+                    self._attributes[status] = MideaFADevice._modes.get(value)
                 elif status == DeviceAttributes.power:
                     self._attributes[status] = value
                     if not value:
@@ -311,9 +316,12 @@ class MideaFADevice(MideaDevice):
             message.fan_speed = int(value)
             message.power = True
         elif attr == DeviceAttributes.mode:
-            if value in MideaFADevice._modes:
+            if value in MideaFADevice._modes.values():
                 message = MessageSet(self._message_protocol_version, self.subtype)
-                message.mode = MideaFADevice._modes.index(str(value))
+                message.mode = MideaFADevice.get_dict_key_by_value(
+                    "_modes",
+                    str(value),
+                )
         elif not (attr == DeviceAttributes.fan_speed and value == 0):
             message = MessageSet(self._message_protocol_version, self.subtype)
             setattr(message, str(attr), value)
@@ -326,8 +334,8 @@ class MideaFADevice(MideaDevice):
         message.power = True
         if fan_speed is not None:
             message.fan_speed = fan_speed
-        if mode is not None and mode in MideaFADevice._modes:
-            message.mode = MideaFADevice._modes.index(mode)
+        if mode is not None and mode in MideaFADevice._modes.values():
+            message.mode = MideaFADevice.get_dict_key_by_value("_modes", mode)
         self.build_send(message)
 
     def set_customize(self, customize: str) -> None:

@@ -274,6 +274,14 @@ class _FilledBodyRequest(MessageRequest):
         return bytearray([0x11, 0x22])
 
 
+class _NoBodyRequest(MessageRequest):
+    """Message request with no body content for testing."""
+
+    @property
+    def _body(self) -> bytearray | None:  # type: ignore[override]
+        return None
+
+
 class TestMessageRequest:
     """Test MessageRequest."""
 
@@ -299,6 +307,27 @@ class TestMessageRequest:
         assert message.body == bytearray([0x01, 0x11, 0x22])
         serialized = message.serialize()
         assert serialized[10:-1] == bytearray([0x01, 0x11, 0x22])
+
+    def test_body_without_body_type(self) -> None:
+        """Test body can omit the body type."""
+        message = _FilledBodyRequest(
+            device_type=DeviceType.AC,
+            protocol_version=3,
+            message_type=MessageType.query,
+            body_type=ListTypes.X01,
+        )
+        message.body_type = None  # type: ignore[assignment]
+        assert message.body == bytearray([0x11, 0x22])
+
+    def test_body_without_body_content(self) -> None:
+        """Test body can omit body content."""
+        message = _NoBodyRequest(
+            device_type=DeviceType.AC,
+            protocol_version=3,
+            message_type=MessageType.query,
+            body_type=ListTypes.X01,
+        )
+        assert message.body == bytearray([0x01])
 
 
 class TestMessageQuestCustom:
@@ -377,34 +406,43 @@ class TestNewProtocolMessageBody:
 
     def test_parse(self) -> None:
         """Test parse with 4 and 5 bytes pack length."""
+        # test B5 body with 4 bytes pack length
         body = NewProtocolMessageBody(
-            bytearray([0xB1, 0x01, 0x34, 0x12, 0x01, 0xAA]),
-            ListTypes.B5,
+            bytearray([0xB5, 0x01, 0x34, 0x12, 0x01, 0xAA]),
         )
         assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test B1 body with 5 bytes pack length
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
-            ListTypes.B1,
+        )
+        assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test B0 body with 5 bytes pack length
+        body = NewProtocolMessageBody(
+            bytearray([0xB0, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
+        )
+        assert body.parse() == {0x1234: bytearray([0xAA])}
+        # test unknown B9 body with 5 bytes pack length
+        body = NewProtocolMessageBody(
+            bytearray([0xB9, 0x01, 0x34, 0x12, 0x00, 0x01, 0xAA]),
         )
         assert body.parse() == {0x1234: bytearray([0xAA])}
 
     def test_parse_truncated_param(self) -> None:
         """Test parse stops when a declared param is missing."""
         body = NewProtocolMessageBody(
-            bytearray([0xB1, 0x02, 0x01, 0x00, 0x01, 0xAA]),
-            ListTypes.B5,
+            bytearray([0xB5, 0x02, 0x01, 0x00, 0x01, 0xAA]),
         )
         assert body.parse() == {0x0001: bytearray([0xAA])}
 
     def test_parse_truncated_after_param_id(self) -> None:
-        """Test parse stops when the body ends after the param id."""
-        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]), ListTypes.B5)
+        """Test parse stops at two distinct 5-byte truncation boundaries."""
+        # B1 -> 5-byte format. Body ends right after the param id, before the
+        # fixed 0x00 skip byte can be read.
+        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]))
         assert body.parse() == {}
-        body = NewProtocolMessageBody(bytearray([0xB1, 0x01, 0x01, 0x00]), ListTypes.B1)
-        assert body.parse() == {}
+        # Body ends after the fixed 0x00 skip byte, before the length byte.
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x01, 0x00, 0x00]),
-            ListTypes.B1,
         )
         assert body.parse() == {}
 
@@ -412,28 +450,26 @@ class TestNewProtocolMessageBody:
         """Test parse stops when the value is shorter than its length."""
         body = NewProtocolMessageBody(
             bytearray([0xB1, 0x01, 0x01, 0x00, 0x05, 0xAA]),
-            ListTypes.B5,
         )
         assert body.parse() == {}
 
     def test_parse_zero_length_value(self) -> None:
         """Test parse skips params with a zero length value."""
+        # B1 -> 5-byte format: param 0x1234, fixed 0x00, then length 0x00.
         body = NewProtocolMessageBody(
-            bytearray([0xB1, 0x01, 0x01, 0x00, 0x00]),
-            ListTypes.B5,
+            bytearray([0xB1, 0x01, 0x34, 0x12, 0x00, 0x00]),
         )
         assert body.parse() == {}
 
     def test_parse_non_standard_short_body(self) -> None:
-        """Test parse with a body too short to hold the param count.
+        """Test parse returns {} for a body too short to hold the param count.
 
-        Source quirk (midealan/message.py:886-898): the IndexError handler
-        leaves `param_count` unbound, so the debug log after the handler
-        raises UnboundLocalError instead of returning an empty result.
+        A body such as bytearray([0xB1]) has no parameter-count byte, so
+        parse() catches the IndexError and returns an empty result instead of
+        raising UnboundLocalError from the trailing debug log.
         """
-        body = NewProtocolMessageBody(bytearray([0xB1]), ListTypes.B5)
-        with pytest.raises(UnboundLocalError):
-            body.parse()
+        body = NewProtocolMessageBody(bytearray([0xB1]))
+        assert body.parse() == {}
 
 
 class TestMessageResponse:
@@ -470,3 +506,19 @@ class TestMessageResponse:
         response.set_attr()
         assert response.body == bytearray([0xC0, 0x01])
         assert getattr(response, "power", False) is True
+
+    def test_set_attr_skips_data_key(self) -> None:
+        """Test set_attr does not copy a plain data key."""
+        message = bytearray(
+            [0xAA, 0x0C, 0xAC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xA0, 0xC0, 0x00],
+        )
+        response = MessageApplianceResponse(message)
+
+        class BodyWithData:
+            def __init__(self) -> None:
+                self.data = bytearray([0xC0])
+
+        response.set_body(BodyWithData())  # type: ignore[arg-type]
+        response.set_attr()
+        assert response.body == bytearray([0xC0])
+        assert "data" not in vars(response)

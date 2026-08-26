@@ -7,10 +7,10 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.e3 import DeviceAttributes, MideaE3Device
 from midealan.devices.e3.message import (
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 from midealan.message import MessageType
 
@@ -188,7 +188,7 @@ class TestMideaE3Device:
             self.device.set_attribute(attr.value, value)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-            assert isinstance(message, MessageNewProtocolSet)
+            assert isinstance(message, NewProtocolSet)
             assert message.key == attr.value
             assert message.value == value
 
@@ -202,7 +202,7 @@ class TestMideaE3Device:
             )
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-            assert isinstance(message, MessageNewProtocolSet)
+            assert isinstance(message, NewProtocolSet)
             assert message.value == 80.0
 
     @pytest.mark.parametrize(
@@ -259,6 +259,22 @@ class TestMideaE3Device:
         )
         assert self.device.temperature_step == 0.5
         assert self.device.precision_halves is True
+
+    def test_set_customize_partial_and_empty_object(self) -> None:
+        """Test set customize with partial and empty JSON payloads."""
+        self.device.set_customize('{"precision_halves": true}')
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is True
+
+        self.device.set_customize("{}")
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is False
+
+    def test_set_customize_empty(self) -> None:
+        """Test set customize with empty input keeps defaults."""
+        self.device.set_customize("")
+        assert self.device.temperature_step == 1.0
+        assert self.device.precision_halves is False
 
     def test_set_customize_invalid_json(self) -> None:
         """Test set customize with invalid JSON keeps defaults."""

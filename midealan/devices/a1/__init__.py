@@ -230,6 +230,10 @@ class MideaA1Device(MideaDevice):
                         for k in keys:
                             self._modes[k] = modes[k]
                         to_update["modes"] = self._modes
+                    if isinstance(params.get("prompt_tone"), bool):
+                        prompt_tone = params["prompt_tone"]
+                        self._attributes[DeviceAttributes.prompt_tone] = prompt_tone
+                        to_update[DeviceAttributes.prompt_tone.value] = prompt_tone
                     if to_update:
                         self.update_all(to_update)
             except Exception:

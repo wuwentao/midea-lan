@@ -1,5 +1,6 @@
 """Test da Device."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -106,6 +107,15 @@ class TestMideaDADevice:
             assert new_status[DeviceAttributes.detergent.value] is None
             assert new_status[DeviceAttributes.wash_strength.value] is None
 
+    def test_process_message_partial_response(self) -> None:
+        """Test process message skips missing response attributes."""
+        with patch(
+            "midealan.devices.da.MessageDAResponse",
+            return_value=SimpleNamespace(power=True),
+        ):
+            new_status = self.device.process_message(b"")
+        assert new_status == {DeviceAttributes.power.value: True}
+
     def test_build_query(self) -> None:
         """Test build query."""
         queries = self.device.build_query()
@@ -123,3 +133,9 @@ class TestMideaDADevice:
 
             with pytest.raises(ValueWrongType):
                 self.device.set_attribute(DeviceAttributes.start, "On")
+
+    def test_set_attribute_ignores_unknown_bool_attribute(self) -> None:
+        """Test unknown boolean attributes are ignored."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute("unknown", True)
+            mock_build_send.assert_not_called()

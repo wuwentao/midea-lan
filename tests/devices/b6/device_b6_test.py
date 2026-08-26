@@ -188,6 +188,22 @@ class TestMideaB6Device:
         assert self.device.preset_modes == ["Off", "Level 1", "Level 2"]
         assert self.device._power_speed == 2
 
+    def test_set_customize_default_speed_only(self) -> None:
+        """Test set customize with only the default speed."""
+        self.device.set_customize('{"default_speed": 1}')
+        assert self.device.preset_modes == ["Off", "Level 1", "Level 2"]
+        assert self.device._power_speed == 1
+
+    def test_set_customize_partial_and_empty(self) -> None:
+        """Test set customize with partial and empty payloads."""
+        self.device.set_customize('{"speeds": {"0": "Off"}}')
+        assert self.device.preset_modes == ["Off"]
+        assert self.device._power_speed == 2
+
+        self.device.set_customize("")
+        assert self.device.preset_modes == ["Off", "Level 1", "Level 2"]
+        assert self.device._power_speed == 2
+
     def test_set_customize_invalid(self) -> None:
         """Test set customize with invalid JSON keeps defaults."""
         self.device.set_customize("{")

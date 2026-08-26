@@ -5,33 +5,33 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.crc8 import calculate
 from midealan.devices.ac.message import (
+    A1_MIN_BODY_LENGTH,
+    CapabilitiesQuery,
+    GroupDataQuery,
+    GroupOneQuery,
+    GroupSevenQuery,
+    GroupTwoQuery,
+    GroupZeroQuery,
+    HumidityQuery,
     MessageA0LongQuery,
     MessageA0Query,
     MessageACBase,
     MessageACResponse,
-    MessageCapabilitiesQuery,
-    MessageGeneralSet,
-    MessageGroupDataQuery,
-    MessageGroupOneQuery,
-    MessageGroupSevenQuery,
-    MessageGroupTwoQuery,
-    MessageGroupZeroQuery,
-    MessageHumidityQuery,
-    MessageNewProtocolQuery,
-    MessageNewProtocolSelfCleanQuery,
-    MessageNewProtocolSet,
-    MessagePowerQuery,
     MessageQuery,
+    MessageSet,
     MessageSubProtocol,
-    MessageSubProtocolFreshAirSet,
-    MessageSubProtocolQuery10,
-    MessageSubProtocolQuery11,
-    MessageSubProtocolQuery30,
     MessageSubProtocolSet,
-    MessageToggleDisplay,
     NewProtocolQuery,
+    NewProtocolSelfCleanQuery,
+    NewProtocolSet,
     NewProtocolTags,
     PowerFormats,
+    PowerQuery,
+    SubProtocolFreshAirSet,
+    SubProtocolQuery10,
+    SubProtocolQuery11,
+    SubProtocolQuery30,
+    ToggleDisplay,
 )
 from midealan.message import ListTypes, MessageBase, MessageType
 
@@ -105,12 +105,12 @@ class TestMessageQuery:
         assert msg.body[:-2] == expected_body
 
 
-class TestMessageCapabilitiesQuery:
+class TestCapabilitiesQuery:
     """Test Message Capabilities Query."""
 
     def test_capabilities_query_body(self) -> None:
         """Test capabilities query body."""
-        msg = MessageCapabilitiesQuery(ProtocolVersion.V1, False)
+        msg = CapabilitiesQuery(ProtocolVersion.V1, False)
         expected_body = bytearray(
             [0xB5, 0x01, 0x00],
         )
@@ -118,7 +118,7 @@ class TestMessageCapabilitiesQuery:
 
     def test_capabilities_query_body_additional(self) -> None:
         """Test capabilities query body."""
-        msg = MessageCapabilitiesQuery(ProtocolVersion.V1, True)
+        msg = CapabilitiesQuery(ProtocolVersion.V1, True)
         expected_body = bytearray(
             [0xB5, 0x01, 0x01, 0x01],
         )
@@ -142,33 +142,33 @@ class TestMessageA0Query:
         assert msg.body[:-2] == expected_body
 
 
-class TestMessagePowerQuery:
+class TestPowerQuery:
     """Test Message Power Query."""
 
     def test_power_query_body(self) -> None:
         """Test power query body."""
-        msg = MessagePowerQuery(protocol_version=ProtocolVersion.V1)
+        msg = PowerQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray([0x41, 0x21, 0x01, 0x44, 0x00, 0x01])
         assert msg.body[:-1] == expected_body
 
 
-class TestMessageGroupDataQuery:
+class TestGroupDataQuery:
     """Test Message Group Data Query."""
 
     @pytest.mark.parametrize(
         ("message_class", "group"),
         [
-            (MessageGroupZeroQuery, 0),
-            (MessageGroupOneQuery, 1),
-            (MessageGroupTwoQuery, 2),
-            (MessagePowerQuery, 4),
-            (MessageHumidityQuery, 5),
-            (MessageGroupSevenQuery, 7),
+            (GroupZeroQuery, 0),
+            (GroupOneQuery, 1),
+            (GroupTwoQuery, 2),
+            (PowerQuery, 4),
+            (HumidityQuery, 5),
+            (GroupSevenQuery, 7),
         ],
     )
     def test_group_query_body(
         self,
-        message_class: type[MessageGroupDataQuery],
+        message_class: type[GroupDataQuery],
         group: int,
     ) -> None:
         """Test that every group query encodes its group number."""
@@ -177,32 +177,32 @@ class TestMessageGroupDataQuery:
         assert msg.body[:-1] == expected_body
 
 
-class TestMessageGroupZeroQuery:
+class TestGroupZeroQuery:
     """Test Message Group Zero Query."""
 
     def test_group_zero_query_body(self) -> None:
         """Test group zero query body."""
-        msg = MessageGroupZeroQuery(protocol_version=ProtocolVersion.V1)
+        msg = GroupZeroQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray([0x41, 0x21, 0x01, 0x40, 0x00, 0x01])
         assert msg.body[:-1] == expected_body
 
 
-class TestMessageHumidityQuery:
+class TestHumidityQuery:
     """Test Message Humidity Query."""
 
     def test_humidity_query_body(self) -> None:
         """Test humidity query body."""
-        msg = MessageHumidityQuery(protocol_version=ProtocolVersion.V1)
+        msg = HumidityQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray([0x41, 0x21, 0x01, 0x45, 0x00, 0x01])
         assert msg.body[:-1] == expected_body
 
 
-class TestMessageToggleDisplay:
+class TestToggleDisplay:
     """Test Message Toggle Display."""
 
     def test_toggle_disply_body(self) -> None:
         """Test toggle display body."""
-        msg = MessageToggleDisplay(protocol_version=ProtocolVersion.V1)
+        msg = ToggleDisplay(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [
                 0x41,
@@ -256,7 +256,7 @@ class TestMessageToggleDisplay:
         assert msg.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolQuery:
+class TestNewProtocolQuery:
     """Test Message New Protocol Query."""
 
     def test_new_protocol_query_body(self) -> None:
@@ -266,7 +266,7 @@ class TestMessageNewProtocolQuery:
         via the B5 b5_electricity capability; devices that never advertise it
         don't answer the query.
         """
-        msg = MessageNewProtocolQuery(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [
                 0xB1,
@@ -291,8 +291,8 @@ class TestMessageNewProtocolQuery:
                 NewProtocolTags.out_silent >> 8,
                 NewProtocolTags.buzzer_all & 0xFF,
                 NewProtocolTags.buzzer_all >> 8,
-                NewProtocolQuery.error_code_query & 0xFF,
-                NewProtocolQuery.error_code_query >> 8,
+                NewProtocolTags.error_code_query & 0xFF,
+                NewProtocolTags.error_code_query >> 8,
             ],
         )
 
@@ -302,7 +302,7 @@ class TestMessageNewProtocolQuery:
         self,
     ) -> None:
         """Test rate_select is appended once the device has advertised support."""
-        msg = MessageNewProtocolQuery(
+        msg = NewProtocolQuery(
             protocol_version=ProtocolVersion.V1,
             supports_rate_select=True,
         )
@@ -330,8 +330,8 @@ class TestMessageNewProtocolQuery:
                 NewProtocolTags.out_silent >> 8,
                 NewProtocolTags.buzzer_all & 0xFF,
                 NewProtocolTags.buzzer_all >> 8,
-                NewProtocolQuery.error_code_query & 0xFF,
-                NewProtocolQuery.error_code_query >> 8,
+                NewProtocolTags.error_code_query & 0xFF,
+                NewProtocolTags.error_code_query >> 8,
                 NewProtocolTags.rate_select & 0xFF,
                 NewProtocolTags.rate_select >> 8,
             ],
@@ -341,7 +341,7 @@ class TestMessageNewProtocolQuery:
 
     def test_new_protocol_self_clean_query_body(self) -> None:
         """Test new protocol self-clean query body."""
-        msg = MessageNewProtocolSelfCleanQuery(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSelfCleanQuery(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [
                 0xB1,
@@ -353,7 +353,7 @@ class TestMessageNewProtocolQuery:
         assert msg.body[:-2] == expected_body
 
 
-class TestMessageNewProtocolSetOutSilent:
+class TestNewProtocolSetOutSilent:
     """Test Message New Protocol Set for out_silent."""
 
     @pytest.mark.parametrize(
@@ -362,7 +362,7 @@ class TestMessageNewProtocolSetOutSilent:
     )
     def test_out_silent_on_off(self, value: bool, expected_byte: int) -> None:
         """Test out_silent set to on/off sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.out_silent = value
         body = msg.body
         assert body[0] == 0xB0
@@ -374,14 +374,14 @@ class TestMessageNewProtocolSetOutSilent:
 
     def test_out_silent_none_not_packed(self) -> None:
         """Test out_silent None does not add to payload."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         # out_silent defaults to None, should not be packed
         body = msg.body
         assert body[0] == 0xB0
         assert body[1] == 0x00  # 0 params packed
 
 
-class TestMessageNewProtocolSetAngles:
+class TestNewProtocolSetAngles:
     """Test Message New Protocol Set for wind angles and rate select."""
 
     @pytest.mark.parametrize(
@@ -390,7 +390,7 @@ class TestMessageNewProtocolSetAngles:
     )
     def test_wind_lr_angle(self, value: int, expected_byte: int) -> None:
         """Test wind_lr_angle set sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         # source annotates wind_lr_angle as bytes | None but the device sets ints
         setattr(msg, "wind_lr_angle", value)  # noqa: B010
         body = msg.body
@@ -407,7 +407,7 @@ class TestMessageNewProtocolSetAngles:
     )
     def test_wind_ud_angle(self, value: int, expected_byte: int) -> None:
         """Test wind_ud_angle set sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         # source annotates wind_ud_angle as bytes | None but the device sets ints
         setattr(msg, "wind_ud_angle", value)  # noqa: B010
         body = msg.body
@@ -420,7 +420,7 @@ class TestMessageNewProtocolSetAngles:
 
     def test_rate_select(self) -> None:
         """Test rate_select set sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.rate_select = 60
         body = msg.body
         assert body[0] == 0xB0
@@ -456,26 +456,26 @@ class TestMessageSubProtocol:
     def test_distinct_query_classes(self) -> None:
         """Test BB queries have independent protocol identities."""
         queries = [
-            MessageSubProtocolQuery10(ProtocolVersion.V1),
-            MessageSubProtocolQuery11(ProtocolVersion.V1),
-            MessageSubProtocolQuery30(ProtocolVersion.V1),
+            SubProtocolQuery10(ProtocolVersion.V1),
+            SubProtocolQuery11(ProtocolVersion.V1),
+            SubProtocolQuery30(ProtocolVersion.V1),
         ]
 
         assert [query.body[5] for query in queries] == [0x10, 0x11, 0x30]
         assert len({query.__class__.__name__ for query in queries}) == 3
 
 
-class TestMessageGroupOneQuery:
+class TestGroupOneQuery:
     """Test AC C1 group 0x41 query."""
 
     def test_query_body(self) -> None:
         """Test exact group 0x41 query body."""
-        message = MessageGroupOneQuery(ProtocolVersion.V1)
+        message = GroupOneQuery(ProtocolVersion.V1)
 
         assert message.body.hex() == "4121014100013c"
 
 
-class TestMessageSubProtocolFreshAirSet:
+class TestSubProtocolFreshAirSet:
     """Test BB fresh-air single-control commands."""
 
     @pytest.mark.parametrize(
@@ -535,7 +535,7 @@ class TestMessageSubProtocolFreshAirSet:
         expected: str,
     ) -> None:
         """Test exact intake and exhaust command bytes."""
-        message = MessageSubProtocolFreshAirSet(
+        message = SubProtocolFreshAirSet(
             ProtocolVersion.V1,
             power,
             speed,
@@ -625,12 +625,12 @@ class TestMessageSubProtocolSet:
         assert msg.body[:-2] == expected_body
 
 
-class TestMessageGeneralSet:
+class TestMessageSet:
     """Test Message General Set."""
 
     def test_general_set_body(self) -> None:
         """Test general set body."""
-        msg = MessageGeneralSet(protocol_version=ProtocolVersion.V1)
+        msg = MessageSet(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray(
             [
                 0x40,
@@ -797,6 +797,46 @@ class TestMessageACResponse:
         assert response.indoor_temperature == -1.3  # ((49 - 50) / 2) - 0.3 = -1.3
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature == -6.5  # ((40 - 50) / 2) - 1.5 = -6.5
+
+    def test_message_notify1_a1_short_body(self) -> None:
+        """Test Message parse notify1 A1 with a body too short to parse."""
+        self.header[9] = 0x04
+        # Real frame from a 00000Q1B / subtype 44204 unit: 7-byte body
+        # (last byte is the checksum and is stripped by MessageResponse).
+        # XA1MessageBody reads up to body[17], so it must be skipped, not parsed.
+        body = bytearray([0xA1, 0x00, 0x03, 0x8A, 0x95, 0xB6, 0xC1, 0x02])
+        response = MessageACResponse(self.header + body)
+
+        assert not hasattr(response, "indoor_temperature")
+        assert not hasattr(response, "outdoor_temperature")
+        assert not hasattr(response, "indoor_humidity")
+        assert not hasattr(response, "current_work_time")
+
+    def test_message_notify1_a1_body_length_boundary(self) -> None:
+        """Test Message parse notify1 A1 boundary at A1_MIN_BODY_LENGTH."""
+        self.header[9] = 0x04
+
+        # One byte short of the minimum: skipped, and must not raise.
+        # +1 accounts for the trailing checksum byte stripped by MessageResponse.
+        body = bytearray(A1_MIN_BODY_LENGTH - 1 + 1)
+        body[0] = 0xA1
+        response = MessageACResponse(self.header + body)
+        assert not hasattr(response, "indoor_temperature")
+
+        # Exactly the minimum: parsed.
+        body = bytearray(A1_MIN_BODY_LENGTH + 1)
+        body[0] = 0xA1
+        body[13] = 100  # Indoor temperature byte
+        body[14] = 60  # Outdoor temperature byte
+        body[17] = 50  # Indoor humidity byte
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "indoor_temperature")
+        assert response.indoor_temperature == 25.0  # (100 - 50) / 2
+        assert hasattr(response, "outdoor_temperature")
+        assert response.outdoor_temperature == 5.0  # (60 - 50) / 2
+        assert hasattr(response, "indoor_humidity")
+        assert response.indoor_humidity == 50
 
     def test_message_query_b5(self) -> None:
         """Test message query b5."""
@@ -1744,8 +1784,8 @@ class TestMessageACResponse:
         body = bytearray(10)
         body[0] = 0xB1
         body[1] = 0x01  # 1 param
-        body[2] = NewProtocolQuery.error_code_query & 0xFF
-        body[3] = NewProtocolQuery.error_code_query >> 8
+        body[2] = NewProtocolTags.error_code_query & 0xFF
+        body[3] = NewProtocolTags.error_code_query >> 8
         body[4] = 0x00  # padding
         body[5] = 0x01  # length
         body[6] = 0x05  # error code 5
@@ -2071,8 +2111,8 @@ class TestMessageACResponse:
         assert not hasattr(response, "outdoor_temperature")
 
 
-class TestMessageNewProtocolSetNewFeatures:
-    """Test MessageNewProtocolSet for sound and self_clean."""
+class TestNewProtocolSetNewFeatures:
+    """Test NewProtocolSet for sound and self_clean."""
 
     @pytest.mark.parametrize(
         ("value", "expected_byte"),
@@ -2080,7 +2120,7 @@ class TestMessageNewProtocolSetNewFeatures:
     )
     def test_sound_on_off(self, value: bool, expected_byte: int) -> None:
         """Test sound set to on/off sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.sound = value
         body = msg.body
         assert body[0] == 0xB0
@@ -2096,7 +2136,7 @@ class TestMessageNewProtocolSetNewFeatures:
     )
     def test_self_clean_on_off(self, value: bool, expected_byte: int) -> None:
         """Test self_clean set to on/off sends correct byte."""
-        msg = MessageNewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
         msg.self_clean = value
         body = msg.body
         assert body[0] == 0xB0
@@ -2107,8 +2147,8 @@ class TestMessageNewProtocolSetNewFeatures:
         assert body[5] == expected_byte
 
 
-class TestMessageGeneralSetAnion:
-    """Test MessageGeneralSet anion (purifier) bit."""
+class TestMessageSetAnion:
+    """Test MessageSet anion (purifier) bit."""
 
     @pytest.mark.parametrize(
         ("value", "expected_bit"),
@@ -2116,6 +2156,6 @@ class TestMessageGeneralSetAnion:
     )
     def test_anion_bit_in_body(self, value: bool, expected_bit: int) -> None:
         """Test anion sets bit 0x20 in body byte index 8."""
-        msg = MessageGeneralSet(protocol_version=ProtocolVersion.V1)
+        msg = MessageSet(protocol_version=ProtocolVersion.V1)
         msg.anion = value
         assert msg._body[8] & 0x20 == expected_bit

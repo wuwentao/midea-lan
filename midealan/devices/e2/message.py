@@ -74,7 +74,7 @@ class MessagePower(MessageE2Base):
         return bytearray([0x01])
 
 
-class MessageNewProtocolSet(MessageE2Base):
+class NewProtocolSet(MessageE2Base):
     """E2 message new protocol set(T_0000_E2_24.lua:flag == false: else)."""
 
     def __init__(self, protocol_version: int) -> None:

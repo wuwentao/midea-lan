@@ -369,6 +369,12 @@ class TestCDSterilizeSetBody:
         assert parsed.disinfection_temperature == 70.0
         assert parsed.auto_sterilize_week == 140
 
+    def test_temp_echo_above_max_keeps_week(self) -> None:
+        """body[3]=141 stays as a raw week value."""
+        parsed = CDSterilizeSetBody(self._make_body(sterilize_on=True, byte3=141))
+        assert parsed.disinfection_temperature is None
+        assert parsed.auto_sterilize_week == 141
+
     def test_temp_echo_60_encodes_120_and_keeps_raw_week(self) -> None:
         """body[3]=120 is parsed as temperature and kept raw."""
         parsed = CDSterilizeSetBody(self._make_body(sterilize_on=True, byte3=120))
@@ -387,6 +393,11 @@ class TestCDSterilizeSetBody:
         """body[3]=0 gives auto_sterilize_week=0."""
         parsed = CDSterilizeSetBody(self._make_body(sterilize_on=True, byte3=0))
         assert parsed.auto_sterilize_week == 0
+        assert parsed.disinfection_temperature is None
+
+    def test_short_body_leaves_disinfection_temperature_unset(self) -> None:
+        """A short body does not set disinfection_temperature."""
+        parsed = CDSterilizeSetBody(bytearray(3))
         assert parsed.disinfection_temperature is None
 
     def test_week_out_of_range_is_read_raw(self) -> None:
@@ -863,4 +874,10 @@ class TestMessageCDResponse:
         body = bytearray(63)
         body[0] = 0x07
         response = MessageCDResponse(_build_response(MessageType.set, body))
+        assert getattr(response, "power", None) is None
+
+    def test_unparsed_message_type(self) -> None:
+        """Unhandled message types stay undecoded."""
+        body = self._general_body()
+        response = MessageCDResponse(_build_response(MessageType.notify1, body))
         assert getattr(response, "power", None) is None

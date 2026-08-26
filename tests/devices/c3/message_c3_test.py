@@ -270,6 +270,91 @@ class TestMessageC3Response:
             assert hasattr(response, "error_code")
             assert response.error_code == 0x0
 
+    def test_message_unit_para_response(self) -> None:
+        """Test message unit-parameter response."""
+        header = bytearray(self.header)
+        header[-1] = 0x02
+        body = bytearray(90)
+        body[0] = ListTypes.X10
+        body[1] = 7
+        body[2] = 3
+        body[3] = 4  # fan_speed / 10
+        body[4] = 2  # not fan_speed, must not leak into it
+        body[6] = 11
+        body[7] = 12
+        body[8] = 13
+        body[9] = 14
+        body[10] = 15
+        body[11] = 16
+        body[12] = 17
+        body[13] = 18
+        body[17] = 1
+        body[18] = 2
+        body[19] = 3
+        body[20] = 4
+        body[21] = 5
+        body[33] = 19
+        body[34] = 20
+        body[35] = 21
+        body[36] = 22
+        body[37] = 23
+        body[38] = 24
+        body[39] = 25
+        body[40] = 26
+        body[41] = 27
+        body[42] = 28
+        body[43] = 29
+        body[44] = 30
+        body[45] = 31
+        body[46] = 32
+        body[47] = 33
+        body[48] = 34
+        body[49] = 35
+        body[51] = 36
+        body[52] = 37
+        body[53] = 38
+        body[54] = 39
+        body[55] = 40
+        body[56] = 41
+        body[57] = 42
+        body[59] = 43
+        body[60] = 44
+        body[61] = 45
+        body[63] = 46
+        body[66] = 0
+        body[67] = 1
+        body[68] = 2
+        body[69] = 3
+        body[70] = 4
+        body[71] = 5
+        body[72] = 6
+        body[73] = 7
+        body[74] = 8
+        body[75] = 9
+        body[76] = 10
+        body[77] = 11
+        body[78] = 12
+        body[79] = 13
+        body[80] = 14
+        body[81] = 15
+        body[82] = 16
+        body[83] = 17
+
+        response = MessageC3Response(bytes(header + body + bytearray([0x00])))
+
+        assert response.body_type == ListTypes.X10
+        assert response.__dict__["comp_run_freq"] == 7
+        assert response.__dict__["unit_mode_run"] == 3
+        assert response.__dict__["fan_speed"] == 40
+
+    def test_message_unhandled_body_type_falls_through(self) -> None:
+        """Test response dispatch when body type is not handled."""
+        header = bytearray(self.header)
+        header[-1] = 0x02
+        body = bytearray([0x08, 0x00, 0x00])
+        response = MessageC3Response(bytes(header + body))
+        assert response.body_type == 0x08
+
     def test_message_notify1_x04_response(self) -> None:
         """Test message notify1 x04 response."""
         self.header[-1] = MessageType.notify1
@@ -304,9 +389,9 @@ class TestMessageC3Response:
         assert hasattr(response, "status_heating")
         assert response.status_heating is True
         assert hasattr(response, "total_energy_consumption")
-        assert response.total_energy_consumption == 214750114754
+        assert response.total_energy_consumption == 840610754
         assert hasattr(response, "total_produced_energy")
-        assert response.total_produced_energy == 90195765805
+        assert response.total_produced_energy == 353774125
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature == 30
         assert hasattr(response, "zone1_temp_set")
@@ -419,8 +504,10 @@ class TestMessageC3Response:
         body[0] = ListTypes.X10
         body[1] = 50  # comp_run_freq
         body[2] = 2  # unit_mode_run
-        body[4] = 8  # fan_speed / 10
-        body[6] = 9  # fg_capacity_need
+        body[3] = 8  # fan_speed / 10
+        body[4] = 2  # not fan_speed, must not leak into it
+        body[5] = 9  # fg_capacity_need
+        body[6] = 3  # tempset, disabled in the lua; must not leak into it
         body[8] = 30  # temp_t4
         body[10] = 40  # temp_tw_in
         body[11] = 35  # temp_tw_out
@@ -457,3 +544,304 @@ class TestMessageC3Response:
         assert response.total_electricity0 == 10
         assert hasattr(response, "instant_power0")
         assert response.instant_power0 == 500
+
+
+class TestC3UnitParaFanSpeed:
+    """Regression tests for the X10 (UNITPARA) outdoor fan speed offset.
+
+    The frames below are taken from LAN captures of a Hyundai HYHC-V30W/D2RN8
+    monobloc heat pump (OEM-equivalent Midea MHC-V30W/D2RN8, device type 0xC3,
+    protocol version 3, Wi-Fi module 171H120F). Only the first four X10 data
+    bytes are pinned, because those are the ones the capture confirms:
+
+    * data[0] - compressor running frequency in Hz
+    * data[1] - unit running mode (2 = cooling)
+    * data[2] - outdoor fan speed in RPM / 10
+    * data[3] - a different, near-constant quantity that the pre-fix parser
+      mistakenly reported as the fan speed
+
+    The remaining data bytes are left at zero; this test intentionally asserts
+    only on the fields the captures verify.
+    """
+
+    HEADER = bytearray(
+        [
+            0xAA,
+            0x00,
+            0xC3,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x03,  # protocol version 3
+            MessageType.query,
+        ],
+    )
+
+    @staticmethod
+    def _build_response(data_head: bytes) -> MessageC3Response:
+        """Build an X10 query response whose payload starts with data_head."""
+        body = bytearray(88)  # body type + 86 data bytes + CRC
+        body[0] = ListTypes.X10
+        body[1 : 1 + len(data_head)] = data_head
+        return MessageC3Response(
+            bytes(TestC3UnitParaFanSpeed.HEADER + body),
+        )
+
+    @pytest.mark.parametrize(
+        ("data_head", "comp_run_freq", "fan_speed"),
+        [
+            # Cooling at 57 Hz, fan command 0x40 -> 640 RPM (Super Silent).
+            (b"\x39\x02\x40\x02", 57, 640),
+            # Cooling at 35 Hz, fan command 0x3f -> 630 RPM (Super Silent).
+            (b"\x23\x02\x3f\x02", 35, 630),
+            # Compressor thermo-off: the outdoor fan keeps running for a short
+            # post-run at 0x4a -> 740 RPM while the compressor is already at 0.
+            (b"\x00\x02\x4a\x02", 0, 740),
+            # Post-run finished: fan command 0 and the fans physically stopped.
+            (b"\x00\x02\x00\x02", 0, 0),
+        ],
+        ids=["cooling_57hz", "cooling_35hz", "thermo_off_fan_post_run", "fan_stopped"],
+    )
+    def test_fan_speed_is_read_after_unit_mode_run(
+        self,
+        data_head: bytes,
+        comp_run_freq: int,
+        fan_speed: int,
+    ) -> None:
+        """Test fan speed comes from the byte right after the running mode."""
+        response = self._build_response(data_head)
+
+        assert response.body_type == ListTypes.X10
+        assert hasattr(response, "comp_run_freq")
+        assert hasattr(response, "unit_mode_run")
+        assert hasattr(response, "fan_speed")
+        assert response.comp_run_freq == comp_run_freq
+        assert response.unit_mode_run == C3DeviceMode.COOL
+        assert response.unit_mode_run == 2
+        assert response.fan_speed == fan_speed
+
+    def test_fan_speed_is_independent_of_compressor_state(self) -> None:
+        """Test a stopped compressor does not force the fan speed to zero."""
+        running = self._build_response(b"\x39\x02\x40\x02")
+        post_run = self._build_response(b"\x00\x02\x4a\x02")
+        stopped = self._build_response(b"\x00\x02\x00\x02")
+        assert hasattr(running, "comp_run_freq")
+        assert hasattr(post_run, "comp_run_freq")
+        assert hasattr(post_run, "fan_speed")
+        assert hasattr(stopped, "comp_run_freq")
+        assert hasattr(stopped, "fan_speed")
+
+        assert running.comp_run_freq > 0
+        assert post_run.comp_run_freq == 0
+        assert post_run.fan_speed > 0
+        assert stopped.comp_run_freq == 0
+        assert stopped.fan_speed == 0
+
+
+class TestC3Energy32BitCounters:
+    """The 32 bit energy counters against the official C3 lua protocol.
+
+    Reference: `T_0000_C3_171H120F_2023062601.lua`. Every one of these counters
+    is built as `_bodyBytes[n] * 16777216 + _bodyBytes[n+1] * 65536 +
+    _bodyBytes[n+2] * 256 + _bodyBytes[n+3]`, so the most significant byte is
+    shifted by 24, not 32. The bug only shows once a counter passes 2 ** 24,
+    which is why the existing fixtures never caught it.
+    """
+
+    HEADER = bytearray([0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x00])
+
+    def _response(self, msg_type: int, values: dict[int, int]) -> MessageC3Response:
+        """Build a C3 response with the given body bytes set."""
+        header = bytearray(self.HEADER)
+        header[-1] = msg_type
+        body = bytearray(96)
+        body[0] = ListTypes.X04 if msg_type == MessageType.notify1 else ListTypes.X10
+        for index, value in values.items():
+            body[index] = value
+        return MessageC3Response(bytes(header + body))
+
+    def test_notify_energy_counters_are_32_bit(self) -> None:
+        """Test the notify1 0x04 totals use a 24 bit shift on the top byte."""
+        response = self._response(
+            MessageType.notify1,
+            {2: 0x01, 3: 0x02, 4: 0x03, 5: 0x04, 6: 0x0A, 7: 0x0B, 8: 0x0C, 9: 0x0D},
+        )
+        assert hasattr(response, "total_energy_consumption")
+        assert hasattr(response, "total_produced_energy")
+        assert response.total_energy_consumption == 0x01020304
+        assert response.total_produced_energy == 0x0A0B0C0D
+
+    def test_unit_para_energy_counters_are_32_bit(self) -> None:
+        """Test the X10 totals use a 24 bit shift on the top byte."""
+        response = self._response(
+            MessageType.query,
+            {
+                67: 0x01,
+                68: 0x02,
+                69: 0x03,
+                70: 0x04,
+                71: 0x05,
+                72: 0x06,
+                73: 0x07,
+                74: 0x08,
+                75: 0x09,
+                76: 0x0A,
+                77: 0x0B,
+                78: 0x0C,
+                79: 0x0D,
+                80: 0x0E,
+                81: 0x0F,
+                82: 0x10,
+            },
+        )
+        assert hasattr(response, "total_electricity0")
+        assert hasattr(response, "total_thermal0")
+        assert hasattr(response, "heat_elec_total_consum0")
+        assert hasattr(response, "heat_elec_total_capacity0")
+        assert response.total_electricity0 == 0x01020304
+        assert response.total_thermal0 == 0x05060708
+        assert response.heat_elec_total_consum0 == 0x090A0B0C
+        assert response.heat_elec_total_capacity0 == 0x0D0E0F10
+
+
+class TestC3UnitParaNotify:
+    """The MSG_TYPE_UP_UNITPARA notify body (message type 0x04, body 0x05).
+
+    The frame below is a real capture from a Hyundai HYHC-V30W/D2RN8
+    (OEM-equivalent Midea MHC-V30W/D2RN8, protocol 3, module 171H120F). The
+    unit pushes this message unsolicited between polls; 41 of them appeared
+    alongside 782 X10 query responses in the same session.
+
+    Every value asserted here was cross-checked against the X10 query response
+    captured immediately before it, and agreed to within sampling drift.
+    """
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.notify1],
+    )
+
+    BODY = bytes.fromhex(
+        "05213f24264d0d0b0400e10b1909081919041000640b2237ffff0000000000000000"
+        "002fa000000000000000000000000001010000000000000b94630200000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00000000000000000000000000000000000000000000000000000000000000000000"
+        "00",
+    )
+
+    def test_notify_unit_para_is_parsed(self) -> None:
+        """Test the notify body decodes into the shared runtime attributes."""
+        response = MessageC3Response(bytes(self.HEADER + self.BODY + bytes([0x00])))
+
+        assert response.body_type == ListTypes.X05
+        assert hasattr(response, "unit_mode_run")
+        assert hasattr(response, "comp_run_freq")
+        assert hasattr(response, "fan_speed")
+        assert hasattr(response, "temp_t3")
+        assert hasattr(response, "temp_t4")
+        assert hasattr(response, "temp_tp")
+        assert hasattr(response, "temp_tw_in")
+        assert hasattr(response, "temp_tw_out")
+        assert hasattr(response, "odu_comp_current")
+        assert hasattr(response, "odu_voltage")
+        assert hasattr(response, "temp_t1")
+        assert hasattr(response, "temp_t2")
+        assert hasattr(response, "temp_t2b")
+        assert hasattr(response, "pressure_high")
+        assert hasattr(response, "pressure_low")
+        assert hasattr(response, "odu_target_fre")
+        assert hasattr(response, "temp_tf")
+        assert hasattr(response, "total_electricity0")
+        assert response.comp_run_freq == 33
+        assert response.fan_speed == 630
+        assert response.unit_mode_run == C3DeviceMode.COOL
+        assert response.temp_t3 == 36
+        assert response.temp_t4 == 38
+        assert response.temp_tp == 77
+        assert response.temp_tw_in == 13
+        assert response.temp_tw_out == 11
+        assert response.odu_comp_current == 4
+        assert response.odu_voltage == 225
+        assert response.temp_t1 == 11
+        assert response.temp_t2 == 9
+        assert response.temp_t2b == 8
+        assert response.pressure_high == 1040
+        assert response.pressure_low == 100
+        assert response.odu_target_fre == 34
+        assert response.temp_tf == 55
+        assert response.total_electricity0 == 12192
+
+    def test_query_x05_is_still_the_silence_body(self) -> None:
+        """Test a query 0x05 still parses as silence, not as unit parameters."""
+        header = bytearray(self.HEADER)
+        header[-1] = MessageType.query
+        body = bytearray.fromhex("050b170016320e001100")
+        response = MessageC3Response(bytes(header + body + bytes([0x00])))
+
+        assert response.body_type == ListTypes.X05
+        assert hasattr(response, "silent_mode")
+        assert response.silent_mode is True
+        assert not hasattr(response, "comp_run_freq")
+
+
+class TestC3UnitParaLuaOffsets:
+    """Offsets in the X10 body checked against the official C3 lua protocol.
+
+    Reference: `T_0000_C3_171H120F_2023062601.lua`, `MSG_TYPE_QUERY_UNITPARA`.
+    The lua is 1-indexed, so `_bodyBytes[N]` is `body[data_offset + N - 1]`.
+    Each case places a distinct decoy on the byte the parser used to read, so
+    a regression cannot pass by picking up the neighbouring value.
+    """
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.query],
+    )
+
+    @staticmethod
+    def _build_response(values: dict[int, int]) -> MessageC3Response:
+        """Build an X10 query response with the given body bytes set."""
+        body = bytearray(96)
+        body[0] = ListTypes.X10
+        for index, value in values.items():
+            body[index] = value
+        return MessageC3Response(bytes(TestC3UnitParaLuaOffsets.HEADER + body))
+
+    def test_fg_capacity_need_lua_byte_5(self) -> None:
+        """Test fg_capacity_need is lua _bodyBytes[5], not the tempset byte."""
+        response = self._build_response({5: 9, 6: 3})
+        assert hasattr(response, "fg_capacity_need")
+        assert response.fg_capacity_need == 9
+
+    def test_current_unit_capacity_is_16_bit(self) -> None:
+        """Test current_unit_capacity is lua _bodyBytes[58] * 256 + [59]."""
+        response = self._build_response({58: 2, 59: 44})
+        assert hasattr(response, "current_unit_capacity")
+        assert response.current_unit_capacity == 556
+
+    def test_pwm_pump_out_lua_byte_65(self) -> None:
+        """Test pwm_pump_out is lua _bodyBytes[65], decoded independently."""
+        response = self._build_response({64: 46, 65: 80, 66: 99})
+        assert hasattr(response, "room_rel_hum")
+        assert hasattr(response, "pwm_pump_out")
+        assert response.room_rel_hum == 46
+        assert response.pwm_pump_out == 80
+
+    def test_total_renew_power0_is_32_bit(self) -> None:
+        """Test total_renew_power0 is lua _bodyBytes[87..90], not [85..86]."""
+        response = self._build_response({85: 1, 86: 244, 89: 1, 90: 2})
+        assert hasattr(response, "instant_renew_power0")
+        assert hasattr(response, "total_renew_power0")
+        assert response.instant_renew_power0 == 500
+        assert response.total_renew_power0 == 258
+
+    def test_short_body_does_not_raise(self) -> None:
+        """Test a body that stops at the old maximum still parses."""
+        body = bytearray(88)  # body type + 86 data bytes + CRC
+        body[0] = ListTypes.X10
+        response = MessageC3Response(bytes(self.HEADER + body))
+        assert hasattr(response, "total_renew_power0")
+        assert response.total_renew_power0 == 0

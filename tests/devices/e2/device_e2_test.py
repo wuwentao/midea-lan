@@ -1,5 +1,6 @@
 """Test E2 Device."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -12,10 +13,10 @@ from midealan.devices.e2 import (
     OldProtocol,
 )
 from midealan.devices.e2.message import (
-    MessageNewProtocolSet,
     MessagePower,
     MessageQuery,
     MessageSet,
+    NewProtocolSet,
 )
 
 
@@ -187,24 +188,76 @@ class TestMideaE2Device:
         assert isinstance(message, MessagePower)
         assert message.power is True
 
-    def test_set_attribute_old_protocol_doubles_temperature(self) -> None:
-        """Test old protocol target temperature is doubled without halves."""
+    def test_set_attribute_sends_literal_temperature_by_default(self) -> None:
+        """Target temperature is sent literally, matching the literal read."""
         device = self._device()
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(DeviceAttributes.target_temperature.value, 40)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
         assert isinstance(message, MessageSet)
-        assert message.target_temperature == 80
+        assert message.target_temperature == 40
 
-    def test_set_attribute_precision_halves_keeps_temperature(self) -> None:
-        """Test precision halves keeps the raw target temperature."""
+    def test_set_attribute_precision_halves_doubles_temperature(self) -> None:
+        """precision_halves means the device speaks half-degrees on the wire."""
         device = self._device('{"precision_halves": true}')
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(DeviceAttributes.target_temperature.value, 40)
             message = mock_build_send.call_args[0][0]
         assert isinstance(message, MessageSet)
-        assert message.target_temperature == 40
+        assert message.target_temperature == 80
+
+    def test_process_message_precision_halves_halves_temperatures(self) -> None:
+        """precision_halves halves temperatures on read, mirroring the write."""
+
+        class FakeMessage:
+            current_temperature = 130
+            target_temperature = 150
+
+        device = self._device('{"precision_halves": true}')
+        with patch(
+            "midealan.devices.e2.MessageE2Response",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.current_temperature.value] == 65
+        assert status[DeviceAttributes.target_temperature.value] == 75
+
+    def test_process_message_keeps_literal_temperatures_by_default(self) -> None:
+        """Without precision_halves the wire value is already Celsius."""
+
+        class FakeMessage:
+            current_temperature = 65
+            target_temperature = 75
+
+        device = self._device()
+        with patch(
+            "midealan.devices.e2.MessageE2Response",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.current_temperature.value] == 65
+        assert status[DeviceAttributes.target_temperature.value] == 75
+
+    def test_temperature_round_trips(self) -> None:
+        """What is written must read back unchanged, in both modes."""
+        for customize in ("", '{"precision_halves": true}'):
+            device = self._device(customize)
+            with patch.object(device, "build_send") as mock_build_send:
+                device.set_attribute(DeviceAttributes.target_temperature.value, 65)
+                on_wire = mock_build_send.call_args[0][0].target_temperature
+
+            class FakeMessage:
+                target_temperature = on_wire
+
+            with patch(
+                "midealan.devices.e2.MessageE2Response",
+                return_value=FakeMessage(),
+            ):
+                status = device.process_message(b"")
+            assert status[DeviceAttributes.target_temperature.value] == 65
 
     def test_set_attribute_literal_temperature_for_subtype_255(
         self,
@@ -215,9 +268,44 @@ class TestMideaE2Device:
             device.set_attribute(DeviceAttributes.target_temperature.value, 45)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-        assert isinstance(message, MessageNewProtocolSet)
+        assert isinstance(message, NewProtocolSet)
         assert message.target_temperature == 45
         assert message._body == bytearray([0x07, 45])
+
+    @pytest.mark.parametrize(
+        "attr",
+        [
+            DeviceAttributes.sterilization,
+            DeviceAttributes.screen_off,
+            DeviceAttributes.sleep,
+        ],
+    )
+    def test_set_attribute_old_protocol_unsupported_is_ignored(
+        self,
+        attr: DeviceAttributes,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Old protocol ignores and logs attributes MessageSet cannot carry."""
+        device = self._device('{"old_protocol": "true"}')
+        with (
+            patch.object(device, "build_send") as mock_build_send,
+            caplog.at_level(logging.WARNING, logger="midealan.devices.e2"),
+        ):
+            device.set_attribute(attr.value, True)
+        # Without this guard a MessageSet went out with the flag silently
+        # dropped, which looks like a working command that does nothing.
+        mock_build_send.assert_not_called()
+        assert attr.value in caplog.text
+        assert '{"old_protocol": false}' in caplog.text
+
+    def test_set_attribute_old_protocol_keeps_supported_attributes(self) -> None:
+        """Attributes MessageSet does carry must still use the old message."""
+        device = self._device('{"old_protocol": "true"}')
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.whole_tank_heating.value, True)
+            message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.whole_tank_heating is True
 
     def test_set_attribute_new_protocol(self) -> None:
         """Test new protocol attributes use the new protocol set message."""
@@ -226,5 +314,5 @@ class TestMideaE2Device:
             device.set_attribute(DeviceAttributes.sterilization.value, True)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
-        assert isinstance(message, MessageNewProtocolSet)
+        assert isinstance(message, NewProtocolSet)
         assert message.sterilization is True

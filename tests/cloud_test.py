@@ -1,5 +1,7 @@
 """Test cloud."""
 
+import json
+from hashlib import md5
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import ClassVar
@@ -7,10 +9,11 @@ from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from aiohttp import ClientConnectionError
+from aiohttp import ClientConnectionError, ClientTimeout
 
 from midealan.cloud import (
     DEFAULT_KEYS,
+    SUPPORTED_CLOUDS,
     MeijuCloud,
     MideaAirCloud,
     MideaCloud,
@@ -21,6 +24,30 @@ from midealan.cloud import (
     get_preset_account_cloud,
 )
 from midealan.exceptions import ElementMissing
+
+# ``CloudSecurity.get_udp_id(100, method)``. Hard-coded on purpose: deriving them
+# with the same helper the implementation calls would not catch a request that
+# sends the wrong method's UDP ID.
+UDP_IDS = {
+    1: "dec4da86e0aeefadde14a4e553680b9b",
+    2: "b2dd199071d527a33c8239833a5bf5fb",
+}
+
+
+def _token_requests(session: Mock) -> list[tuple[str, dict]]:
+    """Return (url, payload) for every getToken request the client actually sent.
+
+    The response side_effect only controls what comes back; these assertions
+    pin down what goes out, so a regression to the v1 endpoint or to a
+    string-valued ``applianceCodes`` cannot pass silently.
+    """
+    out = []
+    for call in session.request.await_args_list:
+        url = call.args[1] if len(call.args) > 1 else call.kwargs.get("url", "")
+        if "getToken" not in url:
+            continue
+        out.append((url, json.loads(call.kwargs["data"])))
+    return out
 
 
 class CloudTest(IsolatedAsyncioTestCase):
@@ -37,6 +64,58 @@ class CloudTest(IsolatedAsyncioTestCase):
                 encoding="utf-8",
             ) as f:
                 self.responses[file_path.name] = bytes(f.read(), encoding="utf-8")
+
+    def test_lua_download_metadata(self) -> None:
+        """Test lua download metadata validation and filename sanitization."""
+        metadata = MideaCloud._get_lua_download_metadata(
+            "downloads",
+            {"url": "url", "fileName": "../lua.lua"},
+            "serial",
+        )
+        assert metadata == ("url", Path("downloads/lua.lua"))
+
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"fileName": "lua.lua"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "", "fileName": "lua.lua"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url"},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url", "fileName": None},
+                    "serial",
+                )
+                is None
+            )
+            assert (
+                MideaCloud._get_lua_download_metadata(
+                    "downloads",
+                    {"url": "url", "fileName": ".."},
+                    "serial",
+                )
+                is None
+            )
+        assert len(logs.output) == 5
 
     def test_get_midea_cloud(self) -> None:
         """Test get midea cloud."""
@@ -85,6 +164,25 @@ class CloudTest(IsolatedAsyncioTestCase):
         servers = await MideaCloud.get_cloud_servers()
         assert len(servers.items()) == 5
 
+    async def test_midea_cloud_api_request_timeout(self) -> None:
+        """Test _api_request retries and returns None on timeout."""
+        session = Mock()
+        session.request = AsyncMock(side_effect=TimeoutError("timeout"))
+        security = Mock()
+        security.sign.return_value = "signature"
+        cloud = MideaCloud(
+            session=session,
+            security=security,
+            app_id="appid",
+            app_key="appkey",
+            account="account",
+            password="password",
+            api_url="http://api.url/",
+        )
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert await cloud._api_request(endpoint="/endpoint", data={}) is None
+        assert len(logs.output) == 3
+
     async def test_get_preset_account_cloud(self) -> None:
         """Test get preset cloud account."""
         credentials = get_preset_account_cloud()
@@ -109,6 +207,8 @@ class CloudTest(IsolatedAsyncioTestCase):
             await cloud.login()
         with pytest.raises(NotImplementedError):
             await cloud.list_appliances(None)
+        with pytest.raises(NotImplementedError):
+            await cloud.download_lua("path", 10, "0000AC000ABCD1234000")
         with pytest.raises(NotImplementedError):
             await cloud.download_plugin("path", 10, "0000AC000ABCD1234000")
 
@@ -149,20 +249,58 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert cloud is not None
         assert not await cloud.login()
 
+    async def test_meijucloud_login_api_request_none(self) -> None:
+        """Test MeijuCloud login failure when the login response is missing."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            assert not await cloud.login()
+        assert "Meiju Cloud login failed" in logs.output[0]
+
+    async def test_meijucloud_login_response_none(self) -> None:
+        """Test MeijuCloud login failure when the final login API returns none."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_get_login_id", AsyncMock(return_value="loginid")),
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            assert not await cloud.login()
+        assert "Meiju Cloud login failed" in logs.output[0]
+
     async def test_meijucloud_get_keys(self) -> None:
         """Test MeijuCloud get_cloud_keys."""
         session = Mock()
         response = Mock()
         response.read = AsyncMock(
             side_effect=[
+                # get_cloud_keys() lists homes first, then queries the v2
+                # endpoint per method until one home returns keys.
+                self.responses["meijucloud_list_home.json"],
                 self.responses["meijucloud_get_keys1.json"],
                 self.responses["meijucloud_get_keys2.json"],
+                self.responses["meijucloud_list_home.json"],
                 self.responses["meijucloud_get_keys1.json"],
                 self.responses["cloud_invalid_response.json"],
+                self.responses["meijucloud_list_home.json"],
                 self.responses["cloud_invalid_response.json"],
                 self.responses["meijucloud_get_keys2.json"],
-                self.responses["cloud_invalid_response.json"],
-                self.responses["cloud_invalid_response.json"],
             ],
         )
         session.request = AsyncMock(return_value=response)
@@ -204,6 +342,147 @@ class CloudTest(IsolatedAsyncioTestCase):
         keys = await cloud.get_default_keys()
         assert len(keys) == 1
         assert keys == DEFAULT_KEYS
+
+        # Pin the outbound contract: every lookup must hit v2 and send
+        # homegroupId + udpid + a list-valued applianceCodes.
+        requests = _token_requests(session)
+        assert requests
+        for url, payload in requests:
+            assert url.endswith("/v2/iot/secure/getToken")
+            assert payload["applianceCodes"] == ["100"]
+        # Each of the three lookups stops at the first home that returns a key,
+        # so the exact sequence is home "1" x method 1, method 2 -- three times.
+        assert [(p["homegroupId"], p["udpid"]) for _url, p in requests] == [
+            ("1", UDP_IDS[1]),
+            ("1", UDP_IDS[2]),
+        ] * 3
+
+    async def test_meijucloud_get_keys_v2_fallback_to_v1(self) -> None:
+        """Test MeijuCloud falls back to the v1 endpoint when v2 returns nothing."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["meijucloud_list_home.json"],
+                # v2, home 1: both methods come back empty
+                self.responses["cloud_invalid_response.json"],
+                self.responses["cloud_invalid_response.json"],
+                # v2, home 2: same
+                self.responses["cloud_invalid_response.json"],
+                self.responses["cloud_invalid_response.json"],
+                # v1 fallback
+                self.responses["meijucloud_get_keys1.json"],
+                self.responses["meijucloud_get_keys2.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+
+        keys: dict = await cloud.get_cloud_keys(100)
+        assert keys[1]["token"] == "method1_return_token1"
+        assert keys[1]["key"] == "method1_return_key1"
+        assert keys[2]["token"] == "method2_return_token2"
+        assert keys[2]["key"] == "method2_return_key2"
+        assert len(keys) == 2
+
+        # v2 is tried for both homes x both methods, then v1 once per method.
+        requests = _token_requests(session)
+        v2 = [r for r in requests if r[0].endswith("/v2/iot/secure/getToken")]
+        v1 = [r for r in requests if r[0].endswith("/v1/iot/secure/getToken")]
+        for _url, payload in v2:
+            assert payload["applianceCodes"] == ["100"]
+        for _url, payload in v1:
+            # the inherited v1 implementation sends the plain string form
+            assert payload["applianceCodes"] == "100"
+        # Both homes are tried, each with both methods, in order.
+        assert [(p["homegroupId"], p["udpid"]) for _url, p in v2] == [
+            ("1", UDP_IDS[1]),
+            ("1", UDP_IDS[2]),
+            ("2", UDP_IDS[1]),
+            ("2", UDP_IDS[2]),
+        ]
+        # The full ordered endpoint sequence: four v2 calls then two v1 calls,
+        # proving no v1 request is interleaved into the v2 phase.
+        assert [url.rsplit("=", 1)[-1] for url, _payload in requests] == [
+            *(["/v2/iot/secure/getToken"] * 4),
+            *(["/v1/iot/secure/getToken"] * 2),
+        ]
+        # v1 keeps the method-specific UDP ID but carries no home.
+        assert [p["udpid"] for _url, p in v1] == [UDP_IDS[1], UDP_IDS[2]]
+        assert all("homegroupId" not in p for _url, p in v1)
+
+    async def test_meijucloud_get_keys_no_home(self) -> None:
+        """Test MeijuCloud get_cloud_keys when the home list is unavailable."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                # list_home fails, so v2 is skipped entirely
+                self.responses["cloud_invalid_response.json"],
+                # v1 fallback
+                self.responses["meijucloud_get_keys1.json"],
+                self.responses["cloud_invalid_response.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+
+        keys: dict = await cloud.get_cloud_keys(100)
+        assert keys[1]["token"] == "method1_return_token1"
+        assert len(keys) == 1
+
+        # No home list means v2 is skipped entirely; only v1 is called.
+        requests = _token_requests(session)
+        assert requests
+        for url, _payload in requests:
+            assert url.endswith("/v1/iot/secure/getToken")
+
+    async def test_meijucloud_get_keys_ignores_nonmatching_token(self) -> None:
+        """Test get_cloud_keys skips non-matching token entries.
+
+        Non-matching tokens are ignored on both the v2 path (all homes and
+        methods) and the inherited v1 fallback, so the overall result is empty.
+        """
+        nonmatching = (
+            b'{"code": 0, "data": {"tokenlist": [{"udpId": "wrong", '
+            b'"token": "TOK", "key": "KEY"}]}}'
+        )
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["meijucloud_list_home.json"],
+                # v2: two homes x two methods, every token has a wrong udpId
+                nonmatching,
+                nonmatching,
+                nonmatching,
+                nonmatching,
+                # v1 fallback: both methods also non-matching
+                nonmatching,
+                nonmatching,
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.get_cloud_keys(100) == {}
 
     async def test_meijucloud_list_home(self) -> None:
         """Test MeijuCloud list_home."""
@@ -381,11 +660,52 @@ class CloudTest(IsolatedAsyncioTestCase):
             file_path = Path(file)
             assert Path.exists(file_path)
             Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
 
             res.status = 404
             assert (
                 await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
             )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+            with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+
+    async def test_meijucloud_download_lua_empty_payload(self) -> None:
+        """Test MeijuCloud download_lua with an empty payload."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["cloud_login_id.json"],
+                self.responses["meijucloud_login.json"],
+                self.responses["meijucloud_download_lua.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        res = Mock()
+        res.status = 200
+        res.text = AsyncMock(return_value="")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.login()
+
+        with TemporaryDirectory() as tmpdir:
+            result = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+            assert result is None
 
     async def test_meijucloud_download_plugin(self) -> None:
         """Test MeijuCloud download_plugin."""
@@ -420,6 +740,60 @@ class CloudTest(IsolatedAsyncioTestCase):
             res.status = 404
             assert (
                 await cloud.download_plugin(tmpdir, 10, "0000AC000ABCD1234000") is None
+            )
+
+    async def test_meijucloud_download_plugin_empty_payload(self) -> None:
+        """Test MeijuCloud download_plugin with an empty payload."""
+        session = Mock()
+        res = Mock()
+        res.status = 200
+        res.read = AsyncMock(return_value=b"")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"list": [{"url": "http://host/plugin.zip"}]}),
+            ),
+            TemporaryDirectory() as tmpdir,
+        ):
+            assert (
+                await cloud.download_plugin(
+                    tmpdir,
+                    10,
+                    "0000AC000ABCD1234000",
+                )
+                is None
+            )
+
+    async def test_meijucloud_download_plugin_no_response(self) -> None:
+        """Test MeijuCloud download_plugin when the API returns nothing."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            TemporaryDirectory() as tmpdir,
+        ):
+            assert (
+                await cloud.download_plugin(
+                    tmpdir,
+                    10,
+                    "0000AC000ABCD1234000",
+                )
+                is None
             )
 
     async def test_msmartcloud_login_success(self) -> None:
@@ -459,6 +833,24 @@ class CloudTest(IsolatedAsyncioTestCase):
         )
         assert cloud is not None
         assert not await cloud.login()
+
+    async def test_msmartcloud_login_api_request_none(self) -> None:
+        """Test MSmartCloud login failure when login response is missing."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_get_login_id", AsyncMock(return_value="loginid")),
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            assert not await cloud.login()
+        assert "SmartHome Cloud login failed" in logs.output[0]
 
     async def test_msmartcloud_list_home(self) -> None:
         """Test MSmartCloud list_home."""
@@ -594,6 +986,77 @@ class CloudTest(IsolatedAsyncioTestCase):
             file_path = Path(file)
             assert Path.exists(file_path)
             Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+            with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+
+    async def test_msmartcloud_download_lua_empty_payload(self) -> None:
+        """Test MSmartCloud download_lua with an empty payload."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                self.responses["cloud_login_id.json"],
+                self.responses["msmartcloud_login.json"],
+                self.responses["meijucloud_download_lua.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        res = Mock()
+        res.status = 200
+        res.text = AsyncMock(return_value="")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.login()
+
+        with TemporaryDirectory() as tmpdir:
+            result = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+            assert result is None
+
+    async def test_msmartcloud_download_lua_non_ok_response(self) -> None:
+        """Test MSmartCloud download_lua with a non-OK download response."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                self.responses["cloud_login_id.json"],
+                self.responses["msmartcloud_login.json"],
+                self.responses["meijucloud_download_lua.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        res = Mock()
+        res.status = 404
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.login()
+
+        with TemporaryDirectory() as tmpdir:
+            result = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+            assert result is None
 
     async def test_msmartcloud_download_plugin(self) -> None:
         """Test MSmartCloud download_plugin."""
@@ -630,6 +1093,88 @@ class CloudTest(IsolatedAsyncioTestCase):
                 await cloud.download_plugin(tmpdir, 10, "0000AC000ABCD1234000") is None
             )
 
+    async def test_msmartcloud_download_plugin_empty_payload(self) -> None:
+        """Test MSmartCloud download_plugin with an empty payload."""
+        session = Mock()
+        res = Mock()
+        res.status = 200
+        res.read = AsyncMock(return_value=b"")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"result": [{"url": "http://host/plugin.zip"}]}),
+            ),
+            TemporaryDirectory() as tmpdir,
+        ):
+            assert (
+                await cloud.download_plugin(
+                    tmpdir,
+                    10,
+                    "0000AC000ABCD1234000",
+                )
+                is None
+            )
+
+    async def test_msmartcloud_download_plugin_non_ok_response(self) -> None:
+        """Test MSmartCloud download_plugin with a non-OK download response."""
+        session = Mock()
+        res = Mock()
+        res.status = 404
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"result": [{"url": "http://host/plugin.zip"}]}),
+            ),
+            TemporaryDirectory() as tmpdir,
+        ):
+            assert (
+                await cloud.download_plugin(
+                    tmpdir,
+                    10,
+                    "0000AC000ABCD1234000",
+                )
+                is None
+            )
+
+    async def test_msmartcloud_download_plugin_no_response(self) -> None:
+        """Test MSmartCloud download_plugin when the API returns nothing."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            TemporaryDirectory() as tmpdir,
+        ):
+            result = await cloud.download_plugin(
+                tmpdir,
+                10,
+                "0000AC000ABCD1234000",
+            )
+            assert result is None
+
     async def test_mideaaircloud_login_success(self) -> None:
         """Test MideaAirCloud login."""
         session = Mock()
@@ -650,6 +1195,24 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert cloud is not None
         assert await cloud.login()
 
+    async def test_mideaaircloud_login_api_request_none(self) -> None:
+        """Test MideaAirCloud login failure when login response is missing."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            patch.object(cloud, "_get_login_id", AsyncMock(return_value="loginid")),
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            assert not await cloud.login()
+        assert "Midea Air Cloud login failed" in logs.output[0]
+
     async def test_mideaaircloud_login_invalid_user(self) -> None:
         """Test MideaAirCloud login invalid user."""
         session = Mock()
@@ -666,6 +1229,178 @@ class CloudTest(IsolatedAsyncioTestCase):
         )
         assert cloud is not None
         assert not await cloud.login()
+
+    async def test_mideaaircloud_api_request_timeout(self) -> None:
+        """Test MideaAirCloud _api_request retries on timeout."""
+        session = Mock()
+        session.request = AsyncMock(side_effect=TimeoutError("timeout"))
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert await cloud._api_request(endpoint="/endpoint", data={}) is None
+        assert len(logs.output) == 3
+
+    async def test_mideaaircloud_api_request_success_without_payload(self) -> None:
+        """Test MideaAirCloud _api_request with no result or data payload."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(return_value=b'{"errorCode": 0}')
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud._api_request(endpoint="/endpoint", data={}) is None
+
+    async def test_mideaaircloud_download_lua(self) -> None:
+        """Test MideaAirCloud download_lua against the legacy backend."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["mideaaircloud_login_id.json"],
+                self.responses["mideaaircloud_login.json"],
+                self.responses["mideaaircloud_download_lua.json"],
+                self.responses["mideaaircloud_download_lua.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        res = Mock()
+        res.status = 200
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        app_key = SUPPORTED_CLOUDS["Midea Air"]["app_key"]
+        lua_key = (
+            md5(app_key.encode("ascii"), usedforsecurity=False)
+            .hexdigest()[:16]
+            .encode("ascii")
+        )
+        res.text = AsyncMock(
+            return_value=cloud._security.aes_encrypt(
+                b"function test() return 1 end",
+                lua_key,
+            ).hex(),
+        )
+        assert await cloud.login()
+
+        with TemporaryDirectory() as tmpdir:
+            file = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+            assert file is not None
+            file_path = Path(file)
+            assert Path.exists(file_path)
+            assert file_path.read_text().startswith(  # noqa: ASYNC240
+                'local bit = require "bit"',
+            )
+            Path.unlink(file_path)
+            session.get.assert_awaited_once_with(
+                "returnedURL",
+                timeout=ClientTimeout(10),
+            )
+
+            res.status = 404
+            assert (
+                await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
+            )
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL"}),
+            ):
+                assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+
+    async def test_mideaaircloud_download_lua_no_response(self) -> None:
+        """Test MideaAirCloud download_lua with no lua metadata."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(cloud, "_api_request", AsyncMock(return_value=None)),
+        ):
+            assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+        session.get.assert_not_called()
+
+    async def test_mideaaircloud_download_lua_empty_payload(self) -> None:
+        """Test MideaAirCloud download_lua with an empty lua payload."""
+        session = Mock()
+        res = Mock()
+        res.status = 200
+        res.text = AsyncMock(return_value="")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "url", "fileName": "lua.lua"}),
+            ),
+        ):
+            assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+
+    async def test_mideaaircloud_download_lua_decrypt_failure(self) -> None:
+        """Test MideaAirCloud download_lua handles invalid encrypted lua."""
+        session = Mock()
+        res = Mock()
+        res.status = 200
+        res.text = AsyncMock(return_value="not-hex")
+        session.get = AsyncMock(return_value=res)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "url", "fileName": "lua.lua"}),
+            ),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            assert await cloud.download_lua(tmpdir, 10, "00000000") is None
+        assert "Failed to decrypt lua for appliance 00000000" in logs.output[0]
+
+    async def test_mideaaircloud_download_plugin_not_implemented(self) -> None:
+        """Test MideaAirCloud does not implement download_plugin."""
+        session = Mock()
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with pytest.raises(NotImplementedError):
+            await cloud.download_plugin("path", 10, "0000AC000ABCD1234000")
 
     async def test_mideaaircloud_list_home(self) -> None:
         """Test MideaAirCloud list_home."""
@@ -777,16 +1512,3 @@ class CloudTest(IsolatedAsyncioTestCase):
 
         device = await cloud.get_device_info(99)
         assert device is None
-
-    async def test_mideaaircloud_download_lua(self) -> None:
-        """Test MideaAirCloud download_lua."""
-        session = Mock()
-        cloud = get_midea_cloud(
-            "Midea Air",
-            session=session,
-            account="account",
-            password="password",
-        )
-        assert cloud is not None
-        with pytest.raises(NotImplementedError), TemporaryDirectory() as tmpdir:
-            await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")

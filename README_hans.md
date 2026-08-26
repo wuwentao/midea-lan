@@ -65,12 +65,90 @@ ac.set_swing(False, False)
 
 ### 命令行工具
 
-```python3
-# for local install without uv/venv
-python3 -m midealan.cli -h
-# for uv development venv
+本包安装后会提供 `midealan` 控制台命令。从本仓库克隆代码时，先创建开发环境、以 editable
+模式安装本包，并激活虚拟环境：
+
+```bash
+# Linux / macOS / WSL2
+git clone https://github.com/wuwentao/midea-lan.git
+cd midea-lan
+./scripts/setup.sh
+uv pip install -e .
+source .venv/bin/activate
+
+midealan --help
+```
+
+在 Windows PowerShell 中，先运行 `scripts\setup.ps1`，再依次运行 `uv pip install -e .` 和
+`.\.venv\Scripts\Activate.ps1`，之后即可使用 `midealan --help`。控制台命令安装在 `.venv`
+中；未激活虚拟环境时，请使用 `uv run`：
+
+```bash
 uv run python -m midealan.cli -h
 ```
+
+可用子命令为 `discover`、`decode`、`save`、`download` 和 `setattr`。使用
+`midealan <子命令> --help`（或对应的 `uv run` 命令）查看各子命令参数。
+
+### 下载云端 Lua 与插件文件
+
+`download` 会登录支持的美的云账号，为每台选中的设备下载 Lua 协议文件，然后尝试下载插件。
+文件会写入当前工作目录；建议在专门的空目录中执行命令，以便集中保存下载结果。
+
+已收集的 Lua 文件会发布在 [wuwentao/midea-lua](https://github.com/wuwentao/midea-lua)
+作为参考，也欢迎在该仓库提交 PR 补充更多设备的 Lua 文件。
+
+```text
+midealan download [--debug] --username USERNAME --password PASSWORD \
+  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
+```
+
+在本仓库开发环境中，请将以下示例中的 `midealan` 替换为
+`uv run python -m midealan.cli`。
+
+`--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
+`Ariston Clima`。
+
+按局域网地址发现并下载一台设备：
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --host 192.0.2.121
+```
+
+按云账号内的设备序列号下载：
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-sn "0000005112429652937220340014X2X3"
+```
+
+当序列号无法正确推导设备类型时，可以显式传入十六进制设备类型：
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-sn "0000005112429652937220340014X2X3" --device-type AC
+```
+
+省略 `--host` 和 `--device-sn` 时，会处理云账号内的全部设备：
+
+```bash
+midealan download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password"
+```
+
+同时传入 `--host` 和 `--device-sn` 时，`--host` 优先；程序会通过局域网发现获取序列号、
+设备类型和型号。按序列号下载时，设备类型按以下顺序确定：`--device-type`、云账号中匹配
+设备的信息、序列号中的旧格式类型字节。序列号格式错误或不支持旧格式回退时，类型会使用
+`0`，因此已知类型时应传入 `--device-type`。
+
+批量下载时，每台设备独立处理；某台设备的 Lua 或插件下载失败只会记录日志，后续设备仍会
+继续处理。`美的美居` 与 `SmartHome` 支持 Lua 和插件下载。旧版 `Midea Air`、
+`NetHome Plus` 和 `Ariston Clima` 后端支持 Lua 下载，但不支持插件下载；Lua 下载成功后，
+命令会记录相应警告。排查请求失败时可添加 `--debug`，并检查当前工作目录中实际生成的文件。
 
 ## 开发环境
 

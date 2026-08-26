@@ -8,6 +8,7 @@ import time
 from asyncio import Lock
 from datetime import UTC, datetime
 from http import HTTPStatus
+from pathlib import Path
 from secrets import token_hex
 from typing import Any, cast
 
@@ -316,6 +317,23 @@ class MideaCloud:
             return cast("dict", response[device_id])
         return None
 
+    @staticmethod
+    def _get_lua_download_metadata(
+        path: str,
+        response: dict[str, Any],
+        sn: str,
+    ) -> tuple[str, Path] | None:
+        """Validate lua download metadata and build a safe destination path."""
+        url = response.get("url")
+        file_name_value = response.get("fileName")
+        file_name = (
+            Path(file_name_value).name if isinstance(file_name_value, str) else ""
+        )
+        if not isinstance(url, str) or not url or file_name in {"", ".."}:
+            _LOGGER.warning("Invalid lua metadata for appliance %s.", sn)
+            return None
+        return url, Path(path) / file_name
+
     async def download_lua(
         self,
         path: str,
@@ -432,6 +450,66 @@ class MeijuCloud(MideaCloud):
                 homes.update({int(home["homegroupId"]): home["name"]})
             return homes
         return None
+
+    async def get_cloud_keys(self, appliance_id: int) -> dict[int, dict[str, Any]]:
+        """Get keys for device from the Meiju cloud.
+
+        Meiju retired the `/v1/iot/secure/getToken` endpoint the base class uses:
+        its gateway now answers `{"code": 40404}` / "the access address does not
+        exist", so no keys come back at all and every V3 device fails to
+        authenticate with "Can't get available token from Midea server".
+
+        The replacement is `/v2/iot/secure/getToken`, which additionally requires
+        `homegroupId` and expects `applianceCodes` as a list -- passing the plain
+        string the v1 endpoint accepted makes it answer `1002 none parameter is
+        found`.
+
+        Falls back to the inherited v1 implementation when v2 yields nothing, so
+        this stays a no-op for clouds or accounts the old endpoint still serves.
+        """
+        homes = await self.list_home()
+        result: dict[int, dict[str, Any]] = {}
+        for home_id in homes or {}:
+            for method in [1, 2]:
+                udp_id = self._security.get_udp_id(appliance_id, method)
+                data = self._make_general_data()
+                data.update(
+                    {
+                        "homegroupId": str(home_id),
+                        "udpid": udp_id,
+                        "applianceCodes": [str(appliance_id)],
+                    },
+                )
+                response = await self._api_request(
+                    endpoint="/v2/iot/secure/getToken",
+                    data=data,
+                )
+                # Log only the entry count: the payload carries token/key material.
+                tokens = (response or {}).get("tokenlist") or []
+                _LOGGER.debug(
+                    "get_cloud_keys() v2 for appliance_id %s in home %s "
+                    "with method %s returned %s token entries",
+                    appliance_id,
+                    home_id,
+                    method,
+                    len(tokens),
+                )
+                for token in tokens:
+                    if token["udpId"] == udp_id:
+                        result[method] = {
+                            "token": token["token"].lower(),
+                            "key": token["key"].lower(),
+                        }
+            if result:
+                break
+        if not result:
+            _LOGGER.debug(
+                "v2 getToken returned no keys for appliance_id %s, "
+                "falling back to the v1 endpoint",
+                appliance_id,
+            )
+            return await super().get_cloud_keys(appliance_id)
+        return result
 
     async def list_appliances(
         self,
@@ -565,11 +643,14 @@ class MeijuCloud(MideaCloud):
             "iotAppId": self._app_id,
         }
         fnm = None
-        if response := await self._api_request(
-            endpoint="/v1/appliance/protocol/lua/luaGet",
-            data=data,
-        ):
-            res = await self._session.get(response["url"])
+        if (
+            response := await self._api_request(
+                endpoint="/v1/appliance/protocol/lua/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
@@ -578,7 +659,7 @@ class MeijuCloud(MideaCloud):
                         + self._security.aes_decrypt_with_fixed_key(lua)
                     )
                     stream = stream.replace("\r\n", "\n")
-                    fnm = f"{path}/{response['fileName']}"
+                    fnm = file_path
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
@@ -799,11 +880,14 @@ class SmartHomeCloud(MideaCloud):
         if model_number is not None:
             data["modelNumber"] = model_number
         fnm = None
-        if response := await self._api_request(
-            endpoint="/v2/luaEncryption/luaGet",
-            data=data,
-        ):
-            res = await self._session.get(response["url"])
+        if (
+            response := await self._api_request(
+                endpoint="/v2/luaEncryption/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status == HTTPStatus.OK:
                 lua = await res.text()
                 if lua:
@@ -812,7 +896,7 @@ class SmartHomeCloud(MideaCloud):
                         + self._security.aes_decrypt_with_fixed_key(lua)
                     )
                     stream = stream.replace("\r\n", "\n")
-                    fnm = f"{path}/{response['fileName']}"
+                    fnm = file_path
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
@@ -935,8 +1019,13 @@ class MideaAirCloud(MideaCloud):
                     url,
                     repr(e),
                 )
-        if int(response["errorCode"]) == 0 and "result" in response:
-            return cast("dict[str, Any]", response["result"])
+        if int(response["errorCode"]) == 0:
+            if "result" in response:
+                return cast("dict[str, Any]", response["result"])
+            # The legacy lua endpoint returns its payload under "data" instead
+            # of "result"; fall back to it so download_lua can read the url.
+            if "data" in response:
+                return cast("dict[str, Any]", response["data"])
         return None
 
     async def login(self) -> bool:
@@ -1000,6 +1089,61 @@ class MideaAirCloud(MideaCloud):
                 appliances[int(appliance["id"])] = device_info
             return appliances
         return None
+
+    async def download_lua(
+        self,
+        path: str,
+        device_type: int,
+        sn: str,
+        model_number: str | None = None,  # noqa: ARG002
+        manufacturer_code: str = "0000",
+    ) -> str | None:
+        """Download lua integration.
+
+        The legacy backend returns the lua payload under ``data`` (handled by
+        :meth:`_api_request`) and serves a hex-encoded AES-128-ECB file keyed
+        by the app key (see
+        :meth:`MideaAirSecurity.decrypt_appliance_lua`).
+        """
+        data = self._make_general_data()
+        data.update(
+            {
+                "applianceSn": sn,
+                "applianceType": hex(device_type),
+                "applianceMFCode": manufacturer_code,
+                "version": "0",
+            },
+        )
+        fnm = None
+        if (
+            response := await self._api_request(
+                endpoint="/v1/appliance/protocol/lua/luaGet",
+                data=data,
+            )
+        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
+            url, file_path = metadata
+            res = await self._session.get(url, timeout=ClientTimeout(10))
+            if res.status == HTTPStatus.OK:
+                lua = await res.text()
+                if lua:
+                    try:
+                        decrypted_lua = cast(
+                            "MideaAirSecurity",
+                            self._security,
+                        ).decrypt_appliance_lua(lua)
+                    except (ValueError, UnicodeDecodeError) as e:
+                        _LOGGER.warning(
+                            "Failed to decrypt lua for appliance %s: %s",
+                            sn,
+                            e,
+                        )
+                        return None
+                    stream = 'local bit = require "bit"\n' + decrypted_lua
+                    stream = stream.replace("\r\n", "\n")
+                    fnm = file_path
+                    async with aiofiles.open(fnm, "w") as fp:
+                        await fp.write(stream)
+        return str(fnm) if fnm else None
 
 
 def get_midea_cloud(

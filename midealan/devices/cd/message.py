@@ -768,7 +768,7 @@ class CDSterilizeSetBody(MessageBody):
         ):
             # Temperature echo: decode celsius x2. Keep auto_sterilize_week raw.
             decoded = raw_byte3 / 2.0
-            if (
+            if (  # pragma: no branch
                 MessageSetSterilize.DISINFECT_TEMP_MIN
                 <= decoded
                 <= MessageSetSterilize.DISINFECT_TEMP_MAX

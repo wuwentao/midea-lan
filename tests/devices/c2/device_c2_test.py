@@ -1,5 +1,6 @@
 """Test C2 Device."""
 
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -104,6 +105,15 @@ class TestMideaC2Device:
         new_status = self.device.process_message(bytes(header + body + crc))
         assert new_status == {}
 
+    def test_process_message_partial_response(self) -> None:
+        """Test process message skips attributes missing from the response."""
+        with patch(
+            "midealan.devices.c2.MessageC2Response",
+            return_value=SimpleNamespace(power=True),
+        ):
+            new_status = self.device.process_message(b"")
+        assert new_status == {DeviceAttributes.power.value: True}
+
     def test_set_attribute_power(self) -> None:
         """Test set attribute power sends a power message."""
         with patch.object(self.device, "build_send") as mock_build_send:
@@ -147,6 +157,23 @@ class TestMideaC2Device:
         assert self.device.max_dry_level == 2
         assert self.device.max_water_temp_level == 4
         assert self.device.max_seat_temp_level == 3
+
+    def test_set_customize_partial_and_empty(self) -> None:
+        """Test set customize with partial and empty values."""
+        self.device.set_customize('{"max_dry_level": 2}')
+        assert self.device.max_dry_level == 2
+        assert self.device.max_water_temp_level == 5
+        assert self.device.max_seat_temp_level == 5
+
+        self.device.set_customize('{"max_water_temp_level": 4}')
+        assert self.device.max_dry_level == 3
+        assert self.device.max_water_temp_level == 4
+        assert self.device.max_seat_temp_level == 5
+
+        self.device.set_customize("")
+        assert self.device.max_dry_level == 3
+        assert self.device.max_water_temp_level == 5
+        assert self.device.max_seat_temp_level == 5
 
     def test_set_customize_invalid_json(self) -> None:
         """Test set customize with invalid JSON keeps defaults."""

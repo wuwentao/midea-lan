@@ -49,6 +49,8 @@ POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
 SUB_PROTOCOL_BODY_TEMP_CHECK = 0x80
 TEMP_DECIMAL_MIN_BODY_LENGTH = 20
+C0_DEFAULT_TEMPERATURE_OFFSET = 50
+C0_DEFAULT_INVALID_OUTDOOR_TEMPERATURE_VALUES: frozenset[int] = frozenset()
 TIMER_MIN_SUBPROTOCOL_LENGTH = 27
 XBB_SN8_BYTE_FLAG = 0x31
 XC1_SUBBODY_TYPE_40 = 0x40
@@ -1036,11 +1038,15 @@ class XMessageBody(MessageBody):
     """AC A1/C0 message body - common functions."""
 
     @staticmethod
-    def parse_temperature(integer: int, decimal: int) -> float | None:
+    def parse_temperature(
+        integer: int,
+        decimal: int,
+        offset: int = C0_DEFAULT_TEMPERATURE_OFFSET,
+    ) -> float | None:
         """Decode special signed integer with BCD decimal temperature format."""
         if integer == MAX_BYTE_VALUE:
             return None
-        temp_integer = (integer - 50) / 2
+        temp_integer = (integer - offset) / 2
         if decimal == 0:
             return temp_integer
         if temp_integer < 0:
@@ -1275,7 +1281,14 @@ class CapabilityBody(NewProtocolMessageBody):
 class StateBody(XMessageBody):
     """AC C0 message body."""
 
-    def __init__(self, body: bytearray) -> None:
+    def __init__(
+        self,
+        body: bytearray,
+        indoor_temperature_offset: int = C0_DEFAULT_TEMPERATURE_OFFSET,
+        invalid_outdoor_temperature_values: frozenset[
+            int
+        ] = C0_DEFAULT_INVALID_OUTDOOR_TEMPERATURE_VALUES,
+    ) -> None:
         """Initialize AC C0 message body."""
         super().__init__(body)
         self.power = (body[1] & 0x1) > 0  # powerValue
@@ -1302,8 +1315,17 @@ class StateBody(XMessageBody):
         self.temp_fahrenheit = (body[10] & 0x04) > 0
         self.sleep_mode = (body[10] & 0x01) > 0
         decimal = body[15] if len(body) > TEMP_DECIMAL_MIN_BODY_LENGTH else 0
-        self.indoor_temperature = self.parse_temperature(body[11], decimal & 0x0F)
-        self.outdoor_temperature = self.parse_temperature(body[12], decimal >> 4)
+        self.indoor_temperature = self.parse_temperature(
+            body[11],
+            decimal & 0x0F,
+            indoor_temperature_offset,
+        )
+        outdoor_temperature = body[12]
+        self.outdoor_temperature = (
+            None
+            if outdoor_temperature in invalid_outdoor_temperature_values
+            else self.parse_temperature(outdoor_temperature, decimal >> 4)
+        )
         self.kick_quilt = (body[10] & 0x04) >> 2  # kickQuilt
         self.prevent_cold = (body[10] & 0x20) >> 5  # preventCold
         self.full_dust = ((body[13] & 0x20) >> 5) > 0  # dust_full_time
@@ -1590,6 +1612,10 @@ class MessageACResponse(MessageResponse):
         message: bytearray,
         power_analysis_method: int = 3,
         new_protocol_temperature: bool = False,
+        c0_indoor_temperature_offset: int = C0_DEFAULT_TEMPERATURE_OFFSET,
+        c0_invalid_outdoor_temperature_values: frozenset[
+            int
+        ] = C0_DEFAULT_INVALID_OUTDOOR_TEMPERATURE_VALUES,
     ) -> None:
         """Initialize AC message response."""
         super().__init__(message)
@@ -1633,7 +1659,13 @@ class MessageACResponse(MessageResponse):
             self.message_type in [MessageType.query, MessageType.set]
             and self.body_type == ListTypes.C0
         ):
-            self.set_body(StateBody(super().body))
+            self.set_body(
+                StateBody(
+                    super().body,
+                    c0_indoor_temperature_offset,
+                    c0_invalid_outdoor_temperature_values,
+                ),
+            )
         # messageBytes[0] 0xC1
         elif self.message_type == MessageType.query and self.body_type == ListTypes.C1:
             self.set_body(GroupBody(super().body, power_analysis_method))

@@ -845,3 +845,56 @@ class TestC3UnitParaLuaOffsets:
         response = MessageC3Response(bytes(self.HEADER + body))
         assert hasattr(response, "total_renew_power0")
         assert response.total_renew_power0 == 0
+
+
+class TestC3UnitParaOutdoorTelemetryOffsets:
+    """Pin the X10 body offsets for the outdoor-unit telemetry fields.
+
+    Each case sets the field's byte(s) and puts a different decoy on each
+    neighbouring byte, so a regression that shifts an offset by one cannot
+    pass. These lock the parser's current byte positions; the mapping from
+    byte to physical quantity and its unit still needs a real-device
+    capture to confirm.
+    """
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.query],
+    )
+
+    @staticmethod
+    def _build_response(values: dict[int, int]) -> MessageC3Response:
+        """Build an X10 query response with the given body bytes set."""
+        body = bytearray(96)
+        body[0] = ListTypes.X10
+        for index, value in values.items():
+            body[index] = value
+        return MessageC3Response(
+            bytes(TestC3UnitParaOutdoorTelemetryOffsets.HEADER + body),
+        )
+
+    @pytest.mark.parametrize(
+        ("attribute", "values", "expected"),
+        [
+            ("temp_t3", {6: 99, 7: 33, 8: 88}, 33),
+            ("temp_tp", {8: 88, 9: 41, 10: 77}, 41),
+            ("odu_comp_current", {16: 99, 17: 12, 18: 88}, 12),
+            ("exv_current", {19: 99, 20: 1, 21: 200, 22: 88}, 456),
+            ("temp_t1", {33: 99, 34: 21, 35: 88}, 21),
+            ("temp_t2", {35: 99, 36: 7, 37: 88}, 7),
+            ("temp_t2b", {36: 99, 37: 9, 38: 88}, 9),
+            ("pressure_low", {44: 99, 45: 2, 46: 10, 47: 88}, 522),
+            ("temp_th", {46: 99, 47: 25, 48: 88}, 25),
+            ("odu_target_fre", {48: 99, 49: 60, 50: 88}, 60),
+            ("temp_tf", {51: 99, 52: 44, 53: 88}, 44),
+        ],
+    )
+    def test_field_is_read_from_its_offset(
+        self,
+        attribute: str,
+        values: dict[int, int],
+        expected: int,
+    ) -> None:
+        """Test each telemetry field decodes from the expected body offset."""
+        response = self._build_response(values)
+        assert hasattr(response, attribute)
+        assert getattr(response, attribute) == expected

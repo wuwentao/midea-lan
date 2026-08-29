@@ -1012,6 +1012,30 @@ class TestMessageACResponse:
             "display_control": True,
         }
 
+    def test_message_query_b5_detects_additional_capabilities(self) -> None:
+        """Test the basic B5 frame's trailing flag arms the additional query.
+
+        These are full frames captured from a PortaSplit AC. The basic frame
+        ends in a non-zero flag (device has a second frame); the additional
+        frame ends in a zero flag (no more frames).
+        """
+        basic = bytearray.fromhex(
+            "aa3dac00000000000803b50a1202010114020101150201001e020101170201021a"
+            "02010110020101250207203c203c203c00240201014800010101199831",
+        )
+        additional = bytearray.fromhex(
+            "aa2fac00000000000803b5081f0201002c020101160201043900010151000101e3"
+            "00010113020101cd000103001a6910",
+        )
+
+        basic_response = MessageACResponse(basic)
+        assert hasattr(basic_response, "additional_capabilities")
+        assert basic_response.additional_capabilities is True
+
+        additional_response = MessageACResponse(additional)
+        assert hasattr(additional_response, "additional_capabilities")
+        assert additional_response.additional_capabilities is False
+
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
         [(4, True), (1, True), (0, False)],

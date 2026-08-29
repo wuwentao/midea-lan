@@ -321,8 +321,18 @@ class MideaACDevice(MideaDevice):
         self._bb_timer: bool = False
         # per-mode setpoint limits from the B5 capability, keyed by mode value
         self._temperature_limits: dict[int, tuple[float, float]] | None = None
-        # decoded B5 capability flags (accumulated across B5 frames)
-        self._capabilities: dict[str, bool] = {}
+        # decoded B5 capability flags (accumulated across B5 frames). Values are
+        # mostly booleans, but some (e.g. rate_select level count) are ints.
+        self._capabilities: dict[str, bool | int] = {}
+        # B5 capability query control. Both queries run once, like the appliance
+        # query: on success the flag is cleared so it is never re-sent (the reply
+        # never changes); on timeout the device layer records it in
+        # _unsupported_protocol so it is skipped too. The additional query is
+        # only armed after the basic frame advertises a second frame.
+        self._capability_query = True
+        self._capability_addition_query = False
+        self._support_capability = False
+        self._support_capability_addition = False
         # manual setpoint limits from customize (highest priority)
         self._customize_min_temperature: float | None = None
         self._customize_max_temperature: float | None = None
@@ -386,7 +396,9 @@ class MideaACDevice(MideaDevice):
             MessageQuery(self._message_protocol_version),
             NewProtocolQuery(
                 self._message_protocol_version,
-                supports_rate_select=self._capabilities.get("rate_select", False),
+                supports_rate_select=bool(
+                    self._capabilities.get("rate_select", False),
+                ),
             ),
             # Queried on its own so an empty response for the combined
             # new-protocol query does not suppress the self-clean state.
@@ -399,10 +411,45 @@ class MideaACDevice(MideaDevice):
             GroupOneQuery(self._message_protocol_version),
             GroupTwoQuery(self._message_protocol_version),
             GroupSevenQuery(self._message_protocol_version),
-            CapabilitiesQuery(self._message_protocol_version),
-            CapabilitiesAdditionalQuery(self._message_protocol_version),
+            # Capability queries are not part of the recurring status cycle. They
+            # run once at connect time via build_init_query() while the
+            # _capability_query / _capability_addition_query flags are set.
         ]
         return queries
+
+    def build_init_query(self) -> list[ACQuery]:
+        """Return the B5 capability probes that are still due.
+
+        Both probes are one-shot. The basic query is armed at construction; the
+        additional query is armed only after the basic reply advertises a second
+        frame (see _update_capabilities). Each flag is cleared once its reply is
+        parsed, so a fully-probed device returns an empty list and stops sending
+        capability queries. The subprotocol (BB) devices do not use B5.
+        """
+        if self._used_subprotocol:
+            return []
+        queries: list[ACQuery] = []
+        if self._capability_query:
+            queries.append(CapabilitiesQuery(self._message_protocol_version))
+        if self._capability_addition_query:
+            queries.append(
+                CapabilitiesAdditionalQuery(self._message_protocol_version),
+            )
+        return queries
+
+    def reset_init_query(self) -> None:
+        """Re-arm the B5 capability probes after a socket close.
+
+        Mirrors the appliance-query re-arm: a reconnected device re-probes its
+        capabilities from scratch rather than reusing the previous result. The
+        additional probe stays disarmed until the fresh basic frame advertises a
+        second frame again. Accumulated _capabilities are left in place so the
+        HA integration keeps the last known set until the re-probe overwrites it.
+        """
+        self._capability_query = True
+        self._capability_addition_query = False
+        self._support_capability = False
+        self._support_capability_addition = False
 
     def process_message(self, msg: bytes) -> dict[str, Any]:  # noqa: C901
         """Midea AC device process message."""
@@ -529,7 +576,7 @@ class MideaACDevice(MideaDevice):
                 self._attributes[DeviceAttributes.self_clean] = active
                 new_status[DeviceAttributes.self_clean.value] = active
         new_status.update(self._refresh_temperature_limits(message))
-        self._update_capabilities(message)
+        new_status.update(self._update_capabilities(message))
         return new_status
 
     @staticmethod
@@ -557,13 +604,52 @@ class MideaACDevice(MideaDevice):
             else self._default_refresh_interval
         )
 
-    def _update_capabilities(self, message: MessageACResponse) -> None:
-        """Accumulate decoded B5 capability flags from a B5 response."""
-        if hasattr(message, "capabilities"):
-            self._capabilities.update(message.capabilities)
+    def _update_capabilities(self, message: MessageACResponse) -> dict[str, Any]:
+        """Merge B5 capability flags and advance the capability query state.
+
+        A B5 reply resolves the query it answered: the basic frame clears
+        _capability_query (and arms the additional query when the device
+        advertises a second frame), while the additional frame clears
+        _capability_addition_query. Both are one-shot, so once cleared here the
+        query is never re-sent.
+
+        Returns a status update carrying the merged ``capabilities`` dict so the
+        consumer (e.g. the HA integration, which reads ``device.capabilities``)
+        is notified as soon as a frame is decoded, instead of holding the empty
+        dict seen at initialization. Returns an empty dict for non-B5 messages.
+        """
+        if not hasattr(message, "capabilities"):
+            return {}
+        self._capabilities.update(message.capabilities)
+
+        additional_pending = self._capability_addition_query
+        if additional_pending:
+            # This reply answers the additional (all_second_frame) query.
+            self._support_capability_addition = True
+            self._capability_addition_query = False
+        else:
+            # This reply answers the basic (all_first_frame) query.
+            self._support_capability = True
+            self._capability_query = False
+            if getattr(message, "additional_capabilities", False):
+                # Device advertises a second frame; arm the additional query so
+                # the next refresh_status() prepends it.
+                self._capability_addition_query = True
+
+        _LOGGER.debug(
+            "[%s] Capability state: support=%s support_addition=%s "
+            "addition_pending=%s merged=%s",
+            self.device_id,
+            self._support_capability,
+            self._support_capability_addition,
+            self._capability_addition_query,
+            self._capabilities,
+        )
+        # Publish a copy so downstream mutation can't corrupt the cached dict.
+        return {"capabilities": dict(self._capabilities)}
 
     @property
-    def capabilities(self) -> dict[str, bool]:
+    def capabilities(self) -> dict[str, bool | int]:
         """Return the decoded B5 capability flags reported by the device."""
         return self._capabilities
 

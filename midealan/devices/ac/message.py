@@ -118,6 +118,13 @@ B5_TURBO_HEAT_VALUES = frozenset({1, 3})
 B5_DISPLAY_VALUES = frozenset({1, 2, 100})
 B5_ELECTRICITY_UNSUPPORTED_VALUE = 0  # 0 = unsupported; nonzero = rate level count
 
+# A B5 capability body ends with a trailing [flag, message_id, crc] block. The
+# device sets the flag byte non-zero to signal that a second (additional)
+# capability frame is available. Unlike msmart-ng (whose payload ends in
+# [flag, crc]), midea-lan echoes the message_id byte, so the flag sits three
+# bytes from the end of the parsed body.
+B5_ADDITIONAL_CAPABILITIES_TRAILER_LENGTH = 3
+
 
 class PowerFormats(IntEnum):
     """AC Power/Energy analysis formats."""
@@ -1227,15 +1234,31 @@ class CapabilityBody(NewProtocolMessageBody):
         if NewProtocolTags.b5_humidity in params:
             self.b5_humidity = params[NewProtocolTags.b5_humidity][0]
         self._parse_capabilities(params)
+        self.additional_capabilities = self._detect_additional_capabilities()
+
+    def _detect_additional_capabilities(self) -> bool:
+        """Return whether the device advertises a second capability frame.
+
+        After parse() consumes every parameter, the body still holds a trailing
+        [flag, message_id, crc] block. A non-zero flag means the device has more
+        capabilities that only the additional (all_second_frame) query returns.
+        The flag is read relative to parse()'s end position rather than a fixed
+        offset so a body whose parameters are truncated is handled safely.
+        """
+        remaining = self.data[self._params_end_pos :]
+        if len(remaining) < B5_ADDITIONAL_CAPABILITIES_TRAILER_LENGTH:
+            return False
+        return bool(remaining[-B5_ADDITIONAL_CAPABILITIES_TRAILER_LENGTH])
 
     def _parse_capabilities(self, params: dict[int, bytearray]) -> None:
         """Decode B5 capability values into feature flags.
 
         The raw byte of each capability is not a simple 0/1 flag; each one has
         its own value semantics (reverse-engineered, matching the msmart
-        project). Only capabilities actually reported are added.
+        project). Only capabilities actually reported are added. Values are
+        mostly booleans, but some (e.g. rate_select's level count) are ints.
         """
-        caps: dict[str, bool] = {}
+        caps: dict[str, bool | int] = {}
         if NewProtocolTags.b5_mode in params:
             value = params[NewProtocolTags.b5_mode][0]
             caps["heat_mode"] = value in B5_HEAT_MODE_VALUES

@@ -828,6 +828,10 @@ class NewProtocolMessageBody(MessageBody):
     def __init__(self, body: bytearray) -> None:
         """Initialize new protocol message body."""
         super().__init__(body)
+        # Offset in ``data`` just past the last parsed parameter. Set by
+        # parse(); subclasses (e.g. AC's CapabilityBody) read the bytes after
+        # this point without re-walking the parameter list.
+        self._params_end_pos = 0
         if self.body_type == ListTypes.B5:
             self._pack_len = NewProtocolPackLength.FOUR
         elif self.body_type in [ListTypes.B0, ListTypes.B1]:
@@ -877,8 +881,10 @@ class NewProtocolMessageBody(MessageBody):
         # (e.g. bytearray([0xB1])) returns {} instead of leaving param_count
         # unbound for the debug log below (would raise UnboundLocalError).
         param_count = 0
+        # Declared before the try so it survives an early IndexError and can be
+        # recorded in _params_end_pos below.
+        pos = 2  # # 跳过协议头(b1)和参数数量
         try:
-            pos = 2  # # 跳过协议头(b1)和参数数量
             param_count = self.data[1]  # 参数数量
             for _ in range(param_count):
                 if pos + 2 > len(self.data):  # 防止越界
@@ -906,6 +912,9 @@ class NewProtocolMessageBody(MessageBody):
         except IndexError:
             # Some device used non-standard new-protocol(美的乐享三代中央空调?)
             _LOGGER.debug("Non-standard new-protocol %s", self.data.hex())
+        # Record where parsing stopped so callers can inspect trailing bytes
+        # (e.g. the B5 additional-capabilities flag) without re-parsing.
+        self._params_end_pos = pos
         # format result key to hex for debug log
         hex_result = {hex(k): v for k, v in result.items()}
         _LOGGER.debug(

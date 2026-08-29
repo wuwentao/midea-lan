@@ -311,7 +311,9 @@ class TestMideaACDevice:
 
         self.device._used_subprotocol = False
         queries = self.device.build_query()
-        assert len(queries) == 11
+        # Capability queries are no longer part of the recurring status cycle;
+        # they are returned by build_init_query() instead.
+        assert len(queries) == 9
         assert isinstance(queries[0], MessageQuery)
         assert isinstance(queries[1], NewProtocolQuery)
         assert isinstance(queries[2], NewProtocolSelfCleanQuery)
@@ -321,8 +323,39 @@ class TestMideaACDevice:
         assert isinstance(queries[6], GroupOneQuery)
         assert isinstance(queries[7], GroupTwoQuery)
         assert isinstance(queries[8], GroupSevenQuery)
-        assert isinstance(queries[9], CapabilitiesQuery)
-        assert isinstance(queries[10], CapabilitiesAdditionalQuery)
+        assert not any(
+            isinstance(q, CapabilitiesQuery | CapabilitiesAdditionalQuery)
+            for q in queries
+        )
+
+    def test_build_init_query_capability_lifecycle(self) -> None:
+        """Test build_init_query arms/clears the one-shot B5 capability probes."""
+        self.device._used_subprotocol = False
+        # Basic query is armed at construction; additional is not yet.
+        assert self.device._capability_query is True
+        assert self.device._capability_addition_query is False
+        init = self.device.build_init_query()
+        assert len(init) == 1
+        assert isinstance(init[0], CapabilitiesQuery)
+        assert not isinstance(init[0], CapabilitiesAdditionalQuery)
+
+        # After the basic reply advertises a second frame, only the additional
+        # query is due.
+        self.device._capability_query = False
+        self.device._capability_addition_query = True
+        init = self.device.build_init_query()
+        assert len(init) == 1
+        assert isinstance(init[0], CapabilitiesAdditionalQuery)
+
+        # Once both are resolved, no capability query is sent.
+        self.device._capability_addition_query = False
+        assert self.device.build_init_query() == []
+
+        # Subprotocol (BB) devices never use B5 capability probes.
+        self.device._used_subprotocol = True
+        self.device._capability_query = True
+        self.device._capability_addition_query = True
+        assert self.device.build_init_query() == []
 
     def test_build_query_omits_rate_select_until_capability_confirmed(self) -> None:
         """Test rate_select stays out of the B1 query until b5_electricity confirms it.
@@ -549,6 +582,126 @@ class TestMideaACDevice:
             "eco": True,
             "anion": True,
         }
+
+    def test_b5_response_publishes_capabilities_in_status(self) -> None:
+        """Test the merged capabilities dict is pushed through update_all.
+
+        The HA integration reads ``device.capabilities`` on each status update,
+        so process_message must surface the decoded dict rather than only
+        caching it internally.
+        """
+        body = bytearray([0xB5, 0x02])
+        body += bytearray([0x14, 0x02, 0x01, 7])  # b5_mode
+        body += bytearray([0x12, 0x02, 0x01, 1])  # b5_eco
+
+        # process_message's return value is what parse_message forwards verbatim
+        # to update_all(), so the dict here is what listeners receive.
+        status = self.device.process_message(self._response(body))
+
+        assert "capabilities" in status
+        assert status["capabilities"]["heat_mode"] is True
+        assert status["capabilities"] == self.device.capabilities
+        # It is a copy, not the internal dict, so listeners cannot corrupt it.
+        assert status["capabilities"] is not self.device.capabilities
+
+    def test_non_b5_response_omits_capabilities_from_status(self) -> None:
+        """Test non-capability responses do not carry a capabilities key."""
+        # A plain C0 state body has no capabilities.
+        body = bytearray([0xC0]) + bytearray(20)
+        status = self.device.process_message(self._response(body))
+
+        assert "capabilities" not in status
+
+    def test_reset_init_query_re_arms_capability_probes(self) -> None:
+        """Test close_socket re-arms the B5 probes like the appliance query.
+
+        A reconnected device must re-probe capabilities from scratch instead of
+        reusing the previous result.
+        """
+        basic = bytearray.fromhex(
+            "aa3dac00000000000803b50a1202010114020101150201001e020101170201021a"
+            "02010110020101250207203c203c203c00240201014800010101199831",
+        )
+        additional = bytearray.fromhex(
+            "aa2fac00000000000803b5081f0201002c020101160201043900010151000101e3"
+            "00010113020101cd000103001a6910",
+        )
+        self.device.process_message(bytes(basic))
+        self.device.process_message(bytes(additional))
+        # Snapshot into locals: mypy narrows an asserted attribute to a literal
+        # and can't see the opaque reset_init_query() below flips it back, so a
+        # direct `is True`/`is False` pair would be reported unreachable.
+        probed = (
+            self.device._capability_query,
+            self.device._support_capability,
+            self.device._support_capability_addition,
+        )
+        assert probed == (False, True, True)
+
+        # A socket close re-arms the basic probe (additional stays disarmed until
+        # a fresh basic frame advertises it again).
+        self.device.reset_init_query()
+        rearmed = (
+            self.device._capability_query,
+            self.device._capability_addition_query,
+            self.device._support_capability,
+            self.device._support_capability_addition,
+        )
+        assert rearmed == (True, False, False, False)
+        assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
+
+    def test_capability_query_lifecycle_stops_after_both_frames(self) -> None:
+        """Test the two B5 probes run once then stop, merging both frames.
+
+        The basic frame advertises a second frame, which arms the additional
+        query; once the additional frame is parsed, both flags are cleared so no
+        capability query is ever sent again.
+        """
+        basic = bytearray.fromhex(
+            "aa3dac00000000000803b50a1202010114020101150201001e020101170201021a"
+            "02010110020101250207203c203c203c00240201014800010101199831",
+        )
+        additional = bytearray.fromhex(
+            "aa2fac00000000000803b5081f0201002c020101160201043900010151000101e3"
+            "00010113020101cd000103001a6910",
+        )
+
+        # Initial state: only the basic probe is armed. Snapshot into a local so
+        # mypy's warn_unreachable does not treat the later contradicting asserts
+        # (after the opaque process_message calls) as unreachable.
+        initial = (
+            self.device._capability_query,
+            self.device._capability_addition_query,
+            self.device._support_capability,
+            self.device._support_capability_addition,
+        )
+        assert initial == (True, False, False, False)
+        assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
+
+        # Basic frame: records support, clears the basic probe, arms additional.
+        self.device.process_message(bytes(basic))
+        after_basic = (
+            self.device._support_capability,
+            self.device._capability_query,
+            self.device._capability_addition_query,
+        )
+        assert after_basic == (True, False, True)
+        assert [type(q) for q in self.device.build_init_query()] == [
+            CapabilitiesAdditionalQuery,
+        ]
+
+        # Additional frame: records support and clears the additional probe.
+        self.device.process_message(bytes(additional))
+        after_additional = (
+            self.device._support_capability_addition,
+            self.device._capability_addition_query,
+        )
+        assert after_additional == (True, False)
+        assert self.device.build_init_query() == []
+
+        # Both frames merged into a single capability dict.
+        assert self.device.capabilities["rate_select"] is True
+        assert self.device.capabilities["cool_mode"] is True
 
     def test_process_message(self) -> None:
         """Test process message."""

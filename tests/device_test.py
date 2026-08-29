@@ -621,6 +621,43 @@ class TestMideaDevice:
             self.device._socket = socket_mock
             self.device.refresh_status(True)
 
+    def test_build_init_query_prepended_before_status_queries(self) -> None:
+        """Init queries run after the appliance query and before status queries.
+
+        build_init_query() (e.g. AC's one-shot B5 capability probes) must be
+        prepended ahead of build_query() so their replies are processed before
+        the recurring status queries, but still after the appliance query.
+        """
+        socket_mock = MagicMock()
+        init_cmd = MagicMock(name="init_cmd")
+        real_cmd = MagicMock(name="real_cmd")
+        init_cmd.__class__.__name__ = "InitQuery"
+        real_cmd.__class__.__name__ = "StatusQuery"
+        sent: list[object] = []
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(self.device, "build_init_query", return_value=[init_cmd]),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])] * 3),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS] * 3,
+            ),
+        ):
+            self.device._socket = socket_mock
+            assert self.device._appliance_query is True
+            self.device.refresh_status(True)
+
+        # appliance query first, then the init query, then the status query.
+        assert sent[0].__class__.__name__ == "MessageQueryAppliance"
+        assert sent[1] is init_cmd
+        assert sent[2] is real_cmd
+
     def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
         """NoSupportedProtocol must drop the socket, like every other error here.
 

@@ -398,8 +398,13 @@ class MideaDevice(threading.Thread):
         """Refresh device status."""
         real_cmds: list = self.build_query()
         cmds = real_cmds
+        # One-time init queries (e.g. AC B5 capability probes) run before the
+        # recurring status queries so later queries can react to their result.
+        init_cmds = self.build_init_query()
+        if init_cmds:
+            cmds = [*init_cmds, *cmds]
         if self._appliance_query:
-            cmds = [MessageQueryAppliance(self.device_type), *real_cmds]
+            cmds = [MessageQueryAppliance(self.device_type), *cmds]
         error_count = 0
         _LOGGER.debug(
             "[%s] refresh_status with cmds: %s, check_protocol %s, "
@@ -608,6 +613,27 @@ class MideaDevice(threading.Thread):
         """Build query."""
         raise NotImplementedError
 
+    def build_init_query(self) -> list:
+        """Build one-time queries to run once at connect time.
+
+        These are prepended ahead of build_query() during refresh_status(), so
+        their replies are processed before the recurring status queries. A
+        device only needs to send these once (e.g. capability probes whose reply
+        never changes); the subclass clears its own arming flags when the reply
+        is parsed, and any query that times out is recorded in
+        _unsupported_protocol and skipped from then on. The base class has none.
+        """
+        return []
+
+    def reset_init_query(self) -> None:
+        """Re-arm the one-time init queries after the socket is closed.
+
+        Called from close_socket() alongside the appliance-query re-arm so a
+        reconnected device re-probes from scratch instead of reusing stale
+        results. Subclasses that override build_init_query() reset their arming
+        flags here. The base class has no init queries, so this is a no-op.
+        """
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Process message."""
         raise NotImplementedError
@@ -700,6 +726,9 @@ class MideaDevice(threading.Thread):
                 # pre_process_message and was never set back, so a reconnected device
                 # would skip protocol detection and re-probe with build_query() alone.
                 self._appliance_query = True
+                # Re-arm one-time init queries (e.g. AC B5 capability probes) so a
+                # reconnected device re-probes instead of reusing stale results.
+                self.reset_init_query()
                 self._buffer = b""
         if sock is not None:
             try:

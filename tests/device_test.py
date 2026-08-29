@@ -658,6 +658,112 @@ class TestMideaDevice:
         assert sent[1] is init_cmd
         assert sent[2] is real_cmd
 
+    def test_followup_init_query_spliced_into_checked_pass(self) -> None:
+        """A reply that arms a follow-up init query gets it validated in-pass.
+
+        The AC additional-capability probe is armed only after the basic frame's
+        reply, i.e. after the command list was built. It must be sent and
+        validated inside the same check_protocol pass, not deferred to an
+        unchecked refresh where a timeout could never blacklist it.
+        """
+        socket_mock = MagicMock()
+        self.device._appliance_query = False
+
+        class _Basic:
+            pass
+
+        class _Additional:
+            pass
+
+        basic = _Basic()
+        additional = _Additional()
+        real_cmd = MagicMock(name="real_cmd")
+        real_cmd.__class__.__name__ = "StatusQuery"
+        # Arm the follow-up only after the basic probe's reply is processed.
+        armed = {"additional": False}
+        sent: list[object] = []
+
+        def build_init() -> list[object]:
+            return [additional] if armed["additional"] else [basic]
+
+        def parse(_msg: bytes) -> MessageResult:
+            if sent and isinstance(sent[-1], _Basic):
+                armed["additional"] = True
+            return MessageResult.SUCCESS
+
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(self.device, "build_init_query", side_effect=build_init),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])] * 3),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(self.device, "parse_message", side_effect=parse),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)
+
+        # basic probe, then the spliced additional probe, then the status query.
+        assert sent[0] is basic
+        assert sent[1] is additional
+        assert sent[2] is real_cmd
+
+    def test_followup_init_query_blacklisted_on_timeout(self) -> None:
+        """An armed follow-up probe that times out is recorded, not re-sent.
+
+        Once the additional probe is spliced in and times out during the checked
+        pass, it lands in _unsupported_protocol, so it is never queued again even
+        though build_init_query() keeps reporting it as armed.
+        """
+        socket_mock = MagicMock()
+        self.device._appliance_query = False
+
+        class _Basic:
+            pass
+
+        class _Additional:
+            pass
+
+        basic = _Basic()
+        additional = _Additional()
+        real_cmd = MagicMock(name="real_cmd")
+        real_cmd.__class__.__name__ = "StatusQuery"
+        armed = {"additional": False}
+        sent: list[object] = []
+
+        def build_init() -> list[object]:
+            return [additional] if armed["additional"] else [basic]
+
+        def parse(_msg: bytes) -> MessageResult:
+            if sent and isinstance(sent[-1], _Basic):
+                armed["additional"] = True
+            return MessageResult.SUCCESS
+
+        # basic reply succeeds, additional probe times out, status query succeeds.
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(self.device, "build_init_query", side_effect=build_init),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[bytearray([0x0]), TimeoutError(), bytearray([0x0])],
+            ),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(self.device, "parse_message", side_effect=parse),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)  # must not raise (real query answered)
+
+        assert "_Additional" in self.device._unsupported_protocol
+        # Sent exactly once despite still being reported as armed.
+        assert sum(isinstance(c, _Additional) for c in sent) == 1
+
     def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
         """NoSupportedProtocol must drop the socket, like every other error here.
 

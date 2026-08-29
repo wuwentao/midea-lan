@@ -394,6 +394,26 @@ class MideaDevice(threading.Thread):
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
+    def _splice_followup_init_queries(
+        self,
+        cmds: list,
+        index: int,
+        queued_init: set[str],
+    ) -> None:
+        """Insert init queries armed by the reply just processed.
+
+        Called from refresh_status()'s checked pass after a reply. Each newly
+        armed init query is inserted at ``index`` (the read cursor) so it is the
+        next command sent and validated in the same pass. ``queued_init`` records
+        every init query already queued this refresh, so a probe left armed after
+        a timeout is not inserted again and thus never re-sent.
+        """
+        for follow_up in self.build_init_query():
+            name = follow_up.__class__.__name__
+            if name not in queued_init and name not in self._unsupported_protocol:
+                cmds.insert(index, follow_up)
+                queued_init.add(name)
+
     def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status."""
         real_cmds: list = self.build_query()
@@ -406,6 +426,11 @@ class MideaDevice(threading.Thread):
         if self._appliance_query:
             cmds = [MessageQueryAppliance(self.device_type), *cmds]
         error_count = 0
+        # Init-query classes already queued this refresh. A reply can arm a
+        # follow-up init query (e.g. the AC additional-capability probe), which
+        # is spliced into this same pass below; the set stops it being queued
+        # more than once, so a probe left armed after a timeout is not re-sent.
+        queued_init = {cmd.__class__.__name__ for cmd in init_cmds}
         _LOGGER.debug(
             "[%s] refresh_status with cmds: %s, check_protocol %s, "
             "device %s, type %s, model %s, subtype %s, device_protocol: %s, "
@@ -421,7 +446,12 @@ class MideaDevice(threading.Thread):
             self._message_protocol_version,
             self._unsupported_protocol,
         )
-        for cmd in cmds:
+        # Index-based so a follow-up init query armed while processing a reply
+        # can be inserted and validated within this same checked pass.
+        index = 0
+        while index < len(cmds):
+            cmd = cmds[index]
+            index += 1
             if cmd.__class__.__name__ not in self._unsupported_protocol:
                 # set socket QUERY_TIMEOUT for query msg
                 # build_send exception should be catch by connect/run
@@ -450,6 +480,16 @@ class MideaDevice(threading.Thread):
                                 raise ResponseException  # noqa: TRY301
                         # recovery SOCKET_TIMEOUT after recv msg
                         self._socket.settimeout(SOCKET_TIMEOUT)
+                        # A reply may arm a follow-up init query (e.g. the AC
+                        # additional-capability probe, armed only once the basic
+                        # frame advertises it). Splice any newly-armed probe in
+                        # at the read cursor so it is the next command sent and
+                        # validated within this checked pass.
+                        self._splice_followup_init_queries(
+                            cmds,
+                            index,
+                            queued_init,
+                        )
                     # only catch TimoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
                     except TimeoutError:

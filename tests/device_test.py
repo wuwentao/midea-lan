@@ -764,6 +764,52 @@ class TestMideaDevice:
         # Sent exactly once despite still being reported as armed.
         assert sum(isinstance(c, _Additional) for c in sent) == 1
 
+    def test_blacklisted_init_query_still_advances_stage_in_checked_pass(self) -> None:
+        """A skipped (already-unsupported) init stage still advances to the next.
+
+        When an init query is already in _unsupported_protocol its send is
+        skipped, but its stage is still resolved: the checked pass must build and
+        send the next stage (the status queries) rather than stalling on the
+        skipped command.
+        """
+        socket_mock = MagicMock()
+        self.device._appliance_query = False
+
+        class _Init:
+            pass
+
+        init_cmd = _Init()
+        self.device._unsupported_protocol = ["_Init"]
+        real_cmd = MagicMock(name="real_cmd")
+        real_cmd.__class__.__name__ = "StatusQuery"
+        armed = {"init": True}
+        sent: list[object] = []
+
+        def build_init() -> list[object]:
+            return [init_cmd] if armed["init"] else []
+
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(self.device, "build_init_query", side_effect=build_init),
+            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)
+
+        # The skipped init query is never sent, but the status stage still runs.
+        assert init_cmd not in sent
+        assert sent == [real_cmd]
+
     def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
         """NoSupportedProtocol must drop the socket, like every other error here.
 
@@ -912,6 +958,31 @@ class TestMideaDevice:
             self.device.refresh_status()
 
         build_send_mock.assert_called_once_with(cmd, query=True)
+
+    def test_unchecked_refresh_skips_unsupported_query_without_advancing(self) -> None:
+        """An unchecked refresh skips an unsupported query and sends the rest.
+
+        With check_protocol=False no reply is awaited inline, so a command in
+        _unsupported_protocol takes the SKIP branch and does not trigger a stage
+        advance -- the periodic refresh must simply pass over it and still send
+        the remaining, supported query.
+        """
+        supported = type("Supported", (), {})()
+        unsupported = type("Unsupported", (), {})()
+        self.device._appliance_query = False
+        self.device._unsupported_protocol = ["Unsupported"]
+        with (
+            patch.object(
+                self.device,
+                "build_query",
+                return_value=[unsupported, supported],
+            ),
+            patch.object(self.device, "build_send") as build_send_mock,
+        ):
+            self.device.refresh_status()
+
+        # Only the supported query is sent; the unsupported one is skipped.
+        build_send_mock.assert_called_once_with(supported, query=True)
 
     def test_parse_message(self) -> None:
         """Test parse message."""

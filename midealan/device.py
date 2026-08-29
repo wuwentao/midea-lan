@@ -394,45 +394,122 @@ class MideaDevice(threading.Thread):
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
-    def _splice_followup_init_queries(
+    def _await_query_reply(self) -> None:
+        """Block until the current query is answered (checked pass only).
+
+        Loops over socket reads until parse_message reports SUCCESS, then
+        restores SOCKET_TIMEOUT. A PADDING result keeps reading; any other
+        result raises ResponseException. A missing socket or a closed peer
+        raises to the connect/main loop. TimeoutError from recv propagates to
+        the caller, which records the query as unsupported.
+        """
+        while True:
+            if not self._socket:
+                _LOGGER.debug("[%s] device socket is none", self._device_id)
+                # raise exception to connect/main loop
+                raise SocketException
+            msg = self._socket.recv(512)
+            if len(msg) == 0:
+                raise ConnectionResetError("Connection closed by peer.")
+            result = self.parse_message(msg)
+            # Prevent infinite loop
+            if result == MessageResult.SUCCESS:
+                break
+            if result == MessageResult.PADDING:
+                continue
+            raise ResponseException
+        # recovery SOCKET_TIMEOUT after recv msg
+        self._socket.settimeout(SOCKET_TIMEOUT)
+
+    def _advance_query_stage(
         self,
         cmds: list,
-        index: int,
-        queued_init: set[str],
-    ) -> None:
-        """Insert init queries armed by the reply just processed.
+        queued: set[str],
+        real_cmds: list,
+        status_appended: bool,
+    ) -> tuple[list, bool, bool]:
+        """Append the next due query stage to ``cmds`` in dependency order.
 
-        Called from refresh_status()'s checked pass after a reply. Each newly
-        armed init query is inserted at ``index`` (the read cursor) so it is the
-        next command sent and validated in the same pass. ``queued_init`` records
-        every init query already queued this refresh, so a probe left armed after
-        a timeout is not inserted again and thus never re-sent.
+        Queries are built lazily, one stage at a time, so each stage sees the
+        state resolved by the previous stage's reply: the one-time init queries
+        (e.g. the AC B5 capability probes, which need the protocol version the
+        appliance reply reports) run first, offered until they are exhausted,
+        then the recurring status queries (which may need the decoded
+        capabilities). Commands already queued this refresh are filtered out, so
+        a probe left armed after a timeout -- still reported by build_init_query
+        but recorded in _unsupported_protocol -- is not queued a second time.
+
+        Returns the status-query list (for the all-failed check), whether the
+        status stage has been appended yet, and whether this call appended
+        anything (the unchecked pass loops on it until every stage is queued).
         """
-        for follow_up in self.build_init_query():
-            name = follow_up.__class__.__name__
-            if name not in queued_init and name not in self._unsupported_protocol:
-                cmds.insert(index, follow_up)
-                queued_init.add(name)
+        new_init = [
+            cmd
+            for cmd in self.build_init_query()
+            if cmd.__class__.__name__ not in queued
+        ]
+        if new_init:
+            for cmd in new_init:
+                queued.add(cmd.__class__.__name__)
+                cmds.append(cmd)
+            return real_cmds, status_appended, True
+        if not status_appended:
+            real_cmds = self.build_query()
+            for cmd in real_cmds:
+                queued.add(cmd.__class__.__name__)
+                cmds.append(cmd)
+            return real_cmds, True, True
+        return real_cmds, status_appended, False
 
     def refresh_status(self, check_protocol: bool = False) -> None:
-        """Refresh device status."""
-        real_cmds: list = self.build_query()
-        cmds = real_cmds
-        # One-time init queries (e.g. AC B5 capability probes) run before the
-        # recurring status queries so later queries can react to their result.
-        init_cmds = self.build_init_query()
-        if init_cmds:
-            cmds = [*init_cmds, *cmds]
-        if self._appliance_query:
-            cmds = [MessageQueryAppliance(self.device_type), *cmds]
+        """Refresh device status.
+
+        Queries are built and sent in dependency order so each stage's reply
+        can inform the next: the appliance query first (it reports the message
+        protocol version); once answered, the one-time init/capability probes
+        are built (they need that version) and sent; once those are answered,
+        the recurring status queries are built (they may need the decoded
+        capabilities) and sent. In the checked pass each stage's reply is
+        awaited before the next stage is built, via _advance_query_stage(). In
+        the unchecked periodic refresh no reply is awaited inline -- the run
+        loop parses them -- so any still-armed stage is built and sent back to
+        back.
+        """
+        cmds: list = []
+        real_cmds: list = []
+        status_appended = False
         error_count = 0
-        # Init-query classes already queued this refresh. A reply can arm a
-        # follow-up init query (e.g. the AC additional-capability probe), which
-        # is spliced into this same pass below; the set stops it being queued
-        # more than once, so a probe left armed after a timeout is not re-sent.
-        queued_init = {cmd.__class__.__name__ for cmd in init_cmds}
+        # Names already queued this refresh, so a stage command left armed after
+        # a timeout (recorded in _unsupported_protocol) is not queued again.
+        queued: set[str] = set()
+        # Stage 1: the appliance query. When its reply will be awaited (checked
+        # pass), later stages are appended only after it, so they see the
+        # protocol version it reports. Otherwise they are seeded below.
+        if self._appliance_query:
+            cmds.append(MessageQueryAppliance(self.device_type))
+            queued.add("MessageQueryAppliance")
+        if check_protocol:
+            # Nothing to await first (appliance query already done): seed the
+            # next stage now; its reply then drives the remaining stages.
+            if not cmds:
+                real_cmds, status_appended, _ = self._advance_query_stage(
+                    cmds,
+                    queued,
+                    real_cmds,
+                    status_appended,
+                )
+        else:
+            # No inline replies: build every still-armed stage up front.
+            advanced = True
+            while advanced:
+                real_cmds, status_appended, advanced = self._advance_query_stage(
+                    cmds,
+                    queued,
+                    real_cmds,
+                    status_appended,
+                )
         _LOGGER.debug(
-            "[%s] refresh_status with cmds: %s, check_protocol %s, "
+            "[%s] refresh_status seed cmds: %s, check_protocol %s, "
             "device %s, type %s, model %s, subtype %s, device_protocol: %s, "
             "message_protocol %s, unsupported_protocol: %s",
             self._device_id,
@@ -446,8 +523,8 @@ class MideaDevice(threading.Thread):
             self._message_protocol_version,
             self._unsupported_protocol,
         )
-        # Index-based so a follow-up init query armed while processing a reply
-        # can be inserted and validated within this same checked pass.
+        # Index-based so the next stage, built only once the current reply is
+        # parsed, can be appended and validated within this same checked pass.
         index = 0
         while index < len(cmds):
             cmd = cmds[index]
@@ -459,37 +536,7 @@ class MideaDevice(threading.Thread):
                 # init check_protocol, skip timeout exception
                 if check_protocol:
                     try:
-                        while True:
-                            if not self._socket:
-                                _LOGGER.debug(
-                                    "[%s] device socket is none",
-                                    self._device_id,
-                                )
-                                # raise exception to connect/main loop
-                                raise SocketException
-                            msg = self._socket.recv(512)
-                            if len(msg) == 0:
-                                raise ConnectionResetError("Connection closed by peer.")
-                            result = self.parse_message(msg)
-                            # Prevent infinite loop
-                            if result == MessageResult.SUCCESS:
-                                break
-                            elif result == MessageResult.PADDING:  # noqa: RET508
-                                continue
-                            else:
-                                raise ResponseException  # noqa: TRY301
-                        # recovery SOCKET_TIMEOUT after recv msg
-                        self._socket.settimeout(SOCKET_TIMEOUT)
-                        # A reply may arm a follow-up init query (e.g. the AC
-                        # additional-capability probe, armed only once the basic
-                        # frame advertises it). Splice any newly-armed probe in
-                        # at the read cursor so it is the next command sent and
-                        # validated within this checked pass.
-                        self._splice_followup_init_queries(
-                            cmds,
-                            index,
-                            queued_init,
-                        )
+                        self._await_query_reply()
                     # only catch TimoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
                     except TimeoutError:
@@ -512,6 +559,18 @@ class MideaDevice(threading.Thread):
                             cmd.__class__.__name__,
                             cmd,
                         )
+                    # The reply (or its absence) may resolve the state the next
+                    # stage depends on -- the appliance reply enables the
+                    # capability probes, a capability reply the status queries.
+                    # Append that stage now so it is sent and validated in this
+                    # same checked pass, not deferred to an unchecked refresh
+                    # where a timeout could never blacklist it.
+                    real_cmds, status_appended, _ = self._advance_query_stage(
+                        cmds,
+                        queued,
+                        real_cmds,
+                        status_appended,
+                    )
             else:
                 _LOGGER.debug(
                     "[%s] refresh_status with cmd: %s, unsupported protocol, SKIP",
@@ -520,6 +579,15 @@ class MideaDevice(threading.Thread):
                 )
                 if cmd in real_cmds:
                     error_count += 1
+                # A skipped (already-unsupported) stage command still resolves
+                # its stage, so advance to the next one in the checked pass.
+                if check_protocol:
+                    real_cmds, status_appended, _ = self._advance_query_stage(
+                        cmds,
+                        queued,
+                        real_cmds,
+                        status_appended,
+                    )
             # All the REAL status queries failed. The appliance query is excluded: it
             # answers even when the device serves no status protocol, so counting it
             # left error_count one short of len(cmds) and the failure was masked --
@@ -656,12 +724,19 @@ class MideaDevice(threading.Thread):
     def build_init_query(self) -> list:
         """Build one-time queries to run once at connect time.
 
-        These are prepended ahead of build_query() during refresh_status(), so
-        their replies are processed before the recurring status queries. A
-        device only needs to send these once (e.g. capability probes whose reply
-        never changes); the subclass clears its own arming flags when the reply
-        is parsed, and any query that times out is recorded in
-        _unsupported_protocol and skipped from then on. The base class has none.
+        refresh_status() sends these after the appliance query and before the
+        recurring build_query() status queries, and -- crucially -- builds them
+        only once the appliance reply has set the message protocol version, so
+        they can depend on it. Their own replies are then processed before the
+        status queries are built, so a status query can react to the result
+        (e.g. the AC B5 capability probes decoded here). A device only needs to
+        send these once (their reply never changes); the subclass clears its own
+        arming flags when the reply is parsed, and any query that times out is
+        recorded in _unsupported_protocol and skipped from then on. The subclass
+        may return a follow-up query only after an earlier init reply is parsed
+        (e.g. the AC additional-capability probe); refresh_status() keeps
+        offering build_init_query() until it is exhausted. The base class has
+        none.
         """
         return []
 

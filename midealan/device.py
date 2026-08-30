@@ -666,9 +666,9 @@ class MideaDevice(threading.Thread):
                             cont = self.pre_process_message(decrypted)
                         if cont:
                             _LOGGER.debug(
-                                "[%s] process message %s for device %s, \
-                                model %s, subtype %s, \
-                                device protocol %s, message procol %s",
+                                "[%s] process message %s for device %s,"
+                                "model %s, subtype %s, "
+                                "device protocol %s, message protocol %s",
                                 self._device_id,
                                 decrypted.hex(),
                                 self._device_name,
@@ -687,9 +687,9 @@ class MideaDevice(threading.Thread):
                                 )
                     except Exception:
                         _LOGGER.exception(
-                            "[%s] Error in process message %s, \
-                                model %s, subtype %s, \
-                                device protocol %s, message procol %s",
+                            "[%s] Error in process message %s, "
+                            "model %s, subtype %s, "
+                            "device protocol %s, message protocol %s",
                             self._device_id,
                             decrypted.hex(),
                             self._model,

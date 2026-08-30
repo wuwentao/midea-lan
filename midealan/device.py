@@ -443,11 +443,21 @@ class MideaDevice(threading.Thread):
         status stage has been appended yet, and whether this call appended
         anything (the unchecked pass loops on it until every stage is queued).
         """
-        new_init = [
-            cmd
-            for cmd in self.build_init_query()
-            if cmd.__class__.__name__ not in queued
-        ]
+        # The init/capability probes depend on the message protocol version the
+        # appliance reply reports. Offer them only once a parsed reply has
+        # cleared _appliance_query; if the appliance query timed out, raised, or
+        # is still pending, _message_protocol_version is unresolved (0), so skip
+        # straight to build_query() rather than probe with a stale version and
+        # risk blacklisting a capability query for the whole connection.
+        new_init = (
+            [
+                cmd
+                for cmd in self.build_init_query()
+                if cmd.__class__.__name__ not in queued
+            ]
+            if not self._appliance_query
+            else []
+        )
         if new_init:
             for cmd in new_init:
                 queued.add(cmd.__class__.__name__)

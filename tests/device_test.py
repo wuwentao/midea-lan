@@ -634,6 +634,14 @@ class TestMideaDevice:
         init_cmd.__class__.__name__ = "InitQuery"
         real_cmd.__class__.__name__ = "StatusQuery"
         sent: list[object] = []
+
+        def parse(_msg: bytes) -> MessageResult:
+            # The appliance reply is what clears _appliance_query in production
+            # (via pre_process_message); model that so the init stage is armed.
+            if sent and sent[-1].__class__.__name__ == "MessageQueryAppliance":
+                self.device._appliance_query = False
+            return MessageResult.SUCCESS
+
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", return_value=[init_cmd]),
@@ -643,11 +651,7 @@ class TestMideaDevice:
                 "build_send",
                 side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
             ),
-            patch.object(
-                self.device,
-                "parse_message",
-                side_effect=[MessageResult.SUCCESS] * 3,
-            ),
+            patch.object(self.device, "parse_message", side_effect=parse),
         ):
             self.device._socket = socket_mock
             assert self.device._appliance_query is True
@@ -657,6 +661,56 @@ class TestMideaDevice:
         assert sent[0].__class__.__name__ == "MessageQueryAppliance"
         assert sent[1] is init_cmd
         assert sent[2] is real_cmd
+
+    def test_unresolved_appliance_query_skips_init_probes(self) -> None:
+        """A failed appliance query must not arm the init/capability probes.
+
+        The init probes (e.g. AC B5 capability queries) need the message
+        protocol version the appliance reply reports. If the appliance query
+        times out, _appliance_query stays True and the version is unresolved, so
+        the checked pass must advance straight to build_query() rather than probe
+        with a stale version -- a probe timing out here would be blacklisted for
+        the whole connection, costing capability discovery on a device whose
+        status queries work.
+        """
+        socket_mock = MagicMock()
+        init_cmd = MagicMock(name="init_cmd")
+        real_cmd = MagicMock(name="real_cmd")
+        init_cmd.__class__.__name__ = "InitQuery"
+        real_cmd.__class__.__name__ = "StatusQuery"
+        sent: list[object] = []
+
+        # Appliance query times out (no reply clears _appliance_query), then the
+        # status query answers.
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(self.device, "build_init_query", return_value=[init_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[TimeoutError(), bytearray([0x0])],
+            ),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            assert self.device._appliance_query is True
+            self.device.refresh_status(True)
+
+        # appliance query, then straight to the status query -- no init probe.
+        assert sent[0].__class__.__name__ == "MessageQueryAppliance"
+        assert init_cmd not in sent
+        assert sent[1] is real_cmd
+        # _appliance_query is still armed for the next connect-time probe.
+        assert self.device._appliance_query is True
 
     def test_followup_init_query_spliced_into_checked_pass(self) -> None:
         """A reply that arms a follow-up init query gets it validated in-pass.

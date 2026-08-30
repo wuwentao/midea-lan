@@ -852,9 +852,10 @@ class TestC3UnitParaOutdoorTelemetryOffsets:
 
     Each case sets the field's byte(s) and puts a different decoy on each
     neighbouring byte, so a regression that shifts an offset by one cannot
-    pass. These lock the parser's current byte positions; the mapping from
-    byte to physical quantity and its unit still needs a real-device
-    capture to confirm.
+    pass. Offsets match `T_0000_C3_171H120F_2023062601.lua`
+    (`MSG_TYPE_QUERY_UNITPARA`) and were cross-checked against a real-device
+    capture; the unit for the two pressures is still unconfirmed, as the lua
+    applies no scaling and names none.
     """
 
     HEADER = bytearray(

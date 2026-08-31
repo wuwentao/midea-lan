@@ -8,7 +8,7 @@
 
 通过局域网控制你的美的 M-Smart 智能家电。
 
-本库源自 https://github.com/georgezhao2010/midea_ac_lan 项目，为了职责分离而拆分独立。
+本lib库是 https://github.com/wuwentao/midea_ac_lan 项目的一部分。
 
 ⭐ 如果这个组件对你有帮助，请点个 star，这对我是很大的鼓励。
 
@@ -18,12 +18,13 @@
 
 ```python3
 from midealan.discover import discover
+
 # 未知 IP 地址时
 discover()
 # 已知 IP 地址时
 discover(ip_address="203.0.113.11")
 # 设备类型为十六进制，对应 midealan/devices/TYPE
-type_code = hex(list(discover().values())[0]['type'])[2:]
+type_code = hex(list(discover().values())[0]["type"])[2:]
 ```
 
 ### 从设备获取数据
@@ -32,24 +33,24 @@ type_code = hex(list(discover().values())[0]['type'])[2:]
 from midealan.discover import discover
 from midealan.devices import device_selector
 
-token = '...'
-key = '...'
+token = "..."
+key = "..."
 
 # 获取第一个设备
 d = list(discover().values())[0]
 # 选择设备
 ac = device_selector(
-  name="AC",
-  device_id=d['device_id'],
-  device_type=d['type'],
-  ip_address=d['ip_address'],
-  port=d['port'],
-  token=token,
-  key=key,
-  device_protocol=d['protocol'],
-  model=d['model'],
-  subtype=0,
-  customize="",
+    name="AC",
+    device_id=d["device_id"],
+    device_type=d["type"],
+    ip_address=d["ip_address"],
+    port=d["port"],
+    token=token,
+    key=key,
+    device_protocol=d["protocol"],
+    model=d["model"],
+    subtype=0,
+    customize="",
 )
 
 # 连接并认证

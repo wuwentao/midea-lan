@@ -1,5 +1,7 @@
 """Test ac message."""
 
+import logging
+
 import pytest
 
 from midealan.const import ProtocolVersion
@@ -1046,6 +1048,7 @@ class TestMessageACResponse:
         }
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
+            # Manually parsed capabilities with special logic
             "heat_mode": True,
             "cool_mode": True,
             "dry_mode": False,
@@ -1063,6 +1066,11 @@ class TestMessageACResponse:
             "turbo_cool": True,
             "turbo_heat": True,
             "display_control": True,
+            # Auto-parsed B5 tags (raw value from first byte)
+            "b5_filter_remind": 1,
+            "b5_temperature": 34,
+            "buzzer_all": 1,
+            "b5_humidity": 1,
         }
 
     def test_message_query_b5_detects_additional_capabilities(self) -> None:
@@ -1174,6 +1182,31 @@ class TestMessageACResponse:
             "fan_auto": True,
             "fan_custom": False,
         }
+
+    def test_message_query_b5_warns_unknown_tag(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test B5 capability parsing warns about unknown tags."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x02])  # Body type, 2 params
+        # Add a known tag (b5_mode)
+        body += bytearray([0x14, 0x02, 0x01, 7])  # b5_mode
+        # Add an unknown B5-range tag (0x0299, not in NewProtocolTags)
+        body += bytearray([0x99, 0x02, 0x01, 0x42])
+        body += bytearray(1)  # trailing checksum byte
+
+        with caplog.at_level(logging.WARNING):
+            response = MessageACResponse(self.header + body)
+
+        # Known tag should parse
+        assert hasattr(response, "capabilities")
+        assert "heat_mode" in response.capabilities
+        # Unknown tag should trigger warning
+        assert any(
+            "Unknown capability tag" in record.message and "0x0299" in record.message
+            for record in caplog.records
+        )
 
     @pytest.mark.parametrize(
         ("raw_value", "expected"),

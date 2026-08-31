@@ -453,9 +453,19 @@ class ToggleDisplay(MessageACBase):
 
 
 class NewProtocolQuery(MessageACBase):
-    """AC message new protocol query."""
+    """AC message new protocol query.
 
-    _query_params: tuple[int, ...] = (
+    A single B1 query carries a list of new-protocol tags. The device answers
+    with an empty parameter list when a request carries a tag it does not
+    support, which suppresses every other tag in the same request. The base
+    list therefore holds only tags every new-protocol device is known to
+    answer, while feature tags that some devices reject (self_clean,
+    rate_select, ...) are appended only when the device has advertised support
+    for them via the merged capabilities map (B5 capabilities overlaid with the
+    user's customize overrides).
+    """
+
+    _default_query_params: tuple[int, ...] = (
         NewProtocolTags.indirect_wind,
         NewProtocolTags.breezeless,
         NewProtocolTags.indoor_humidity,
@@ -469,48 +479,48 @@ class NewProtocolQuery(MessageACBase):
         # NewProtocolTags.error_code_query,
     )
 
+    # Optional tags appended only when the matching capability key is truthy.
+    # Keyed by the capability-dict key so a B5 report or a customize override
+    # can gate each one. Ordered so the produced body is deterministic.
+    _optional_query_params: tuple[tuple[str, int], ...] = (
+        ("rate_select", NewProtocolTags.rate_select),
+        ("self_clean", NewProtocolTags.self_clean),
+    )
+
     def __init__(
         self,
         protocol_version: int,
         *,
-        supports_rate_select: bool = False,
+        capabilities: dict[str, bool | int] | None = None,
     ) -> None:
         """Initialize AC message new protocol query.
 
-        `supports_rate_select` gates the rate_select (0x0048) query param on
-        the device having advertised it via the B5 b5_electricity capability
-        (tag 0x0216). Devices that don't report it never answer the query, so
-        it's left out until support is confirmed.
+        `capabilities` is the device's merged capability map (B5-parsed values
+        overlaid with the user's customize overrides). Each optional tag in
+        `_optional_query_params` is appended only when its key is present and
+        truthy, so a device that never advertised a feature (or that a user
+        disabled via customize) is not asked for it.
         """
         super().__init__(
             protocol_version=protocol_version,
             message_type=MessageType.query,
             body_type=ListTypes.B1,
         )
-        self._supports_rate_select = supports_rate_select
+        self._capabilities = capabilities or {}
 
     @property
     def _body(self) -> bytearray:
-
-        params = list(self._query_params)
-        if self._supports_rate_select:
-            params.append(NewProtocolTags.rate_select)
+        params = list(self._default_query_params)
+        params.extend(
+            tag
+            for key, tag in self._optional_query_params
+            if self._capabilities.get(key)
+        )
 
         _body = bytearray([len(params)])
         for param in params:
             _body.extend([param & 0xFF, param >> 8])
         return _body
-
-
-class NewProtocolSelfCleanQuery(NewProtocolQuery):
-    """AC message new protocol self-clean query.
-
-    A device answers with an empty parameter list when a query carries a tag it
-    does not support, which suppresses every other tag in the same request. The
-    self-clean state is therefore asked for as an independent status group.
-    """
-
-    _query_params = (NewProtocolTags.self_clean,)
 
 
 class MessageSubProtocol(MessageACBase):
@@ -1291,6 +1301,10 @@ class CapabilityBody(NewProtocolMessageBody):
         if NewProtocolTags.b5_electricity in params:
             value = params[NewProtocolTags.b5_electricity][0]
             caps["rate_select"] = value
+        if NewProtocolTags.self_clean in params:
+            # In a B5 body this tag advertises self-clean support (the live
+            # state is only reported in B0/B1 bodies, see PropertiesBody).
+            caps["self_clean"] = params[NewProtocolTags.self_clean][0] > 0
         self.capabilities = caps
 
 

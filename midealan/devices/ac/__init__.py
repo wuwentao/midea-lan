@@ -24,7 +24,6 @@ from .message import (
     MessageSet,
     MessageSubProtocolSet,
     NewProtocolQuery,
-    NewProtocolSelfCleanQuery,
     NewProtocolSet,
     PowerQuery,
     SubProtocolFreshAirSet,
@@ -330,6 +329,10 @@ class MideaACDevice(MideaDevice):
         # decoded B5 capability flags (accumulated across B5 frames). Values are
         # mostly booleans, but some (e.g. rate_select level count) are ints.
         self._capabilities: dict[str, bool | int] = {}
+        # user-provided capability overrides from customize. Merged over the
+        # B5-parsed values (see the capabilities property), so a user can force
+        # a feature the B5 query missed, or disable one it reported in error.
+        self._customize_capabilities: dict[str, bool | int] = {}
         # B5 capability query control. Both queries run once, like the appliance
         # query: on success the flag is cleared so it is never re-sent (the reply
         # never changes); on timeout the device layer records it in
@@ -389,7 +392,7 @@ class MideaACDevice(MideaDevice):
         the 2-gear map (50/75/100), 2 or 3 select the 5-gear map. Anything else
         (including 0/unsupported) yields an empty map so no options are offered.
         """
-        _levels: int = self._capabilities.get("rate_select", 0)
+        _levels: int = self.capabilities.get("rate_select", 0)
         if _levels in (2, 3):
             return MideaACDevice._rate_select_level5
         if _levels == 1:
@@ -414,15 +417,15 @@ class MideaACDevice(MideaDevice):
             ]
         queries: list[ACQuery] = [
             MessageQuery(self._message_protocol_version),
+            # Single new-protocol query. Optional feature tags (self_clean,
+            # rate_select, ...) are appended by NewProtocolQuery only when the
+            # merged capabilities map (B5-parsed values overlaid with customize
+            # overrides) marks them supported, so an unsupported tag can't make
+            # the device return an empty list that suppresses the other tags.
             NewProtocolQuery(
                 self._message_protocol_version,
-                supports_rate_select=bool(
-                    self._capabilities.get("rate_select", False),
-                ),
+                capabilities=self.capabilities,
             ),
-            # Queried on its own so an empty response for the combined
-            # new-protocol query does not suppress the self-clean state.
-            NewProtocolSelfCleanQuery(self._message_protocol_version),
             PowerQuery(self._message_protocol_version),
             HumidityQuery(self._message_protocol_version),
             GroupZeroQuery(self._message_protocol_version),
@@ -666,13 +669,19 @@ class MideaACDevice(MideaDevice):
             self._capability_addition_query,
             self._capabilities,
         )
-        # Publish a copy so downstream mutation can't corrupt the cached dict.
-        return {"capabilities": dict(self._capabilities)}
+        # Publish the effective (merged) map so downstream consumers see the
+        # customize overrides too; it is already a fresh dict per access.
+        return {"capabilities": self.capabilities}
 
     @property
     def capabilities(self) -> dict[str, bool | int]:
-        """Return the decoded B5 capability flags reported by the device."""
-        return self._capabilities
+        """Return the effective capability flags for the device.
+
+        This is the B5-parsed capability map overlaid with the user's customize
+        overrides, so a customize entry wins over whatever the device reported
+        (or failed to report).
+        """
+        return {**self._capabilities, **self._customize_capabilities}
 
     def _b5_temperature_limits(self) -> tuple[float, float] | None:
         """Return the B5 setpoint limits for the current mode, if any.
@@ -1056,6 +1065,7 @@ class MideaACDevice(MideaDevice):
         self._power_analysis_method = self._default_power_analysis_method
         self._customize_min_temperature = None
         self._customize_max_temperature = None
+        self._customize_capabilities = {}
         if customize and len(customize) > 0:
             try:
                 params = json.loads(customize)
@@ -1067,6 +1077,11 @@ class MideaACDevice(MideaDevice):
                     self._customize_min_temperature = params.get("min_temperature")
                 if params and "max_temperature" in params:
                     self._customize_max_temperature = params.get("max_temperature")
+                # Capability overrides let a user force a feature the B5 query
+                # missed (or disable one it wrongly reported). Values follow the
+                # capabilities map: truthy enables the tag, falsy disables it.
+                if params and isinstance(params.get("capabilities"), dict):
+                    self._customize_capabilities = params["capabilities"]
             except Exception:
                 _LOGGER.exception("[%s] Set customize error", self.device_id)
             self.update_all({"temperature_step": self._temperature_step})

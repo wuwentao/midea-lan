@@ -22,7 +22,6 @@ from midealan.devices.ac.message import (
     MessageSubProtocol,
     MessageSubProtocolSet,
     NewProtocolQuery,
-    NewProtocolSelfCleanQuery,
     NewProtocolSet,
     NewProtocolTags,
     PowerFormats,
@@ -301,10 +300,10 @@ class TestNewProtocolQuery:
     def test_new_protocol_query_body_includes_rate_select_when_supported(
         self,
     ) -> None:
-        """Test rate_select is appended once the device has advertised support."""
+        """Test rate_select is appended once the capabilities map confirms it."""
         msg = NewProtocolQuery(
             protocol_version=ProtocolVersion.V1,
-            supports_rate_select=True,
+            capabilities={"rate_select": 1},
         )
         expected_body = bytearray(
             [
@@ -339,18 +338,72 @@ class TestNewProtocolQuery:
 
         assert msg.body[:-2] == expected_body
 
-    def test_new_protocol_self_clean_query_body(self) -> None:
-        """Test new protocol self-clean query body."""
-        msg = NewProtocolSelfCleanQuery(protocol_version=ProtocolVersion.V1)
+    def test_new_protocol_query_body_includes_self_clean_when_supported(
+        self,
+    ) -> None:
+        """Test self_clean is appended when the capabilities map confirms it."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"self_clean": True},
+        )
         expected_body = bytearray(
             [
                 0xB1,
-                0x01,
+                0x0B,  # params count
+                NewProtocolTags.indirect_wind & 0xFF,
+                NewProtocolTags.indirect_wind >> 8,
+                NewProtocolTags.breezeless & 0xFF,
+                NewProtocolTags.breezeless >> 8,
+                NewProtocolTags.indoor_humidity & 0xFF,
+                NewProtocolTags.indoor_humidity >> 8,
+                NewProtocolTags.screen_display & 0xFF,
+                NewProtocolTags.screen_display >> 8,
+                NewProtocolTags.fresh_air_1 & 0xFF,
+                NewProtocolTags.fresh_air_1 >> 8,
+                NewProtocolTags.fresh_air_2 & 0xFF,
+                NewProtocolTags.fresh_air_2 >> 8,
+                NewProtocolTags.wind_lr_angle & 0xFF,
+                NewProtocolTags.wind_lr_angle >> 8,
+                NewProtocolTags.wind_ud_angle & 0xFF,
+                NewProtocolTags.wind_ud_angle >> 8,
+                NewProtocolTags.out_silent & 0xFF,
+                NewProtocolTags.out_silent >> 8,
+                NewProtocolTags.buzzer_all & 0xFF,
+                NewProtocolTags.buzzer_all >> 8,
                 NewProtocolTags.self_clean & 0xFF,
                 NewProtocolTags.self_clean >> 8,
             ],
         )
+
         assert msg.body[:-2] == expected_body
+
+    def test_new_protocol_query_body_appends_optional_tags_in_order(self) -> None:
+        """Test both optional tags append in rate_select-then-self_clean order."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"self_clean": True, "rate_select": 2},
+        )
+        # Optional tags come after the fixed base list, in the declared order:
+        # rate_select first, then self_clean, regardless of dict insertion.
+        assert msg.body[:-2][-4:] == bytearray(
+            [
+                NewProtocolTags.rate_select & 0xFF,
+                NewProtocolTags.rate_select >> 8,
+                NewProtocolTags.self_clean & 0xFF,
+                NewProtocolTags.self_clean >> 8,
+            ],
+        )
+
+    def test_new_protocol_query_body_omits_optional_tags_when_falsy(self) -> None:
+        """Test falsy capability values keep the optional tags out of the body."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"self_clean": False, "rate_select": 0},
+        )
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params)
+        assert NewProtocolTags.self_clean not in msg.body
+        assert NewProtocolTags.rate_select not in msg.body
 
 
 class TestNewProtocolSetOutSilent:
@@ -1057,6 +1110,30 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {"rate_select": raw_value}
+
+    @pytest.mark.parametrize(
+        ("raw_value", "expected"),
+        [(1, True), (0, False)],
+    )
+    def test_message_query_b5_self_clean_reports_support(
+        self,
+        raw_value: int,
+        expected: bool,
+    ) -> None:
+        """Test the B5 self_clean tag advertises self-clean support.
+
+        In a B5 body tag 0x0039 advertises support (live state is only in
+        B0/B1 bodies), so a non-zero byte marks the feature supported.
+        """
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, params count
+        body += bytearray([0x39, 0x00, 0x01, raw_value])  # self_clean (0x0039)
+        body += bytearray(1)  # trailing checksum byte (stripped by MessageResponse)
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "capabilities")
+        assert response.capabilities == {"self_clean": expected}
 
     def test_message_query_b5_custom_fan_supports_named_speeds(self) -> None:
         """Test B5 fan custom profile includes named fan speeds."""

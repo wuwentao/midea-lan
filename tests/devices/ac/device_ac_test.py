@@ -424,6 +424,22 @@ class TestMideaACDevice:
         self.device.set_customize('{"capabilities": "self_clean"}')
         assert self.device._customize_capabilities == {}
 
+    def test_customize_capabilities_override_priority(self) -> None:
+        """Test customize override wins when both B5 and customize set the same key.
+
+        When _capabilities and _customize_capabilities both have a key, the
+        merged capabilities property must return the customize value (higher
+        priority), ensuring users can correct wrong B5 reports.
+        """
+        self.device._capabilities["rate_select"] = 1
+        self.device._capabilities["self_clean"] = False
+        self.device.set_customize(
+            '{"capabilities": {"rate_select": 2, "self_clean": true}}',
+        )
+        merged = self.device.capabilities
+        assert merged["rate_select"] == 2  # customize wins over B5 value 1
+        assert merged["self_clean"] is True  # customize wins over B5 value False
+
     def test_bb_model_builds_distinct_queries_and_attributes(self) -> None:
         """Test verified BB model starts with independent BB queries."""
         device = self._make_device("23096633", 1)

@@ -465,8 +465,8 @@ class NewProtocolQuery(MessageACBase):
         NewProtocolTags.fresh_air_2,
         NewProtocolTags.wind_lr_angle,
         NewProtocolTags.wind_ud_angle,
-        # NewProtocolTags.out_silent,
-        # NewProtocolTags.buzzer_all,
+        NewProtocolTags.out_silent,
+        NewProtocolTags.buzzer_all,
         # NewProtocolTags.error_code_query,
     )
 

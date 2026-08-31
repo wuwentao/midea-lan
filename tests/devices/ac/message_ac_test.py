@@ -1036,19 +1036,17 @@ class TestMessageACResponse:
         assert hasattr(additional_response, "additional_capabilities")
         assert additional_response.additional_capabilities is False
 
-    @pytest.mark.parametrize(
-        ("raw_value", "expected"),
-        [(4, True), (1, True), (0, False)],
-    )
-    def test_message_query_b5_electricity_gates_rate_select(
+    @pytest.mark.parametrize("raw_value", [4, 3, 2, 1, 0])
+    def test_message_query_b5_electricity_reports_rate_level_count(
         self,
         raw_value: int,
-        expected: bool,
     ) -> None:
-        """Test b5_electricity capability gates the rate_select capability flag.
+        """Test b5_electricity capability exposes the raw rate level count.
 
-        A nonzero value (rate level count) means the device supports
-        rate_select; 0 means unsupported.
+        The B5 b5_electricity byte is a rate level count, not a boolean:
+        1 selects the 2-gear map, 2/3 select the 5-gear map, 0 means
+        unsupported. The parser stores the raw value so the device layer can
+        pick the right gear map.
         """
         self.header[9] = 0x03
         body = bytearray([0xB5, 0x01])  # Body type, params count
@@ -1058,7 +1056,7 @@ class TestMessageACResponse:
         response = MessageACResponse(self.header + body)
 
         assert hasattr(response, "capabilities")
-        assert response.capabilities == {"rate_select": expected}
+        assert response.capabilities == {"rate_select": raw_value}
 
     def test_message_query_b5_custom_fan_supports_named_speeds(self) -> None:
         """Test B5 fan custom profile includes named fan speeds."""

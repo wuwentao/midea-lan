@@ -231,7 +231,7 @@ class MideaACDevice(MideaDevice):
 
     _rate_select_level2: ClassVar[dict[int, str]] = {
         50: "50",
-        70: "70",
+        75: "75",
         100: "100",
     }
 
@@ -382,15 +382,24 @@ class MideaACDevice(MideaDevice):
         """Midea AC device wind_ud_angle."""
         return list(MideaACDevice._wind_ud_angles.values())
 
+    def _rate_select_map(self) -> dict[int, str]:
+        """Return the rate_select value map for the device-reported level count.
+
+        The B5 b5_electricity capability reports a rate level count: 1 selects
+        the 2-gear map (50/75/100), 2 or 3 select the 5-gear map. Anything else
+        (including 0/unsupported) yields an empty map so no options are offered.
+        """
+        _levels: int = self._capabilities.get("rate_select", 0)
+        if _levels in (2, 3):
+            return MideaACDevice._rate_select_level5
+        if _levels == 1:
+            return MideaACDevice._rate_select_level2
+        return {}
+
     @property
     def rate_selects(self) -> list[str]:
         """Midea AC device rate_select options."""
-        _levels: int = self._capabilities.get("rate_select", 0)
-        if _levels in (2, 3):
-            return list(MideaACDevice._rate_select_level5.values())
-        if _levels == 1:
-            return list(MideaACDevice._rate_select_level2.values())
-        return []
+        return list(self._rate_select_map().values())
 
     def build_query(self) -> list[ACQuery]:
         """Midea AC device build query."""
@@ -540,15 +549,7 @@ class MideaACDevice(MideaDevice):
                     self._attributes[attr] = MideaACDevice._wind_ud_angles.get(value)
                 # rate_select
                 elif attr == DeviceAttributes.rate_select:
-                    _levels: int = self._capabilities.get("rate_select", 0)
-                    if _levels in (2, 3):
-                        self._attributes[attr] = MideaACDevice._rate_select_level5.get(
-                            value,
-                        )
-                    if _levels == 1:
-                        self._attributes[attr] = MideaACDevice._rate_select_level2.get(
-                            value,
-                        )
+                    self._attributes[attr] = self._rate_select_map().get(value)
                 else:
                     self._attributes[attr] = value
                 new_status[str(attr)] = self._attributes[attr]
@@ -799,9 +800,10 @@ class MideaACDevice(MideaDevice):
                 setattr(message, str(self._fresh_air_version), fresh_air)
         # rate_select
         elif attr == DeviceAttributes.rate_select:
-            message.rate_select = MideaACDevice.get_dict_key_by_value(
-                "_rate_selects",
-                str(value),
+            rate_map = self._rate_select_map()
+            message.rate_select = next(
+                (key for key, val in rate_map.items() if val == str(value)),
+                None,
             )
         # indirect_wind, screen_display_alternate, breezeless
         else:

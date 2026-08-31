@@ -195,9 +195,22 @@ class TestMideaACDevice:
             message = mock_build_send.call_args[0][0]
             assert message.wind_ud_angle == 1
 
+            # 5-level device: "40" maps back to raw value 40
+            self.device._capabilities["rate_select"] = 2
             self.device.set_attribute(DeviceAttributes.rate_select.value, "40")
             message = mock_build_send.call_args[0][0]
             assert message.rate_select == 40
+
+            # 2-level device: only 50/75/100 are valid gears
+            self.device._capabilities["rate_select"] = 1
+            self.device.set_attribute(DeviceAttributes.rate_select.value, "75")
+            message = mock_build_send.call_args[0][0]
+            assert message.rate_select == 75
+
+            # Value not in the active level map resolves to None
+            self.device.set_attribute(DeviceAttributes.rate_select.value, "40")
+            message = mock_build_send.call_args[0][0]
+            assert message.rate_select is None
 
     def test_set_attribute_fresh_air_mode_named_speed(self) -> None:
         """Test set attribute for fresh air mode with a named fan speed."""
@@ -562,7 +575,50 @@ class TestMideaACDevice:
             "down-mid",
             "down",
         ]
+        # No rate_select capability reported yet: no options offered
+        assert self.device.rate_selects == []
+
+        # 2-level device (b5_electricity value 1) reports 50/75/100 gears
+        self.device._capabilities["rate_select"] = 1
+        assert self.device.rate_selects == ["50", "75", "100"]
+
+        # 5-level device (b5_electricity value 2 or 3) reports the full ladder
+        self.device._capabilities["rate_select"] = 2
         assert self.device.rate_selects == ["1", "20", "40", "60", "80", "100"]
+        self.device._capabilities["rate_select"] = 3
+        assert self.device.rate_selects == ["1", "20", "40", "60", "80", "100"]
+
+    def test_process_message_decodes_rate_select_per_level(self) -> None:
+        """Test an incoming rate_select value decodes via the reported gear map.
+
+        Regression for the "stays unknown" symptom: the raw value must be
+        mapped through the level-specific gear map instead of a fixed table.
+        """
+        with patch("midealan.devices.ac.MessageACResponse") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.used_subprotocol = False
+            mock_message.fresh_air_power = False
+            mock_message.rate_select = 75
+
+            # 2-level device: raw 75 -> gear "75" (the value from issue #980)
+            self.device._capabilities["rate_select"] = 1
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.rate_select.value] == "75"
+
+            # 5-level device: 75 is not a valid gear, so it decodes to None
+            self.device._capabilities["rate_select"] = 2
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.rate_select.value] is None
+
+            # 5-level device: raw 40 -> gear "40"
+            mock_message.rate_select = 40
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.rate_select.value] == "40"
+
+            # No capability reported: no gear map, decodes to None
+            self.device._capabilities["rate_select"] = 0
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.rate_select.value] is None
 
     def test_capabilities_property_updates_from_b5_response(self) -> None:
         """Test B5 capability flags accumulate into the capabilities property."""
@@ -699,8 +755,9 @@ class TestMideaACDevice:
         assert after_additional == (True, False)
         assert self.device.build_init_query() == []
 
-        # Both frames merged into a single capability dict.
-        assert self.device.capabilities["rate_select"] is True
+        # Both frames merged into a single capability dict. rate_select carries
+        # the raw B5 b5_electricity level count (4 in this frame), not a bool.
+        assert self.device.capabilities["rate_select"] == 4
         assert self.device.capabilities["cool_mode"] is True
 
     def test_process_message(self) -> None:

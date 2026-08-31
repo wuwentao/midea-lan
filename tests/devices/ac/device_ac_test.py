@@ -440,6 +440,48 @@ class TestMideaACDevice:
         assert merged["rate_select"] == 2  # customize wins over B5 value 1
         assert merged["self_clean"] is True  # customize wins over B5 value False
 
+    def test_customize_capabilities_publishes_event_on_enable(self) -> None:
+        """Test set_customize emits a capabilities event when enabling an override.
+
+        When set_customize applies a capability override, it must notify listeners
+        (e.g., Home Assistant) via update_all so they see the merged capabilities
+        immediately, not after the next B5 query (which is one-shot).
+        """
+        with patch.object(self.device, "update_all") as update_all_mock:
+            self.device.set_customize('{"capabilities": {"self_clean": true}}')
+            # Verify update_all was called with the merged capabilities dict
+            calls = [call.args[0] for call in update_all_mock.call_args_list]
+            # Should have at least one call with capabilities key
+            capabilities_updates = [c for c in calls if "capabilities" in c]
+            assert len(capabilities_updates) > 0
+            # The published capabilities should include the override
+            published_caps = capabilities_updates[-1]["capabilities"]
+            assert published_caps["self_clean"] is True
+
+    def test_customize_capabilities_publishes_event_on_clear(self) -> None:
+        """Test set_customize emits a capabilities event when clearing overrides.
+
+        When set_customize is called with no capabilities key (or empty customize),
+        it resets _customize_capabilities to {}. This must still publish the merged
+        capabilities so listeners know the overrides are gone and the effective map
+        has reverted to B5-only values.
+        """
+        # First set an override
+        self.device.set_customize('{"capabilities": {"rate_select": 3}}')
+        assert self.device._customize_capabilities == {"rate_select": 3}
+        # Now clear it by calling set_customize with no capabilities key
+        with patch.object(self.device, "update_all") as update_all_mock:
+            self.device.set_customize('{"temperature_step": 1}')
+            # Verify update_all was called with capabilities
+            calls = [call.args[0] for call in update_all_mock.call_args_list]
+            capabilities_updates = [c for c in calls if "capabilities" in c]
+            assert len(capabilities_updates) > 0
+            # The published capabilities should not have rate_select override
+            published_caps = capabilities_updates[-1]["capabilities"]
+            assert "rate_select" not in published_caps or not published_caps.get(
+                "rate_select",
+            )
+
     def test_bb_model_builds_distinct_queries_and_attributes(self) -> None:
         """Test verified BB model starts with independent BB queries."""
         device = self._make_device("23096633", 1)

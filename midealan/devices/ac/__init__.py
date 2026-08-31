@@ -1086,6 +1086,9 @@ class MideaACDevice(MideaDevice):
                 _LOGGER.exception("[%s] Set customize error", self.device_id)
             self.update_all({"temperature_step": self._temperature_step})
             self.update_all(self._refresh_temperature_limits())
+        # Publish the merged capabilities map so downstream consumers (e.g., Home
+        # Assistant) are notified whenever customize overrides change it.
+        self.update_all({"capabilities": self.capabilities})
 
 
 class MideaAppliance(MideaACDevice):

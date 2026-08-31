@@ -116,7 +116,6 @@ B5_ECO_VALUES = frozenset({1, 2})
 B5_ANION_ON_VALUE = 1
 B5_TURBO_HEAT_VALUES = frozenset({1, 3})
 B5_DISPLAY_VALUES = frozenset({1, 2, 100})
-B5_ELECTRICITY_UNSUPPORTED_VALUE = 0  # 0 = unsupported; nonzero = rate level count
 
 # A B5 capability body ends with a trailing [flag, message_id, crc] block. The
 # device sets the flag byte non-zero to signal that a second (additional)
@@ -189,7 +188,7 @@ class NewProtocolTags(IntEnum):
     arom = 0x0069
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
-    ieco_switch = 0x00E3
+    ieco = 0x00E3
     pre_cool_hot = 0x0201
     pm25_value = 0x020B
     b5_wind_speed = 0x0210
@@ -1291,7 +1290,7 @@ class CapabilityBody(NewProtocolMessageBody):
             caps["display_control"] = value in B5_DISPLAY_VALUES
         if NewProtocolTags.b5_electricity in params:
             value = params[NewProtocolTags.b5_electricity][0]
-            caps["rate_select"] = value > B5_ELECTRICITY_UNSUPPORTED_VALUE
+            caps["rate_select"] = value
         self.capabilities = caps
 
 

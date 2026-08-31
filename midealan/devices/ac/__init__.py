@@ -220,12 +220,18 @@ class MideaACDevice(MideaDevice):
         100: "down",
     }
 
-    _rate_selects: ClassVar[dict[int, str]] = {
+    _rate_select_level5: ClassVar[dict[int, str]] = {
         1: "1",
         20: "20",
         40: "40",
         60: "60",
         80: "80",
+        100: "100",
+    }
+
+    _rate_select_level2: ClassVar[dict[int, str]] = {
+        50: "50",
+        70: "70",
         100: "100",
     }
 
@@ -379,7 +385,12 @@ class MideaACDevice(MideaDevice):
     @property
     def rate_selects(self) -> list[str]:
         """Midea AC device rate_select options."""
-        return list(MideaACDevice._rate_selects.values())
+        _levels: int = self._capabilities.get("rate_select", 0)
+        if _levels in (2, 3):
+            return list(MideaACDevice._rate_select_level5.values())
+        if _levels == 1:
+            return list(MideaACDevice._rate_select_level2.values())
+        return []
 
     def build_query(self) -> list[ACQuery]:
         """Midea AC device build query."""
@@ -527,8 +538,17 @@ class MideaACDevice(MideaDevice):
                 # wind_ud_angle
                 elif attr == DeviceAttributes.wind_ud_angle:
                     self._attributes[attr] = MideaACDevice._wind_ud_angles.get(value)
+                # rate_select
                 elif attr == DeviceAttributes.rate_select:
-                    self._attributes[attr] = MideaACDevice._rate_selects.get(value)
+                    _levels: int = self._capabilities.get("rate_select", 0)
+                    if _levels in (2, 3):
+                        self._attributes[attr] = MideaACDevice._rate_select_level5.get(
+                            value,
+                        )
+                    if _levels == 1:
+                        self._attributes[attr] = MideaACDevice._rate_select_level2.get(
+                            value,
+                        )
                 else:
                     self._attributes[attr] = value
                 new_status[str(attr)] = self._attributes[attr]

@@ -388,8 +388,8 @@ class MideaACDevice(MideaDevice):
     def _rate_select_map(self) -> dict[int, str]:
         """Return the rate_select value map for the device-reported level count.
 
-        The B5 b5_electricity capability reports a rate level count: 1 selects
-        the 2-gear map (50/75/100), 2 or 3 select the 5-gear map. Anything else
+        The electricity_capability reports a rate level count: 1 selects the
+        2-gear map (50/75/100), 2 or 3 select the 5-gear map. Anything else
         (including 0/unsupported) yields an empty map so no options are offered.
         """
         _levels: int = self.capabilities.get("rate_select", 0)
@@ -683,8 +683,8 @@ class MideaACDevice(MideaDevice):
         """
         return {**self._capabilities, **self._customize_capabilities}
 
-    def _b5_temperature_limits(self) -> tuple[float, float] | None:
-        """Return the B5 setpoint limits for the current mode, if any.
+    def _capability_temperature_limits(self) -> tuple[float, float] | None:
+        """Return the capability setpoint limits for the current mode, if any.
 
         An unknown mode (e.g. 0 when off) falls back to the cool range.
         """
@@ -699,18 +699,18 @@ class MideaACDevice(MideaDevice):
     ) -> dict[str, Any]:
         """Resolve min/max setpoint limits.
 
-        Priority: customize option > B5 capability > None (the consumer then
-        falls back to its own default range).
+        Priority: customize option > capability response > None (the consumer
+        then falls back to its own default range).
         """
         if message is not None and hasattr(message, "temperature_limits"):
             self._temperature_limits = message.temperature_limits
-        b5 = self._b5_temperature_limits()
+        capability_limits = self._capability_temperature_limits()
         minimum = self._customize_min_temperature
-        if minimum is None and b5 is not None:
-            minimum = b5[0]
+        if minimum is None and capability_limits is not None:
+            minimum = capability_limits[0]
         maximum = self._customize_max_temperature
-        if maximum is None and b5 is not None:
-            maximum = b5[1]
+        if maximum is None and capability_limits is not None:
+            maximum = capability_limits[1]
         self._attributes[DeviceAttributes.min_temperature] = minimum
         self._attributes[DeviceAttributes.max_temperature] = maximum
         return {

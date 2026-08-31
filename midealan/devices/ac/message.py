@@ -99,9 +99,8 @@ NEW_PROTOCOL_LEGACY_SETPOINT_BYTE = 3
 NEW_PROTOCOL_INDOOR_TEMPERATURE_BYTE = 40
 NEW_PROTOCOL_INDOOR_TEMPERATURE_DECIMAL_BYTE = 41
 
-# B5 capability value semantics (reverse-engineered; see _parse_capabilities).
+# Capability value semantics (reverse-engineered; see _parse_capabilities).
 # The raw byte of each capability is not a 0/1 flag; each has its own value set.
-B5_TAG_RANGE_START = 0x0210  # B5 capability tags start from 0x0210
 B5_HEAT_MODE_VALUES = frozenset({1, 2, 4, 6, 7, 9, 10, 11, 12, 13})
 B5_NO_COOL_MODE_VALUES = frozenset({2, 10, 12})
 B5_DRY_MODE_VALUES = frozenset({0, 1, 5, 6, 9, 11, 13})
@@ -192,23 +191,23 @@ class NewProtocolTags(IntEnum):
     ieco = 0x00E3
     pre_cool_hot = 0x0201
     pm25_value = 0x020B
-    b5_wind_speed = 0x0210
-    b5_eco = 0x0212
+    wind_speed = 0x0210
+    eco = 0x0212
     b5_8_heat = 0x0213
-    # b5 device
-    b5_mode = 0x0214
-    b5_wind_swing = 0x0215
-    b5_electricity = 0x0216
-    b5_filter_remind = 0x0217
-    b5_ptc = 0x0219
-    b5_strong_wind = 0x021A
+    # capability tags
+    mode = 0x0214
+    wind_swing = 0x0215
+    electricity = 0x0216
+    filter_remind = 0x0217
+    ptc = 0x0219
+    strong_wind = 0x021A
     little_angel = 0x021B
-    b5_anion = 0x021E
-    b5_humidity = 0x021F
-    b5_filter_check = 0x0221
-    b5_fahrenheit = 0x0222
-    b5_screen_display = 0x0224
-    b5_temperature = 0x0225
+    anion = 0x021E
+    humidity = 0x021F
+    filter_check = 0x0221
+    fahrenheit = 0x0222
+    screen_display_capability = 0x0224
+    temperature = 0x0225
     auto_prevent_straight_wind = 0x0226
     remote_control_lock = 0x0227  # power_lock?
     operating_time = 0x0228
@@ -1202,47 +1201,24 @@ class PropertiesBody(NewProtocolMessageBody):
 
 
 class CapabilityBody(NewProtocolMessageBody):
-    """AC B5 capability response body. body[0] b5, body[1] propertyNumber."""
+    """AC B5 capability response body."""
 
     def __init__(self, body: bytearray) -> None:
         """Initialize AC B5 capability response message body."""
         super().__init__(body)
 
         params = self.parse()
-        # parse b5 protocol, github issue https://github.com/wuwentao/midea_ac_lan/issues/673
-        if NewProtocolTags.b5_mode in params:
-            self.b5_mode = params[NewProtocolTags.b5_mode][0]
-        if NewProtocolTags.b5_anion in params:
-            self.b5_anion = params[NewProtocolTags.b5_anion][0]
-        if NewProtocolTags.b5_filter_remind in params:
-            self.b5_filter_remind = params[NewProtocolTags.b5_filter_remind][0]
-        if NewProtocolTags.b5_strong_wind in params:
-            self.b5_strong_wind = params[NewProtocolTags.b5_strong_wind][0]
-        if NewProtocolTags.b5_wind_speed in params:
-            self.b5_wind_speed = params[NewProtocolTags.b5_wind_speed][0]
-        if NewProtocolTags.b5_temperature in params:
-            self.b5_temperature0 = params[NewProtocolTags.b5_temperature][0]
-            self.b5_temperature1 = params[NewProtocolTags.b5_temperature][1]
-            self.b5_temperature2 = params[NewProtocolTags.b5_temperature][2]
-            self.b5_temperature3 = params[NewProtocolTags.b5_temperature][3]
-            self.b5_temperature4 = params[NewProtocolTags.b5_temperature][4]
-            self.b5_temperature5 = params[NewProtocolTags.b5_temperature][5]
-            self.b5_temperature6 = params[NewProtocolTags.b5_temperature][6]
+        # Parse temperature capability for min/max setpoint limits
+        if NewProtocolTags.temperature in params:
+            temp_data = params[NewProtocolTags.temperature]
             # per-mode setpoint limits in 0.5 C units. the six raw bytes are
             # cool then auto then heat, each a min then a max, plus a flag byte.
             # keyed by mode value: auto is 1, cool 2, dry 3, heat 4, fan 5
             # (dry and fan reuse the cool range).
-            cool = (self.b5_temperature0 / 2, self.b5_temperature1 / 2)
-            auto = (self.b5_temperature2 / 2, self.b5_temperature3 / 2)
-            heat = (self.b5_temperature4 / 2, self.b5_temperature5 / 2)
+            cool = (temp_data[0] / 2, temp_data[1] / 2)
+            auto = (temp_data[2] / 2, temp_data[3] / 2)
+            heat = (temp_data[4] / 2, temp_data[5] / 2)
             self.temperature_limits = {1: auto, 2: cool, 3: cool, 4: heat, 5: cool}
-        if NewProtocolTags.b5_screen_display in params:
-            self.b5_screen_display = params[NewProtocolTags.b5_screen_display][0]
-        if NewProtocolTags.buzzer_all in params:
-            # b5_sound/buzzer_all
-            self.b5_sound = params[NewProtocolTags.buzzer_all][0]
-        if NewProtocolTags.b5_humidity in params:
-            self.b5_humidity = params[NewProtocolTags.b5_humidity][0]
         self._parse_capabilities(params)
         self.additional_capabilities = self._detect_additional_capabilities()
 
@@ -1261,31 +1237,31 @@ class CapabilityBody(NewProtocolMessageBody):
         return bool(remaining[-B5_ADDITIONAL_CAPABILITIES_TRAILER_LENGTH])
 
     def _parse_capabilities(self, params: dict[int, bytearray]) -> None:
-        """Decode B5 capability values into feature flags.
+        """Decode capability values into feature flags.
 
         Parse capabilities using two strategies:
-        1. Manual parsing for tags with special logic (b5_mode, b5_wind_speed, etc.)
-        2. Auto-parse remaining B5 tags using tag name as key and raw value
+        1. Manual parsing for tags with special logic (mode, wind_speed, etc.)
+        2. Auto-parse remaining tags using tag name as key and raw value
 
         Logs warnings for unknown tags not in NewProtocolTags enum.
         """
         caps: dict[str, bool | int] = {}
 
         # Manual parsing for tags with complex/special logic
-        if NewProtocolTags.b5_mode in params:
-            value = params[NewProtocolTags.b5_mode][0]
+        if NewProtocolTags.mode in params:
+            value = params[NewProtocolTags.mode][0]
             caps["heat_mode"] = value in B5_HEAT_MODE_VALUES
             caps["cool_mode"] = value not in B5_NO_COOL_MODE_VALUES
             caps["dry_mode"] = value in B5_DRY_MODE_VALUES
             caps["auto_mode"] = value in B5_AUTO_MODE_VALUES
 
-        if NewProtocolTags.b5_wind_swing in params:
-            value = params[NewProtocolTags.b5_wind_swing][0]
+        if NewProtocolTags.wind_swing in params:
+            value = params[NewProtocolTags.wind_swing][0]
             caps["swing_horizontal"] = value in B5_SWING_HORIZONTAL_VALUES
             caps["swing_vertical"] = value < B5_LOW_VALUE_MAX
 
-        if NewProtocolTags.b5_wind_speed in params:
-            value = params[NewProtocolTags.b5_wind_speed][0]
+        if NewProtocolTags.wind_speed in params:
+            value = params[NewProtocolTags.wind_speed][0]
             caps["fan_silent"] = (
                 value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_SILENT_VALUES
             )
@@ -1303,24 +1279,25 @@ class CapabilityBody(NewProtocolMessageBody):
             )
             caps["fan_custom"] = value == B5_FAN_CUSTOM_VALUE
 
-        if NewProtocolTags.b5_eco in params:
-            caps["eco"] = params[NewProtocolTags.b5_eco][0] in B5_ECO_VALUES
+        if NewProtocolTags.eco in params:
+            caps["eco"] = params[NewProtocolTags.eco][0] in B5_ECO_VALUES
 
-        if NewProtocolTags.b5_anion in params:
-            caps["anion"] = params[NewProtocolTags.b5_anion][0] == B5_ANION_ON_VALUE
+        if NewProtocolTags.anion in params:
+            caps["anion"] = params[NewProtocolTags.anion][0] == B5_ANION_ON_VALUE
 
-        if NewProtocolTags.b5_strong_wind in params:
-            value = params[NewProtocolTags.b5_strong_wind][0]
+        if NewProtocolTags.strong_wind in params:
+            value = params[NewProtocolTags.strong_wind][0]
             caps["turbo_cool"] = value < B5_LOW_VALUE_MAX
             caps["turbo_heat"] = value in B5_TURBO_HEAT_VALUES
 
-        if NewProtocolTags.b5_screen_display in params:
+        if NewProtocolTags.screen_display_capability in params:
             caps["display_control"] = (
-                params[NewProtocolTags.b5_screen_display][0] in B5_DISPLAY_VALUES
+                params[NewProtocolTags.screen_display_capability][0]
+                in B5_DISPLAY_VALUES
             )
 
-        if NewProtocolTags.b5_electricity in params:
-            caps["rate_select"] = params[NewProtocolTags.b5_electricity][0]
+        if NewProtocolTags.electricity in params:
+            caps["rate_select"] = params[NewProtocolTags.electricity][0]
 
         if NewProtocolTags.self_clean in params:
             caps["self_clean"] = params[NewProtocolTags.self_clean][0] > 0
@@ -1328,19 +1305,19 @@ class CapabilityBody(NewProtocolMessageBody):
         # Tags with special parsing logic (handled above).
         manually_parsed_tags = frozenset(
             {
-                NewProtocolTags.b5_mode,
-                NewProtocolTags.b5_wind_swing,
-                NewProtocolTags.b5_wind_speed,
-                NewProtocolTags.b5_eco,
-                NewProtocolTags.b5_anion,
-                NewProtocolTags.b5_strong_wind,
-                NewProtocolTags.b5_screen_display,
-                NewProtocolTags.b5_electricity,
+                NewProtocolTags.mode,
+                NewProtocolTags.wind_swing,
+                NewProtocolTags.wind_speed,
+                NewProtocolTags.eco,
+                NewProtocolTags.anion,
+                NewProtocolTags.strong_wind,
+                NewProtocolTags.screen_display_capability,
+                NewProtocolTags.electricity,
                 NewProtocolTags.self_clean,
             },
         )
 
-        # Auto-parse remaining B5 tags that weren't manually handled above.
+        # Auto-parse remaining tags that weren't manually handled above.
         for tag_id, raw in params.items():
             if tag_id in manually_parsed_tags:
                 continue  # Already handled above
@@ -1358,11 +1335,9 @@ class CapabilityBody(NewProtocolMessageBody):
                 )
                 continue
 
-            # Only auto-parse B5 range tags (>= 0x0210). Use the tag name as
-            # capability key and the first raw byte as its value
-            # (0 -> falsy, >=1 -> truthy).
-            if tag_id >= B5_TAG_RANGE_START:
-                caps[tag_name] = raw[0] if len(raw) > 0 else 0
+            # Use the tag name as capability key and the first raw byte as its
+            # value (0 -> falsy, >=1 -> truthy).
+            caps[tag_name] = raw[0] if len(raw) > 0 else 0
 
         self.capabilities = caps
 

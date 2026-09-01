@@ -380,19 +380,20 @@ class TestNewProtocolQuery:
         assert msg.body[:-2] == expected_body
 
     def test_new_protocol_query_body_appends_optional_tags_in_order(self) -> None:
-        """Test both optional tags append in rate_select-then-self_clean order."""
+        """Test both optional tags append in sorted (by tag value) order."""
         msg = NewProtocolQuery(
             protocol_version=ProtocolVersion.V1,
-            capabilities={"self_clean": True, "rate_select": 2},
+            capabilities={"rate_select": 2, "self_clean": True},
         )
-        # Optional tags come after the fixed base list, in the declared order:
-        # rate_select first, then self_clean, regardless of dict insertion.
+        # Appended status tags come after the fixed base list, sorted by tag
+        # value regardless of dict insertion order: self_clean (0x39) first,
+        # then rate_select (0x48).
         assert msg.body[:-2][-4:] == bytearray(
             [
-                NewProtocolTags.rate_select & 0xFF,
-                NewProtocolTags.rate_select >> 8,
                 NewProtocolTags.self_clean & 0xFF,
                 NewProtocolTags.self_clean >> 8,
+                NewProtocolTags.rate_select & 0xFF,
+                NewProtocolTags.rate_select >> 8,
             ],
         )
 
@@ -406,6 +407,55 @@ class TestNewProtocolQuery:
         assert params_count == len(NewProtocolQuery._default_query_params)
         assert NewProtocolTags.self_clean not in msg.body
         assert NewProtocolTags.rate_select not in msg.body
+
+    def test_new_protocol_query_body_appends_all_known_tags(self) -> None:
+        """Test any truthy capability key naming a NewProtocolTags member appends.
+
+        Capability keys are appended whenever they name a NewProtocolTags
+        member and are truthy, sorted by tag value. Keys already in the default
+        list (buzzer_all) are not duplicated.
+        """
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={
+                "temperature": 34,
+                "eco": True,
+                "humidity": 1,
+                "filter_remind": 1,
+                "buzzer_all": 1,  # already in the default list, not duplicated
+            },
+        )
+        params_count = msg.body[1]
+        # Four new tags appended (eco, filter_remind, humidity, temperature);
+        # buzzer_all is skipped because it is already a default param.
+        assert params_count == len(NewProtocolQuery._default_query_params) + 4
+        # Appended tags come after the default list, sorted by value in the
+        # order eco 0x0212, filter_remind 0x0217, humidity 0x021F, temp 0x0225.
+        assert msg.body[:-2][-8:] == bytearray(
+            [
+                NewProtocolTags.eco & 0xFF,
+                NewProtocolTags.eco >> 8,
+                NewProtocolTags.filter_remind & 0xFF,
+                NewProtocolTags.filter_remind >> 8,
+                NewProtocolTags.humidity & 0xFF,
+                NewProtocolTags.humidity >> 8,
+                NewProtocolTags.temperature & 0xFF,
+                NewProtocolTags.temperature >> 8,
+            ],
+        )
+
+    def test_new_protocol_query_body_ignores_unknown_capability_keys(self) -> None:
+        """Test capability keys that name no NewProtocolTags member are skipped.
+
+        Manually-parsed capability keys (heat_mode, fan_low, ...) are not tag
+        names and must not raise or be appended to the query.
+        """
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"heat_mode": True, "fan_low": True, "cool_mode": True},
+        )
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params)
 
 
 class TestNewProtocolSetOutSilent:

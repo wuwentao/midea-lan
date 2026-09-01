@@ -417,11 +417,11 @@ class MideaACDevice(MideaDevice):
             ]
         queries: list[ACQuery] = [
             MessageQuery(self._message_protocol_version),
-            # Single new-protocol query. Optional feature tags (self_clean,
-            # rate_select, ...) are appended by NewProtocolQuery only when the
-            # merged capabilities map (B5-parsed values overlaid with customize
-            # overrides) marks them supported, so an unsupported tag can't make
-            # the device return an empty list that suppresses the other tags.
+            # Single new-protocol query. Status feature tags (self_clean,
+            # rate_select, ...) are appended by NewProtocolQuery automatically
+            # from the merged capabilities map (B5-parsed values overlaid with
+            # customize overrides), so an unsupported tag can't make the device
+            # return an empty list that suppresses the other tags.
             NewProtocolQuery(
                 self._message_protocol_version,
                 capabilities=self.capabilities,

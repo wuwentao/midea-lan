@@ -459,10 +459,10 @@ class NewProtocolQuery(MessageACBase):
     with an empty parameter list when a request carries a tag it does not
     support, which suppresses every other tag in the same request. The base
     list therefore holds only tags every new-protocol device is known to
-    answer, while feature tags that some devices reject (self_clean,
-    rate_select, ...) are appended only when the device has advertised support
-    for them via the merged capabilities map (B5 capabilities overlaid with the
-    user's customize overrides).
+    answer, while status feature tags that some devices reject (self_clean,
+    rate_select, ...) are appended automatically from the merged capabilities
+    map (B5 capabilities overlaid with the user's customize overrides): any
+    capability key that names a NewProtocolTags member and is truthy is added.
     """
 
     _default_query_params: tuple[int, ...] = (
@@ -479,14 +479,6 @@ class NewProtocolQuery(MessageACBase):
         # NewProtocolTags.error_code_query,
     )
 
-    # Optional tags appended only when the matching capability key is truthy.
-    # Keyed by the capability-dict key so a B5 report or a customize override
-    # can gate each one. Ordered so the produced body is deterministic.
-    _optional_query_params: tuple[tuple[str, int], ...] = (
-        ("rate_select", NewProtocolTags.rate_select),
-        ("self_clean", NewProtocolTags.self_clean),
-    )
-
     def __init__(
         self,
         protocol_version: int,
@@ -496,10 +488,10 @@ class NewProtocolQuery(MessageACBase):
         """Initialize AC message new protocol query.
 
         `capabilities` is the device's merged capability map (B5-parsed values
-        overlaid with the user's customize overrides). Each optional tag in
-        `_optional_query_params` is appended only when its key is present and
-        truthy, so a device that never advertised a feature (or that a user
-        disabled via customize) is not asked for it.
+        overlaid with the user's customize overrides). Every capability key that
+        names a NewProtocolTags member and is truthy is appended to the query,
+        so a device that never advertised a feature (or that a user disabled via
+        customize) is not asked for it.
         """
         super().__init__(
             protocol_version=protocol_version,
@@ -507,15 +499,41 @@ class NewProtocolQuery(MessageACBase):
             body_type=ListTypes.B1,
         )
         self._capabilities = capabilities or {}
+        # `_body` is read several times per send (encode -> frame -> CRC), so
+        # the build log is emitted only on the first read to avoid duplicates.
+        self._build_logged = False
 
     @property
     def _body(self) -> bytearray:
         params = list(self._default_query_params)
-        params.extend(
-            tag
-            for key, tag in self._optional_query_params
-            if self._capabilities.get(key)
-        )
+        default_tags = frozenset(self._default_query_params)
+
+        # Auto-append tags from the merged capabilities map. A capability key is
+        # queried only when it names a NewProtocolTags member and its value is
+        # truthy, so a device that never advertised a feature (or that a user
+        # disabled via customize) is not asked for it. Tags are sorted by value
+        # so the produced body is deterministic.
+        additional_tags: list[NewProtocolTags] = []
+        for key, value in self._capabilities.items():
+            if not value:
+                continue  # Skip falsy values (0, False, None).
+            try:
+                tag = NewProtocolTags[key]
+            except KeyError:
+                continue  # Key does not name a NewProtocolTags member.
+            if tag in default_tags:
+                continue
+            additional_tags.append(tag)
+        additional_tags.sort()
+        params.extend(additional_tags)
+        if not self._build_logged:
+            self._build_logged = True
+            _LOGGER.debug(
+                "NewProtocolQuery build: appended=%s query_tags=%s capabilities=%s",
+                [tag.name for tag in additional_tags],
+                [NewProtocolTags(param).name for param in params],
+                self._capabilities,
+            )
 
         _body = bytearray([len(params)])
         for param in params:

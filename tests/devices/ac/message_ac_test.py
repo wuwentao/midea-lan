@@ -1312,6 +1312,93 @@ class TestMessageACResponse:
         response = MessageACResponse(self.header + body)
         assert not hasattr(response, "self_clean_active")
 
+    @pytest.mark.parametrize(
+        ("start", "end", "expected"),
+        [
+            (1, 0, True),  # supported via start byte
+            (0, 2, True),  # supported via end byte
+            (8, 8, True),  # ECOMaster
+            (0, 0, False),  # unsupported
+        ],
+    )
+    def test_message_query_b5_ieco_reports_support(
+        self,
+        start: int,
+        end: int,
+        expected: bool,
+    ) -> None:
+        """Test the B5 iECO tag advertises support from start/end bytes."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, params count
+        # iECO (0x00E3): start byte then end byte
+        body += bytearray([0xE3, 0x00, 0x02, start, end])
+        body += bytearray(1)  # trailing checksum byte (stripped by MessageResponse)
+
+        response = MessageACResponse(self.header + body)
+        assert hasattr(response, "capabilities")
+        assert response.capabilities == {"ieco": expected}
+
+    def test_message_query_b5_ieco_single_byte(self) -> None:
+        """Test the B5 iECO tag with only a start byte still parses."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, params count
+        body += bytearray([0xE3, 0x00, 0x01, 0x03])  # start byte only
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+        assert hasattr(response, "capabilities")
+        assert response.capabilities == {"ieco": True}
+
+    @pytest.mark.parametrize(
+        ("switch", "number", "expected_state"),
+        [(0x01, 0x03, True), (0x00, 0x02, False)],
+    )
+    def test_message_query_b1_ieco_state(
+        self,
+        switch: int,
+        number: int,
+        expected_state: bool,
+    ) -> None:
+        """Test Message parse query B1 reports live iECO state and number."""
+        self.header[9] = 0x03
+        body = bytearray(
+            [
+                0xB1,  # Body type
+                0x01,  # Params count
+                NewProtocolTags.ieco & 0xFF,
+                NewProtocolTags.ieco >> 8,
+                0x00,
+                0x02,  # Value length
+                number,  # data[0] - iECO number
+                switch,  # data[1] - on/off switch
+                0x00,  # trailing checksum byte (stripped by MessageResponse)
+            ],
+        )
+
+        response = MessageACResponse(self.header + body)
+        assert hasattr(response, "ieco")
+        assert hasattr(response, "ieco_number")
+        assert response.ieco is expected_state
+        assert response.ieco_number == number
+
+    def test_message_notify2_b5_ieco_is_capability_only(self) -> None:
+        """Test that tag 0x00E3 in a B5 body is not read as live state."""
+        body = bytearray(
+            [
+                0xB5,  # Body type
+                0x01,  # Params count
+                NewProtocolTags.ieco & 0xFF,
+                NewProtocolTags.ieco >> 8,
+                0x02,  # Value length
+                0x01,  # start byte: supported
+                0x01,  # end byte
+                0x00,  # trailing checksum byte (stripped by MessageResponse)
+            ],
+        )
+
+        response = MessageACResponse(self.header + body)
+        assert not hasattr(response, "ieco")
+
     def test_message_query_c0(self) -> None:
         """Test Message parse query C0."""
         self.header[9] = 0x03
@@ -2310,6 +2397,44 @@ class TestNewProtocolSetNewFeatures:
         assert body[3] == NewProtocolTags.self_clean >> 8
         assert body[4] == 0x01
         assert body[5] == expected_byte
+
+
+class TestNewProtocolSetIeco:
+    """Test NewProtocolSet for iECO."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected_switch"),
+        [(True, 0x01), (False, 0x00)],
+    )
+    def test_ieco_on_off(self, value: bool, expected_switch: int) -> None:
+        """Test iECO set to on/off sends the frame/number/switch payload."""
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg.ieco = value
+        msg.ieco_number = 3
+        body = msg.body
+        assert body[0] == 0xB0
+        assert body[1] == 0x01  # pack count
+        assert body[2] == NewProtocolTags.ieco & 0xFF
+        assert body[3] == NewProtocolTags.ieco >> 8
+        assert body[4] == 0x0D  # value length: 3 + 10 padding
+        assert body[5] == 0x00  # frame
+        assert body[6] == 0x03  # ieco number
+        assert body[7] == expected_switch  # switch
+        # remaining padding bytes are zero
+        assert body[8:18] == bytearray(10)
+
+    def test_ieco_defaults_number_to_one(self) -> None:
+        """Test iECO uses gear 1 by default when no number is set."""
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg.ieco = True
+        body = msg.body
+        assert body[6] == 0x01
+
+    def test_ieco_absent_when_unset(self) -> None:
+        """Test iECO is not packed when left as None."""
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
+        body = msg.body
+        assert body[1] == 0x00  # no params packed
 
 
 class TestMessageSetAnion:

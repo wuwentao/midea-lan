@@ -1286,6 +1286,43 @@ class TestMideaACDevice:
         assert updates == []
         assert self.device._pending_self_clean is None
 
+    def test_ieco_in_initial_attributes(self) -> None:
+        """Test iECO defaults to off and gear 1."""
+        assert self.device.attributes[DeviceAttributes.ieco] is False
+        assert self.device._ieco_number == 1
+
+    def test_set_ieco_echoes_reported_number(self) -> None:
+        """Test setting iECO builds a NewProtocolSet echoing the last gear."""
+        self.device._ieco_number = 3
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.ieco.value, True)
+
+        message = mock_build_send.call_args[0][0]
+        assert message.ieco is True
+        assert message.ieco_number == 3
+
+    def test_set_ieco_off(self) -> None:
+        """Test turning iECO off builds a NewProtocolSet with ieco False."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.ieco.value, False)
+
+        message = mock_build_send.call_args[0][0]
+        assert message.ieco is False
+
+    def test_process_message_captures_ieco_state_and_number(self) -> None:
+        """Test process_message publishes iECO state and records its gear."""
+        with patch("midealan.devices.ac.MessageACResponse") as mock_message_response:
+            mock_message = mock_message_response.return_value
+            mock_message.used_subprotocol = False
+            mock_message.fresh_air_power = False
+            mock_message.ieco = True
+            mock_message.ieco_number = 5
+
+            result = self.device.process_message(b"")
+
+        assert result[DeviceAttributes.ieco.value] is True
+        assert self.device._ieco_number == 5
+
     def test_invalid_customize_format(self) -> None:
         """Test invalid customize format."""
         self.device.set_customize("{")

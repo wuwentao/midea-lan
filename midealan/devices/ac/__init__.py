@@ -107,6 +107,7 @@ class DeviceAttributes(StrEnum):
     anion = "anion"
     sound = "sound"
     self_clean = "self_clean"
+    ieco = "ieco"
     pmv = "pmv"
     error_code = "error_code"
     # group 1: compressor and refrigerant circuit
@@ -292,6 +293,7 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.anion: False,
                 DeviceAttributes.sound: True,
                 DeviceAttributes.self_clean: False,
+                DeviceAttributes.ieco: False,
                 DeviceAttributes.pmv: None,
                 DeviceAttributes.error_code: 0,
                 DeviceAttributes.compressor_frequency: None,
@@ -319,6 +321,8 @@ class MideaACDevice(MideaDevice):
         )
         self._fresh_air_version: DeviceAttributes | None = None
         self._pending_self_clean: tuple[bool, float] | None = None
+        # Current iECO gear the device reports; echoed back when setting iECO.
+        self._ieco_number: int = 1
         self._default_temperature_step: float = 0.5
         self._temperature_step: float = 0.5
         self._used_subprotocol: bool = self._model_capabilities.uses_bb_protocol
@@ -580,6 +584,8 @@ class MideaACDevice(MideaDevice):
             self._fresh_air_version = DeviceAttributes.fresh_air_1
         elif self._attributes[DeviceAttributes.fresh_air_2] is not None:
             self._fresh_air_version = DeviceAttributes.fresh_air_2
+        if hasattr(message, "ieco_number"):
+            self._ieco_number = message.ieco_number
         if hasattr(message, "self_clean_active"):
             active = message.self_clean_active
             update_self_clean = True
@@ -814,6 +820,10 @@ class MideaACDevice(MideaDevice):
                 (key for key, val in rate_map.items() if val == str(value)),
                 None,
             )
+        # iECO on/off — echo the last reported gear number
+        elif attr == DeviceAttributes.ieco:
+            message.ieco = bool(value)
+            message.ieco_number = self._ieco_number
         # indirect_wind, screen_display_alternate, breezeless
         else:
             setattr(message, str(attr), value)
@@ -982,6 +992,7 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.out_silent,
                 DeviceAttributes.sound,
                 DeviceAttributes.self_clean,
+                DeviceAttributes.ieco,
             ]:
                 message = self.make_newprotocol_message_set(attr=attr, value=value)
                 if attr == DeviceAttributes.self_clean:

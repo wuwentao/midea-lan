@@ -114,6 +114,13 @@ B5_FAN_SILENT_VALUES = frozenset({6, 9})
 B5_FAN_CUSTOM_VALUE = 1
 B5_ECO_VALUES = frozenset({1, 2})
 B5_ANION_ON_VALUE = 1
+# iECO (0x00E3) capability. The B5 body reports a start byte (index 0) and an
+# end byte (index 1); the feature is supported when either names a known iECO
+# value. iECO itself is queried/set as a new-protocol on/off feature.
+B5_IECO_START_VALUES = frozenset({1, 3, 4, 8})
+B5_IECO_END_VALUES = frozenset({1, 2, 3, 8})
+# iECO set frame: [0x00 frame, ieco_number, ieco_switch] + this many zero bytes.
+IECO_SET_PADDING = 10
 B5_TURBO_HEAT_VALUES = frozenset({1, 3})
 B5_DISPLAY_VALUES = frozenset({1, 2, 100})
 
@@ -879,6 +886,8 @@ class NewProtocolSet(MessageACBase):
         self.out_silent: bool | None = None
         self.sound: bool | None = None
         self.self_clean: bool | None = None
+        self.ieco: bool | None = None
+        self.ieco_number: int = 1
 
     @property
     def _body(self) -> bytearray:
@@ -999,6 +1008,18 @@ class NewProtocolSet(MessageACBase):
                 NewProtocolMessageBody.pack(
                     param=NewProtocolTags.rate_select,
                     value=bytearray([int(self.rate_select)]),
+                ),
+            )
+        if self.ieco is not None:
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=NewProtocolTags.ieco,
+                    # [frame, ieco_number, switch] followed by zero padding.
+                    value=bytearray(
+                        [0x00, self.ieco_number, 0x01 if self.ieco else 0x00],
+                    )
+                    + bytearray(IECO_SET_PADDING),
                 ),
             )
         payload[0] = pack_count
@@ -1152,6 +1173,17 @@ class PropertiesBody(NewProtocolMessageBody):
             # A B5 body carries this tag as a capability flag (always 1 when the
             # model supports self-clean), so only B0/B1 bodies report live state.
             self.self_clean_active: bool = params[NewProtocolTags.self_clean][0] > 0
+        if (
+            NewProtocolTags.ieco in params
+            and self.body_type != ListTypes.B5
+            and len(params[NewProtocolTags.ieco]) > 1
+        ):
+            # data[0] - iECO number (current gear), data[1] - on/off switch.
+            # Only B0/B1 bodies report live state; a B5 body carries this tag as
+            # a capability advertisement instead.
+            ieco_data = params[NewProtocolTags.ieco]
+            self.ieco = ieco_data[1] > 0
+            self.ieco_number = ieco_data[0]
         if (
             new_protocol_temperature
             and NEW_PROTOCOL_TEMPERATURE_TAG in params
@@ -1320,6 +1352,14 @@ class CapabilityBody(NewProtocolMessageBody):
         if NewProtocolTags.self_clean in params:
             caps["self_clean"] = params[NewProtocolTags.self_clean][0] > 0
 
+        if NewProtocolTags.ieco in params:
+            ieco_data = params[NewProtocolTags.ieco]
+            ieco_start = ieco_data[0] if len(ieco_data) > 0 else 0
+            ieco_end = ieco_data[1] if len(ieco_data) > 1 else 0
+            caps["ieco"] = (
+                ieco_start in B5_IECO_START_VALUES or ieco_end in B5_IECO_END_VALUES
+            )
+
         # Tags with special parsing logic (handled above).
         manually_parsed_tags = frozenset(
             {
@@ -1332,6 +1372,7 @@ class CapabilityBody(NewProtocolMessageBody):
                 NewProtocolTags.screen_display_capability,
                 NewProtocolTags.electricity,
                 NewProtocolTags.self_clean,
+                NewProtocolTags.ieco,
             },
         )
 

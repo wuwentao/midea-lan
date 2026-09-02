@@ -143,7 +143,7 @@ class PowerFormats(IntEnum):
     BCD_ENERGY_BINARY_POWER = 101
 
 
-class NewProtocolTags(IntEnum):
+class CapabilityTag(IntEnum):
     """New protocol tags in query and response."""
 
     wind_ud_angle = 0x0009
@@ -299,7 +299,7 @@ class MessageA0LongQuery(MessageACBase):
         return bytearray(19)
 
 
-class MessageQuery(MessageACBase):
+class StateQuery(MessageACBase):
     """AC message query(queryType == nil)."""
 
     def __init__(self, protocol_version: int) -> None:
@@ -459,7 +459,7 @@ class ToggleDisplay(MessageACBase):
         )
 
 
-class NewProtocolQuery(MessageACBase):
+class PropertiesQuery(MessageACBase):
     """AC message new protocol query.
 
     A single B1 query carries a list of new-protocol tags. The device answers
@@ -469,7 +469,7 @@ class NewProtocolQuery(MessageACBase):
     answer, while status feature tags that some devices reject (self_clean,
     rate_select, ...) are appended automatically from the merged capabilities
     map (B5 capabilities overlaid with the user's customize overrides): any
-    capability key that names a NewProtocolTags member and is truthy is added.
+    capability key that names a CapabilityTag member and is truthy is added.
     """
 
     # Tags that only ever appear in B5 capability advertisements, never as valid
@@ -479,31 +479,31 @@ class NewProtocolQuery(MessageACBase):
     # tag in the same request. See docs/protocol/ac_newprotocol_tags.md.
     _CAPABILITY_ONLY_TAGS: frozenset[int] = frozenset(
         {
-            NewProtocolTags.wind_speed,  # 0x0210
-            NewProtocolTags.eco,  # 0x0212
-            NewProtocolTags.b5_8_heat,  # 0x0213
-            NewProtocolTags.mode,  # 0x0214
-            NewProtocolTags.wind_swing,  # 0x0215
-            NewProtocolTags.electricity,  # 0x0216
-            NewProtocolTags.filter_remind,  # 0x0217
-            NewProtocolTags.ptc,  # 0x0219
-            NewProtocolTags.strong_wind,  # 0x021A
-            NewProtocolTags.humidity,  # 0x021F
-            NewProtocolTags.filter_check,  # 0x0221
-            NewProtocolTags.fahrenheit,  # 0x0222
-            NewProtocolTags.screen_display_capability,  # 0x0224
+            CapabilityTag.wind_speed,  # 0x0210
+            CapabilityTag.eco,  # 0x0212
+            CapabilityTag.b5_8_heat,  # 0x0213
+            CapabilityTag.mode,  # 0x0214
+            CapabilityTag.wind_swing,  # 0x0215
+            CapabilityTag.electricity,  # 0x0216
+            CapabilityTag.filter_remind,  # 0x0217
+            CapabilityTag.ptc,  # 0x0219
+            CapabilityTag.strong_wind,  # 0x021A
+            CapabilityTag.humidity,  # 0x021F
+            CapabilityTag.filter_check,  # 0x0221
+            CapabilityTag.fahrenheit,  # 0x0222
+            CapabilityTag.screen_display_capability,  # 0x0224
         },
     )
 
     _default_query_params: tuple[int, ...] = (
-        NewProtocolTags.indirect_wind,
-        NewProtocolTags.breezeless,
-        NewProtocolTags.indoor_humidity,
-        NewProtocolTags.screen_display,
-        NewProtocolTags.fresh_air_1,
-        NewProtocolTags.fresh_air_2,
-        NewProtocolTags.wind_lr_angle,
-        NewProtocolTags.wind_ud_angle,
+        CapabilityTag.indirect_wind,
+        CapabilityTag.breezeless,
+        CapabilityTag.indoor_humidity,
+        CapabilityTag.screen_display,
+        CapabilityTag.fresh_air_1,
+        CapabilityTag.fresh_air_2,
+        CapabilityTag.wind_lr_angle,
+        CapabilityTag.wind_ud_angle,
     )
 
     def __init__(
@@ -516,7 +516,7 @@ class NewProtocolQuery(MessageACBase):
 
         `capabilities` is the device's merged capability map (B5-parsed values
         overlaid with the user's customize overrides). Every capability key that
-        names a NewProtocolTags member and is truthy is appended to the query,
+        names a CapabilityTag member and is truthy is appended to the query,
         so a device that never advertised a feature (or that a user disabled via
         customize) is not asked for it.
         """
@@ -536,18 +536,18 @@ class NewProtocolQuery(MessageACBase):
         default_tags = frozenset(self._default_query_params)
 
         # Auto-append tags from the merged capabilities map. A capability key is
-        # queried only when it names a NewProtocolTags member and its value is
+        # queried only when it names a CapabilityTag member and its value is
         # truthy, so a device that never advertised a feature (or that a user
         # disabled via customize) is not asked for it. Tags are sorted by value
         # so the produced body is deterministic.
-        additional_tags: list[NewProtocolTags] = []
+        additional_tags: list[CapabilityTag] = []
         for key, value in self._capabilities.items():
             if not value:
                 continue  # Skip falsy values (0, False, None).
             try:
-                tag = NewProtocolTags[key]
+                tag = CapabilityTag[key]
             except KeyError:
-                continue  # Key does not name a NewProtocolTags member.
+                continue  # Key does not name a CapabilityTag member.
             if tag in default_tags:
                 continue
             if tag in self._CAPABILITY_ONLY_TAGS:
@@ -558,9 +558,9 @@ class NewProtocolQuery(MessageACBase):
         if not self._build_logged:
             self._build_logged = True
             _LOGGER.debug(
-                "NewProtocolQuery build: appended=%s query_tags=%s capabilities=%s",
+                "PropertiesQuery build: appended=%s query_tags=%s capabilities=%s",
                 [tag.name for tag in additional_tags],
-                [NewProtocolTags(param).name for param in params],
+                [CapabilityTag(param).name for param in params],
                 self._capabilities,
             )
 
@@ -790,7 +790,7 @@ class SubProtocolFreshAirSet(MessageSubProtocol):
         return body
 
 
-class MessageSet(MessageACBase):
+class StateSet(MessageACBase):
     """AC message general set."""
 
     def __init__(self, protocol_version: int) -> None:
@@ -886,7 +886,7 @@ class MessageSet(MessageACBase):
         )
 
 
-class NewProtocolSet(MessageACBase):
+class PropertiesSet(MessageACBase):
     """AC message new protocol set."""
 
     def __init__(self, protocol_version: int) -> None:
@@ -919,7 +919,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.breezeless,
+                    param=CapabilityTag.breezeless,
                     value=bytearray([0x01 if self.breezeless else 0x00]),
                 ),
             )
@@ -927,7 +927,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.indirect_wind,
+                    param=CapabilityTag.indirect_wind,
                     value=bytearray([0x02 if self.indirect_wind else 0x01]),
                 ),
             )
@@ -935,7 +935,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.prompt_tone,
+                    param=CapabilityTag.prompt_tone,
                     value=bytearray([0x01 if self.prompt_tone else 0x00]),
                 ),
             )
@@ -943,7 +943,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.screen_display,
+                    param=CapabilityTag.screen_display,
                     value=bytearray([0x64 if self.screen_display_alternate else 0x00]),
                 ),
             )
@@ -953,7 +953,7 @@ class NewProtocolSet(MessageACBase):
             fresh_air_fan_speed = list(self.fresh_air_1)[1]
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.fresh_air_1,
+                    param=CapabilityTag.fresh_air_1,
                     value=bytearray(
                         [
                             fresh_air_power,
@@ -976,7 +976,7 @@ class NewProtocolSet(MessageACBase):
             fresh_air_fan_speed = list(self.fresh_air_2)[1]
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.fresh_air_2,
+                    param=CapabilityTag.fresh_air_2,
                     value=bytearray([fresh_air_power, fresh_air_fan_speed, 0xFF]),
                 ),
             )
@@ -985,7 +985,7 @@ class NewProtocolSet(MessageACBase):
             wind_lr_angle = int(self.wind_lr_angle)
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.wind_lr_angle,
+                    param=CapabilityTag.wind_lr_angle,
                     value=bytearray([wind_lr_angle if wind_lr_angle else 0x00]),
                 ),
             )
@@ -994,7 +994,7 @@ class NewProtocolSet(MessageACBase):
             wind_ud_angle = int(self.wind_ud_angle)
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.wind_ud_angle,
+                    param=CapabilityTag.wind_ud_angle,
                     value=bytearray([wind_ud_angle if wind_ud_angle else 0x00]),
                 ),
             )
@@ -1002,7 +1002,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.out_silent,
+                    param=CapabilityTag.out_silent,
                     # Device requires 0x03 to activate, 0x00 to deactivate
                     # Sending 0x01 results in an error from the firmware
                     value=bytearray([OUT_SILENT_VALUE if self.out_silent else 0x00]),
@@ -1012,7 +1012,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.sound,
+                    param=CapabilityTag.sound,
                     value=bytearray([0x01 if self.sound else 0x00]),
                 ),
             )
@@ -1020,7 +1020,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.self_clean,
+                    param=CapabilityTag.self_clean,
                     value=bytearray([0x01 if self.self_clean else 0x00]),
                 ),
             )
@@ -1028,7 +1028,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.rate_select,
+                    param=CapabilityTag.rate_select,
                     value=bytearray([int(self.rate_select)]),
                 ),
             )
@@ -1036,7 +1036,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.ieco,
+                    param=CapabilityTag.ieco,
                     # [frame, ieco_number, switch] followed by zero padding.
                     value=bytearray(
                         [0x00, self.ieco_number, 0x01 if self.ieco else 0x00],
@@ -1155,55 +1155,53 @@ class PropertiesBody(NewProtocolMessageBody):
         super().__init__(body)
 
         params = self.parse()
-        if NewProtocolTags.indirect_wind in params:
+        if CapabilityTag.indirect_wind in params:
             self.indirect_wind = (
-                params[NewProtocolTags.indirect_wind][0] == INDIRECT_WIND_VALUE
+                params[CapabilityTag.indirect_wind][0] == INDIRECT_WIND_VALUE
             )
-        if NewProtocolTags.indoor_humidity in params:
-            indoor_humidity = params[NewProtocolTags.indoor_humidity][0]
+        if CapabilityTag.indoor_humidity in params:
+            indoor_humidity = params[CapabilityTag.indoor_humidity][0]
             self.indoor_humidity = indoor_humidity if indoor_humidity != 0 else None
-        if NewProtocolTags.breezeless in params:
-            self.breezeless = params[NewProtocolTags.breezeless][0] == 1
-        if NewProtocolTags.screen_display in params:
-            self.screen_display_alternate = (
-                params[NewProtocolTags.screen_display][0] > 0
-            )
+        if CapabilityTag.breezeless in params:
+            self.breezeless = params[CapabilityTag.breezeless][0] == 1
+        if CapabilityTag.screen_display in params:
+            self.screen_display_alternate = params[CapabilityTag.screen_display][0] > 0
             self.screen_display_new = True
-        if NewProtocolTags.fresh_air_1 in params:
+        if CapabilityTag.fresh_air_1 in params:
             self.fresh_air_1 = True
-            data = params[NewProtocolTags.fresh_air_1]
+            data = params[CapabilityTag.fresh_air_1]
             self.fresh_air_power = data[0] == INDIRECT_WIND_VALUE
             self.fresh_air_fan_speed = data[1]
-        if NewProtocolTags.fresh_air_2 in params:
+        if CapabilityTag.fresh_air_2 in params:
             self.fresh_air_2 = True
-            data = params[NewProtocolTags.fresh_air_2]
+            data = params[CapabilityTag.fresh_air_2]
             self.fresh_air_power = data[0] > 0
             self.fresh_air_fan_speed = data[1]
-        if NewProtocolTags.wind_lr_angle in params:
-            self.wind_lr_angle = params[NewProtocolTags.wind_lr_angle][0]
-        if NewProtocolTags.wind_ud_angle in params:
-            self.wind_ud_angle = params[NewProtocolTags.wind_ud_angle][0]
-        if NewProtocolTags.rate_select in params:
-            self.rate_select = params[NewProtocolTags.rate_select][0]
-        if NewProtocolTags.out_silent in params:
-            self.out_silent = params[NewProtocolTags.out_silent][0] == OUT_SILENT_VALUE
-        if NewProtocolTags.sound in params:
-            self.sound = params[NewProtocolTags.sound][0] > 0
-        if NewProtocolTags.error_code in params:
-            self.error_code = params[NewProtocolTags.error_code][0]
-        if NewProtocolTags.self_clean in params and self.body_type != ListTypes.B5:
+        if CapabilityTag.wind_lr_angle in params:
+            self.wind_lr_angle = params[CapabilityTag.wind_lr_angle][0]
+        if CapabilityTag.wind_ud_angle in params:
+            self.wind_ud_angle = params[CapabilityTag.wind_ud_angle][0]
+        if CapabilityTag.rate_select in params:
+            self.rate_select = params[CapabilityTag.rate_select][0]
+        if CapabilityTag.out_silent in params:
+            self.out_silent = params[CapabilityTag.out_silent][0] == OUT_SILENT_VALUE
+        if CapabilityTag.sound in params:
+            self.sound = params[CapabilityTag.sound][0] > 0
+        if CapabilityTag.error_code in params:
+            self.error_code = params[CapabilityTag.error_code][0]
+        if CapabilityTag.self_clean in params and self.body_type != ListTypes.B5:
             # A B5 body carries this tag as a capability flag (always 1 when the
             # model supports self-clean), so only B0/B1 bodies report live state.
-            self.self_clean_active: bool = params[NewProtocolTags.self_clean][0] > 0
+            self.self_clean_active: bool = params[CapabilityTag.self_clean][0] > 0
         if (
-            NewProtocolTags.ieco in params
+            CapabilityTag.ieco in params
             and self.body_type != ListTypes.B5
-            and len(params[NewProtocolTags.ieco]) > 1
+            and len(params[CapabilityTag.ieco]) > 1
         ):
             # data[0] - iECO number (current gear), data[1] - on/off switch.
             # Only B0/B1 bodies report live state; a B5 body carries this tag as
             # a capability advertisement instead.
-            ieco_data = params[NewProtocolTags.ieco]
+            ieco_data = params[CapabilityTag.ieco]
             self.ieco = ieco_data[1] > 0
             self.ieco_number = ieco_data[0]
         if (
@@ -1281,8 +1279,8 @@ class CapabilityBody(NewProtocolMessageBody):
 
         params = self.parse()
         # Parse temperature capability for min/max setpoint limits
-        if NewProtocolTags.temperature in params:
-            temp_data = params[NewProtocolTags.temperature]
+        if CapabilityTag.temperature in params:
+            temp_data = params[CapabilityTag.temperature]
             # per-mode setpoint limits in 0.5 C units. the six raw bytes are
             # cool then auto then heat, each a min then a max, plus a flag byte.
             # keyed by mode value: auto is 1, cool 2, dry 3, heat 4, fan 5
@@ -1315,25 +1313,25 @@ class CapabilityBody(NewProtocolMessageBody):
         1. Manual parsing for tags with special logic (mode, wind_speed, etc.)
         2. Auto-parse remaining tags using tag name as key and raw value
 
-        Logs warnings for unknown tags not in NewProtocolTags enum.
+        Logs warnings for unknown tags not in CapabilityTag enum.
         """
         caps: dict[str, bool | int] = {}
 
         # Manual parsing for tags with complex/special logic
-        if NewProtocolTags.mode in params:
-            value = params[NewProtocolTags.mode][0]
+        if CapabilityTag.mode in params:
+            value = params[CapabilityTag.mode][0]
             caps["heat_mode"] = value in B5_HEAT_MODE_VALUES
             caps["cool_mode"] = value not in B5_NO_COOL_MODE_VALUES
             caps["dry_mode"] = value in B5_DRY_MODE_VALUES
             caps["auto_mode"] = value in B5_AUTO_MODE_VALUES
 
-        if NewProtocolTags.wind_swing in params:
-            value = params[NewProtocolTags.wind_swing][0]
+        if CapabilityTag.wind_swing in params:
+            value = params[CapabilityTag.wind_swing][0]
             caps["swing_horizontal"] = value in B5_SWING_HORIZONTAL_VALUES
             caps["swing_vertical"] = value < B5_LOW_VALUE_MAX
 
-        if NewProtocolTags.wind_speed in params:
-            value = params[NewProtocolTags.wind_speed][0]
+        if CapabilityTag.wind_speed in params:
+            value = params[CapabilityTag.wind_speed][0]
             caps["fan_silent"] = (
                 value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_SILENT_VALUES
             )
@@ -1351,55 +1349,54 @@ class CapabilityBody(NewProtocolMessageBody):
             )
             caps["fan_custom"] = value == B5_FAN_CUSTOM_VALUE
 
-        if NewProtocolTags.eco in params:
-            caps["eco"] = params[NewProtocolTags.eco][0] in B5_ECO_VALUES
+        if CapabilityTag.eco in params:
+            caps["eco"] = params[CapabilityTag.eco][0] in B5_ECO_VALUES
 
-        if NewProtocolTags.anion in params:
-            caps["anion"] = params[NewProtocolTags.anion][0] == B5_ANION_ON_VALUE
+        if CapabilityTag.anion in params:
+            caps["anion"] = params[CapabilityTag.anion][0] == B5_ANION_ON_VALUE
 
-        if NewProtocolTags.strong_wind in params:
-            value = params[NewProtocolTags.strong_wind][0]
+        if CapabilityTag.strong_wind in params:
+            value = params[CapabilityTag.strong_wind][0]
             caps["turbo_cool"] = value < B5_LOW_VALUE_MAX
             caps["turbo_heat"] = value in B5_TURBO_HEAT_VALUES
 
-        if NewProtocolTags.screen_display_capability in params:
+        if CapabilityTag.screen_display_capability in params:
             caps["display_control"] = (
-                params[NewProtocolTags.screen_display_capability][0]
-                in B5_DISPLAY_VALUES
+                params[CapabilityTag.screen_display_capability][0] in B5_DISPLAY_VALUES
             )
 
-        if NewProtocolTags.electricity in params:
-            caps["rate_select"] = params[NewProtocolTags.electricity][0]
+        if CapabilityTag.electricity in params:
+            caps["rate_select"] = params[CapabilityTag.electricity][0]
 
-        if NewProtocolTags.self_clean in params:
-            caps["self_clean"] = params[NewProtocolTags.self_clean][0] > 0
+        if CapabilityTag.self_clean in params:
+            caps["self_clean"] = params[CapabilityTag.self_clean][0] > 0
 
-        if NewProtocolTags.ieco in params:
-            ieco_data = params[NewProtocolTags.ieco]
+        if CapabilityTag.ieco in params:
+            ieco_data = params[CapabilityTag.ieco]
             ieco_start = ieco_data[0] if len(ieco_data) > 0 else 0
             ieco_end = ieco_data[1] if len(ieco_data) > 1 else 0
             caps["ieco"] = (
                 ieco_start in B5_IECO_START_VALUES or ieco_end in B5_IECO_END_VALUES
             )
 
-        if NewProtocolTags.sound in params:
+        if CapabilityTag.sound in params:
             # B5 advertises support; live sound state comes from B0/B1 bodies.
             caps["sound"] = True
 
         # Tags with special parsing logic (handled above).
         manually_parsed_tags = frozenset(
             {
-                NewProtocolTags.mode,
-                NewProtocolTags.wind_swing,
-                NewProtocolTags.wind_speed,
-                NewProtocolTags.eco,
-                NewProtocolTags.anion,
-                NewProtocolTags.strong_wind,
-                NewProtocolTags.screen_display_capability,
-                NewProtocolTags.electricity,
-                NewProtocolTags.self_clean,
-                NewProtocolTags.ieco,
-                NewProtocolTags.sound,
+                CapabilityTag.mode,
+                CapabilityTag.wind_swing,
+                CapabilityTag.wind_speed,
+                CapabilityTag.eco,
+                CapabilityTag.anion,
+                CapabilityTag.strong_wind,
+                CapabilityTag.screen_display_capability,
+                CapabilityTag.electricity,
+                CapabilityTag.self_clean,
+                CapabilityTag.ieco,
+                CapabilityTag.sound,
             },
         )
 
@@ -1409,9 +1406,9 @@ class CapabilityBody(NewProtocolMessageBody):
                 continue  # Already handled above
 
             try:
-                tag_name = NewProtocolTags(tag_id).name
+                tag_name = CapabilityTag(tag_id).name
             except ValueError:
-                # Unknown tag entirely - not in NewProtocolTags enum.
+                # Unknown tag entirely - not in CapabilityTag enum.
                 _LOGGER.warning(
                     "Unknown capability tag in B5 response: 0x%04X, "
                     "Size: %d, Value: %s",

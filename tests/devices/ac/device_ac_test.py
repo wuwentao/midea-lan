@@ -10,16 +10,16 @@ from midealan.devices.ac import DeviceAttributes, MideaACDevice
 from midealan.devices.ac.message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
+    CapabilityTag,
     GroupOneQuery,
     GroupSevenQuery,
     GroupTwoQuery,
     GroupZeroQuery,
     HumidityQuery,
-    MessageQuery,
-    NewProtocolQuery,
-    NewProtocolTags,
     PowerFormats,
     PowerQuery,
+    PropertiesQuery,
+    StateQuery,
     SubProtocolFreshAirSet,
     SubProtocolQuery,
     SubProtocolQuery10,
@@ -324,11 +324,11 @@ class TestMideaACDevice:
         self.device._used_subprotocol = False
         queries = self.device.build_query()
         # The new-protocol query and self-clean query are now a single merged
-        # NewProtocolQuery. Capability queries are no longer part of the
+        # PropertiesQuery. Capability queries are no longer part of the
         # recurring status cycle; they are returned by build_init_query().
         assert len(queries) == 8
-        assert isinstance(queries[0], MessageQuery)
-        assert isinstance(queries[1], NewProtocolQuery)
+        assert isinstance(queries[0], StateQuery)
+        assert isinstance(queries[1], PropertiesQuery)
         assert isinstance(queries[2], PowerQuery)
         assert isinstance(queries[3], HumidityQuery)
         assert isinstance(queries[4], GroupZeroQuery)
@@ -378,16 +378,16 @@ class TestMideaACDevice:
         self.device._used_subprotocol = False
         assert self.device.capabilities == {}
         queries = self.device.build_query()
-        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
-        assert NewProtocolTags.rate_select not in new_protocol_query._body
-        assert NewProtocolTags.self_clean not in new_protocol_query._body
+        new_protocol_query = next(q for q in queries if isinstance(q, PropertiesQuery))
+        assert CapabilityTag.rate_select not in new_protocol_query._body
+        assert CapabilityTag.self_clean not in new_protocol_query._body
 
         self.device._capabilities["rate_select"] = True
         self.device._capabilities["self_clean"] = True
         queries = self.device.build_query()
-        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
-        assert NewProtocolTags.rate_select in new_protocol_query._body
-        assert NewProtocolTags.self_clean in new_protocol_query._body
+        new_protocol_query = next(q for q in queries if isinstance(q, PropertiesQuery))
+        assert CapabilityTag.rate_select in new_protocol_query._body
+        assert CapabilityTag.self_clean in new_protocol_query._body
 
     def test_customize_capabilities_override_query_and_property(self) -> None:
         """Test a customize capabilities entry forces an optional tag on.
@@ -399,8 +399,8 @@ class TestMideaACDevice:
         self.device.set_customize('{"capabilities": {"self_clean": true}}')
         assert self.device.capabilities["self_clean"] is True
         queries = self.device.build_query()
-        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
-        assert NewProtocolTags.self_clean in new_protocol_query._body
+        new_protocol_query = next(q for q in queries if isinstance(q, PropertiesQuery))
+        assert CapabilityTag.self_clean in new_protocol_query._body
 
     def test_customize_capabilities_disable_overrides_reported_value(self) -> None:
         """Test a customize false value overrides a B5-reported capability."""
@@ -409,8 +409,8 @@ class TestMideaACDevice:
         self.device.set_customize('{"capabilities": {"rate_select": false}}')
         assert self.device.capabilities["rate_select"] is False
         queries = self.device.build_query()
-        new_protocol_query = next(q for q in queries if isinstance(q, NewProtocolQuery))
-        assert NewProtocolTags.rate_select not in new_protocol_query._body
+        new_protocol_query = next(q for q in queries if isinstance(q, PropertiesQuery))
+        assert CapabilityTag.rate_select not in new_protocol_query._body
 
     def test_customize_capabilities_reset_when_absent(self) -> None:
         """Test customize capabilities clear when a later customize omits them."""
@@ -520,7 +520,7 @@ class TestMideaACDevice:
 
         assert DeviceAttributes.fresh_air_exhaust_power not in device.attributes
         queries = device.build_query()
-        assert isinstance(queries[0], MessageQuery)
+        assert isinstance(queries[0], StateQuery)
         assert not any(
             isinstance(
                 query,
@@ -1292,7 +1292,7 @@ class TestMideaACDevice:
         assert self.device._ieco_number == 1
 
     def test_set_ieco_echoes_reported_number(self) -> None:
-        """Test setting iECO builds a NewProtocolSet echoing the last gear."""
+        """Test setting iECO builds a PropertiesSet echoing the last gear."""
         self.device._ieco_number = 3
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.ieco.value, True)
@@ -1302,7 +1302,7 @@ class TestMideaACDevice:
         assert message.ieco_number == 3
 
     def test_set_ieco_off(self) -> None:
-        """Test turning iECO off builds a NewProtocolSet with ieco False."""
+        """Test turning iECO off builds a PropertiesSet with ieco False."""
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.ieco.value, False)
 

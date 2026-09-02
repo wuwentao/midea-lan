@@ -20,12 +20,12 @@ from .message import (
     GroupZeroQuery,
     HumidityQuery,
     MessageACResponse,
-    MessageQuery,
-    MessageSet,
     MessageSubProtocolSet,
-    NewProtocolQuery,
-    NewProtocolSet,
     PowerQuery,
+    PropertiesQuery,
+    PropertiesSet,
+    StateQuery,
+    StateSet,
     SubProtocolFreshAirSet,
     SubProtocolQuery,
     SubProtocolQuery10,
@@ -38,8 +38,8 @@ _LOGGER = logging.getLogger(__name__)
 
 ACQuery = (
     SubProtocolQuery
-    | MessageQuery
-    | NewProtocolQuery
+    | StateQuery
+    | PropertiesQuery
     | PowerQuery
     | HumidityQuery
     | GroupZeroQuery
@@ -420,13 +420,13 @@ class MideaACDevice(MideaDevice):
                 SubProtocolQuery30(self._message_protocol_version),
             ]
         queries: list[ACQuery] = [
-            MessageQuery(self._message_protocol_version),
+            StateQuery(self._message_protocol_version),
             # Single new-protocol query. Status feature tags (self_clean,
-            # rate_select, ...) are appended by NewProtocolQuery automatically
+            # rate_select, ...) are appended by PropertiesQuery automatically
             # from the merged capabilities map (B5-parsed values overlaid with
             # customize overrides), so an unsupported tag can't make the device
             # return an empty list that suppresses the other tags.
-            NewProtocolQuery(
+            PropertiesQuery(
                 self._message_protocol_version,
                 capabilities=self.capabilities,
             ),
@@ -724,9 +724,9 @@ class MideaACDevice(MideaDevice):
             DeviceAttributes.max_temperature.value: maximum,
         }
 
-    def make_message_set(self) -> MessageSet:
+    def make_message_set(self) -> StateSet:
         """Midea AC device make message set."""
-        message = MessageSet(self._message_protocol_version)
+        message = StateSet(self._message_protocol_version)
         message.power = self._attributes[DeviceAttributes.power]
         message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
         message.mode = self._attributes[DeviceAttributes.mode]
@@ -754,9 +754,9 @@ class MideaACDevice(MideaDevice):
         self,
         attr: str,
         value: bool | float | str,
-    ) -> NewProtocolSet:
+    ) -> PropertiesSet:
         """Midea AC device make newprotocol message set."""
-        message = NewProtocolSet(self._message_protocol_version)
+        message = PropertiesSet(self._message_protocol_version)
 
         # wind_lr_angle
         if attr == DeviceAttributes.wind_lr_angle:
@@ -912,9 +912,9 @@ class MideaACDevice(MideaDevice):
             exhaust=exhaust,
         )
 
-    def make_message_uniq_set(self) -> MessageSubProtocolSet | MessageSet:
+    def make_message_uniq_set(self) -> MessageSubProtocolSet | StateSet:
         """Midea AC device make message unique set."""
-        message: MessageSubProtocolSet | MessageSet
+        message: MessageSubProtocolSet | StateSet
         if self._used_subprotocol:
             message = self.make_subprotocol_message_set()
         else:
@@ -926,10 +926,10 @@ class MideaACDevice(MideaDevice):
         # if nat a sensor
         message: (
             ToggleDisplay
-            | NewProtocolSet
+            | PropertiesSet
             | SubProtocolFreshAirSet
             | MessageSubProtocolSet
-            | MessageSet
+            | StateSet
             | None
         ) = None
         optimistic_self_clean: bool | None = None
@@ -1013,7 +1013,7 @@ class MideaACDevice(MideaDevice):
                     DeviceAttributes.eco_mode,
                 ]:
                     message.boost_mode = False
-                    if isinstance(message, MessageSet):
+                    if isinstance(message, StateSet):
                         message.power_saving = False
                     message.sleep_mode = False
                     message.eco_mode = False
@@ -1055,7 +1055,7 @@ class MideaACDevice(MideaDevice):
         zone: int | None = None,  # noqa: ARG002
     ) -> None:
         """Midea AC device set target temperature."""
-        message: MessageSubProtocolSet | MessageSet = self.make_message_uniq_set()
+        message: MessageSubProtocolSet | StateSet = self.make_message_uniq_set()
         message.target_temperature = target_temperature
         if mode is not None:
             message.power = True
@@ -1064,8 +1064,8 @@ class MideaACDevice(MideaDevice):
 
     def set_swing(self, swing_vertical: bool, swing_horizontal: bool) -> None:
         """Midea AC device set swing."""
-        message: MessageSubProtocolSet | MessageSet = self.make_message_uniq_set()
-        if isinstance(message, MessageSet):
+        message: MessageSubProtocolSet | StateSet = self.make_message_uniq_set()
+        if isinstance(message, StateSet):
             message.swing_vertical = swing_vertical
             message.swing_horizontal = swing_horizontal
         self.build_send(message)

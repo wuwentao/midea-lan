@@ -9,6 +9,7 @@ from midealan.crc8 import calculate
 from midealan.devices.ac.message import (
     A1_MIN_BODY_LENGTH,
     CapabilitiesQuery,
+    CapabilityBody,
     GroupDataQuery,
     GroupOneQuery,
     GroupSevenQuery,
@@ -271,7 +272,7 @@ class TestNewProtocolQuery:
         expected_body = bytearray(
             [
                 0xB1,
-                0x0A,  # params count
+                0x08,  # params count
                 NewProtocolTags.indirect_wind & 0xFF,
                 NewProtocolTags.indirect_wind >> 8,
                 NewProtocolTags.breezeless & 0xFF,
@@ -288,12 +289,8 @@ class TestNewProtocolQuery:
                 NewProtocolTags.wind_lr_angle >> 8,
                 NewProtocolTags.wind_ud_angle & 0xFF,
                 NewProtocolTags.wind_ud_angle >> 8,
-                NewProtocolTags.out_silent & 0xFF,
-                NewProtocolTags.out_silent >> 8,
-                NewProtocolTags.buzzer_all & 0xFF,
-                NewProtocolTags.buzzer_all >> 8,
-                # NewProtocolTags.error_code_query & 0xFF,
-                # NewProtocolTags.error_code_query >> 8,
+                # NewProtocolTags.error_code & 0xFF,
+                # NewProtocolTags.error_code >> 8,
             ],
         )
 
@@ -310,7 +307,7 @@ class TestNewProtocolQuery:
         expected_body = bytearray(
             [
                 0xB1,
-                0x0B,  # params count
+                0x09,  # params count (8 default + rate_select)
                 NewProtocolTags.indirect_wind & 0xFF,
                 NewProtocolTags.indirect_wind >> 8,
                 NewProtocolTags.breezeless & 0xFF,
@@ -327,12 +324,6 @@ class TestNewProtocolQuery:
                 NewProtocolTags.wind_lr_angle >> 8,
                 NewProtocolTags.wind_ud_angle & 0xFF,
                 NewProtocolTags.wind_ud_angle >> 8,
-                NewProtocolTags.out_silent & 0xFF,
-                NewProtocolTags.out_silent >> 8,
-                NewProtocolTags.buzzer_all & 0xFF,
-                NewProtocolTags.buzzer_all >> 8,
-                # NewProtocolTags.error_code_query & 0xFF,
-                # NewProtocolTags.error_code_query >> 8,
                 NewProtocolTags.rate_select & 0xFF,
                 NewProtocolTags.rate_select >> 8,
             ],
@@ -351,7 +342,7 @@ class TestNewProtocolQuery:
         expected_body = bytearray(
             [
                 0xB1,
-                0x0B,  # params count
+                0x09,  # params count (8 default + self_clean)
                 NewProtocolTags.indirect_wind & 0xFF,
                 NewProtocolTags.indirect_wind >> 8,
                 NewProtocolTags.breezeless & 0xFF,
@@ -368,10 +359,6 @@ class TestNewProtocolQuery:
                 NewProtocolTags.wind_lr_angle >> 8,
                 NewProtocolTags.wind_ud_angle & 0xFF,
                 NewProtocolTags.wind_ud_angle >> 8,
-                NewProtocolTags.out_silent & 0xFF,
-                NewProtocolTags.out_silent >> 8,
-                NewProtocolTags.buzzer_all & 0xFF,
-                NewProtocolTags.buzzer_all >> 8,
                 NewProtocolTags.self_clean & 0xFF,
                 NewProtocolTags.self_clean >> 8,
             ],
@@ -413,34 +400,33 @@ class TestNewProtocolQuery:
 
         Capability keys are appended whenever they name a NewProtocolTags
         member and are truthy, sorted by tag value. Keys already in the default
-        list (buzzer_all) are not duplicated.
+        list are not duplicated. Capability-only tags (poisoners) are blocked.
         """
         msg = NewProtocolQuery(
             protocol_version=ProtocolVersion.V1,
             capabilities={
                 "temperature": 34,
-                "eco": True,
-                "humidity": 1,
-                "filter_remind": 1,
-                "buzzer_all": 1,  # already in the default list, not duplicated
+                "eco": True,  # capability-only, blocked
+                "humidity": 1,  # capability-only, blocked
+                "filter_remind": 1,  # capability-only, blocked
+                "sound": 1,  # not default anymore, appends
+                "self_clean": True,  # valid additional tag
             },
         )
         params_count = msg.body[1]
-        # Four new tags appended (eco, filter_remind, humidity, temperature);
-        # buzzer_all is skipped because it is already a default param.
-        assert params_count == len(NewProtocolQuery._default_query_params) + 4
-        # Appended tags come after the default list, sorted by value in the
-        # order eco 0x0212, filter_remind 0x0217, humidity 0x021F, temp 0x0225.
-        assert msg.body[:-2][-8:] == bytearray(
+        # Only 3 tags appended: self_clean (0x0039), temperature (0x0225),
+        # sound (0x022C). eco/filter_remind/humidity are blocked.
+        assert params_count == len(NewProtocolQuery._default_query_params) + 3
+        # Appended tags come after the default list, sorted by value:
+        # self_clean 0x0039, temperature 0x0225, sound 0x022C.
+        assert msg.body[:-2][-6:] == bytearray(
             [
-                NewProtocolTags.eco & 0xFF,
-                NewProtocolTags.eco >> 8,
-                NewProtocolTags.filter_remind & 0xFF,
-                NewProtocolTags.filter_remind >> 8,
-                NewProtocolTags.humidity & 0xFF,
-                NewProtocolTags.humidity >> 8,
+                NewProtocolTags.self_clean & 0xFF,
+                NewProtocolTags.self_clean >> 8,
                 NewProtocolTags.temperature & 0xFF,
                 NewProtocolTags.temperature >> 8,
+                NewProtocolTags.sound & 0xFF,
+                NewProtocolTags.sound >> 8,
             ],
         )
 
@@ -456,6 +442,161 @@ class TestNewProtocolQuery:
         )
         params_count = msg.body[1]
         assert params_count == len(NewProtocolQuery._default_query_params)
+
+    def test_new_protocol_query_body_blocks_capability_only_poisoners(self) -> None:
+        """Test B5-only poisoner tags never appear in B1 query even when truthy.
+
+        These 13 tags suppress the entire B1 response when queried (issue-987
+        class). They must never be auto-appended, even when the capabilities
+        dict echoes them from B5 parsing.
+        """
+        # All 13 capability-only tags from the blocklist.
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={
+                "wind_speed": 1,
+                "eco": 1,
+                "b5_8_heat": 1,
+                "mode": 1,
+                "wind_swing": 1,
+                "electricity": 1,
+                "filter_remind": 1,
+                "ptc": 1,
+                "strong_wind": 1,
+                "humidity": 1,
+                "filter_check": 1,
+                "fahrenheit": 1,
+                "screen_display_capability": 1,
+            },
+        )
+        params_count = msg.body[1]
+        # None of the 13 poisoners should be appended.
+        assert params_count == len(NewProtocolQuery._default_query_params)
+
+    def test_new_protocol_query_sound_appends_when_b5_advertises(self) -> None:
+        """Test sound appends when B5 capability parsing sets it to True."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"sound": True},
+        )
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params) + 1
+        assert msg.body[:-2][-2:] == bytearray(
+            [
+                NewProtocolTags.sound & 0xFF,
+                NewProtocolTags.sound >> 8,
+            ],
+        )
+
+    def test_new_protocol_query_out_silent_via_customize_only(self) -> None:
+        """Test out_silent appends only when explicitly set via customize caps."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"out_silent": True},
+        )
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params) + 1
+        assert msg.body[:-2][-2:] == bytearray(
+            [
+                NewProtocolTags.out_silent & 0xFF,
+                NewProtocolTags.out_silent >> 8,
+            ],
+        )
+
+    def test_new_protocol_query_error_code_via_customize_only(self) -> None:
+        """Test error_code appends only when explicitly set via customize caps."""
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"error_code": True},
+        )
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params) + 1
+        assert msg.body[:-2][-2:] == bytearray(
+            [
+                NewProtocolTags.error_code & 0xFF,
+                NewProtocolTags.error_code >> 8,
+            ],
+        )
+
+    def test_new_protocol_query_dedup_default_tags(self) -> None:
+        """Test that a truthy capability key matching a default tag is skipped."""
+        # fresh_air_1 is in _default_query_params; even if caps["fresh_air_1"]
+        # is truthy, it must not be appended a second time.
+        msg = NewProtocolQuery(
+            protocol_version=ProtocolVersion.V1,
+            capabilities={"fresh_air_1": True},
+        )
+        params_count = msg.body[1]
+        # Count should equal defaults (no additional tag appended).
+        assert params_count == len(NewProtocolQuery._default_query_params)
+        # Verify fresh_air_1 appears exactly once in the body.
+        tag_bytes = bytearray(
+            [NewProtocolTags.fresh_air_1 & 0xFF, NewProtocolTags.fresh_air_1 >> 8],
+        )
+        body_hex = msg.body[:-2].hex()
+        assert body_hex.count(tag_bytes.hex()) == 1
+
+
+class TestCapabilityBodyParsing:
+    """Test B5 capability body parsing does not poison subsequent queries."""
+
+    def test_b5_capability_only_tags_do_not_leak_into_query(self) -> None:
+        """Test B5 tags auto-parsed as capability keys don't poison next query.
+
+        B5 responses carry capability-only tags (eco, filter_remind, ptc, ...)
+        that the generic auto-parse loop echoes into the capabilities dict.
+        Those keys must never be auto-appended to a B1 query.
+        """
+        # Minimal B5 body with eco (0x0212) and filter_remind (0x0217).
+        body = bytearray(
+            [
+                0xB5,
+                0x02,  # 2 params
+                NewProtocolTags.eco & 0xFF,
+                NewProtocolTags.eco >> 8,
+                0x01,  # length
+                0x01,  # eco supported
+                NewProtocolTags.filter_remind & 0xFF,
+                NewProtocolTags.filter_remind >> 8,
+                0x01,  # length
+                0x01,  # filter_remind supported
+            ],
+        )
+        # Parse the B5 body.
+        parsed = CapabilityBody(body)
+        caps = parsed.capabilities
+        # Confirm both tags were auto-parsed.
+        assert "eco" in caps
+        assert "filter_remind" in caps
+
+        # Now build a query with those capabilities.
+        msg = NewProtocolQuery(protocol_version=ProtocolVersion.V1, capabilities=caps)
+        params_count = msg.body[1]
+        # Neither eco nor filter_remind should be in the query (blocked).
+        assert params_count == len(NewProtocolQuery._default_query_params)
+
+    def test_b5_sound_presence_yields_true_capability(self) -> None:
+        """Test B5 sound presence sets caps['sound'] = True."""
+        # Minimal B5 body with sound (0x022C).
+        body = bytearray(
+            [
+                0xB5,
+                0x01,  # 1 param
+                NewProtocolTags.sound & 0xFF,
+                NewProtocolTags.sound >> 8,
+                0x01,  # length
+                0x00,  # raw value 0 (but presence -> True)
+            ],
+        )
+        parsed = CapabilityBody(body)
+        caps = parsed.capabilities
+        # Presence sets sound to True regardless of raw[0].
+        assert caps.get("sound") is True
+
+        # Query with this capability should include sound.
+        msg = NewProtocolQuery(protocol_version=ProtocolVersion.V1, capabilities=caps)
+        params_count = msg.body[1]
+        assert params_count == len(NewProtocolQuery._default_query_params) + 1
 
 
 class TestNewProtocolSetOutSilent:
@@ -1064,7 +1205,7 @@ class TestMessageACResponse:
         body += bytearray([0x25, 0x02, 0x07, 34, 60, 34, 60, 34, 60, 0])  # temperature
         # screen_display_capability
         body += bytearray([0x24, 0x02, 0x01, 1])
-        body += bytearray([0x2C, 0x02, 0x01, 1])  # buzzer_all
+        body += bytearray([0x2C, 0x02, 0x01, 1])  # sound
         body += bytearray([0x1F, 0x02, 0x01, 1])  # humidity
         body += bytearray(1)  # trailing checksum byte (stripped by MessageResponse)
 
@@ -1099,10 +1240,11 @@ class TestMessageACResponse:
             "turbo_cool": True,
             "turbo_heat": True,
             "display_control": True,
+            # Presence-based capability (raw value ignored)
+            "sound": True,
             # Auto-parsed tags (raw value from first byte)
             "filter_remind": 1,
             "temperature": 34,
-            "buzzer_all": 1,
             "humidity": 1,
         }
 
@@ -2036,8 +2178,8 @@ class TestMessageACResponse:
         body = bytearray(10)
         body[0] = 0xB1
         body[1] = 0x01  # 1 param
-        body[2] = NewProtocolTags.error_code_query & 0xFF
-        body[3] = NewProtocolTags.error_code_query >> 8
+        body[2] = NewProtocolTags.error_code & 0xFF
+        body[3] = NewProtocolTags.error_code >> 8
         body[4] = 0x00  # padding
         body[5] = 0x01  # length
         body[6] = 0x05  # error code 5
@@ -2046,13 +2188,13 @@ class TestMessageACResponse:
         assert response.error_code == 5
 
     def test_message_b1_sound(self) -> None:
-        """Test sound parsed from B1 response (buzzer_all tag)."""
+        """Test sound parsed from B1 response (sound tag)."""
         self.header[9] = 0x03
         body = bytearray(10)
         body[0] = 0xB1
         body[1] = 0x01
-        body[2] = NewProtocolTags.buzzer_all & 0xFF
-        body[3] = NewProtocolTags.buzzer_all >> 8
+        body[2] = NewProtocolTags.sound & 0xFF
+        body[3] = NewProtocolTags.sound >> 8
         body[4] = 0x00
         body[5] = 0x01
         body[6] = 0x01  # sound on
@@ -2377,8 +2519,8 @@ class TestNewProtocolSetNewFeatures:
         body = msg.body
         assert body[0] == 0xB0
         assert body[1] == 0x01
-        assert body[2] == NewProtocolTags.buzzer_all & 0xFF
-        assert body[3] == NewProtocolTags.buzzer_all >> 8
+        assert body[2] == NewProtocolTags.sound & 0xFF
+        assert body[3] == NewProtocolTags.sound >> 8
         assert body[4] == 0x01
         assert body[5] == expected_byte
 

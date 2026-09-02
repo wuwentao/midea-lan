@@ -165,7 +165,7 @@ class NewProtocolTags(IntEnum):
     # The same tag in a B5 capability body only advertises support, not state.
     self_clean = 0x0039
     child_prevent_cold_wind = 0x003A
-    error_code_query = 0x003F
+    error_code = 0x003F
     mode_query = 0x0041
     indirect_wind = 0x0042  # prevent_straight_wind
     gentle_wind_sense = 0x0043
@@ -220,7 +220,7 @@ class NewProtocolTags(IntEnum):
     operating_time = 0x0228
     ptc_lock = 0x0229
     offline_operating_time = 0x022B
-    buzzer_all = 0x022C  # b5_sound
+    sound = 0x022C  # b5_sound / buzzer_all
     twins_machine = 0x0232
     fresh_air_1 = 0x0233
     body_check = 0x0234
@@ -472,6 +472,29 @@ class NewProtocolQuery(MessageACBase):
     capability key that names a NewProtocolTags member and is truthy is added.
     """
 
+    # Tags that only ever appear in B5 capability advertisements, never as valid
+    # B1 query tags in any Lua protocol. B5 parsing echoes several of these as
+    # capability keys named after the tag; they must never be appended to a B1
+    # query or the device replies with an empty list and suppresses every other
+    # tag in the same request. See docs/protocol/ac_newprotocol_tags.md.
+    _CAPABILITY_ONLY_TAGS: frozenset[int] = frozenset(
+        {
+            NewProtocolTags.wind_speed,  # 0x0210
+            NewProtocolTags.eco,  # 0x0212
+            NewProtocolTags.b5_8_heat,  # 0x0213
+            NewProtocolTags.mode,  # 0x0214
+            NewProtocolTags.wind_swing,  # 0x0215
+            NewProtocolTags.electricity,  # 0x0216
+            NewProtocolTags.filter_remind,  # 0x0217
+            NewProtocolTags.ptc,  # 0x0219
+            NewProtocolTags.strong_wind,  # 0x021A
+            NewProtocolTags.humidity,  # 0x021F
+            NewProtocolTags.filter_check,  # 0x0221
+            NewProtocolTags.fahrenheit,  # 0x0222
+            NewProtocolTags.screen_display_capability,  # 0x0224
+        },
+    )
+
     _default_query_params: tuple[int, ...] = (
         NewProtocolTags.indirect_wind,
         NewProtocolTags.breezeless,
@@ -481,9 +504,6 @@ class NewProtocolQuery(MessageACBase):
         NewProtocolTags.fresh_air_2,
         NewProtocolTags.wind_lr_angle,
         NewProtocolTags.wind_ud_angle,
-        NewProtocolTags.out_silent,
-        NewProtocolTags.buzzer_all,
-        # NewProtocolTags.error_code_query,
     )
 
     def __init__(
@@ -530,6 +550,8 @@ class NewProtocolQuery(MessageACBase):
                 continue  # Key does not name a NewProtocolTags member.
             if tag in default_tags:
                 continue
+            if tag in self._CAPABILITY_ONLY_TAGS:
+                continue  # B5-advertisement-only; never valid as a B1 query tag.
             additional_tags.append(tag)
         additional_tags.sort()
         params.extend(additional_tags)
@@ -990,7 +1012,7 @@ class NewProtocolSet(MessageACBase):
             pack_count += 1
             payload.extend(
                 NewProtocolMessageBody.pack(
-                    param=NewProtocolTags.buzzer_all,
+                    param=NewProtocolTags.sound,
                     value=bytearray([0x01 if self.sound else 0x00]),
                 ),
             )
@@ -1165,10 +1187,10 @@ class PropertiesBody(NewProtocolMessageBody):
             self.rate_select = params[NewProtocolTags.rate_select][0]
         if NewProtocolTags.out_silent in params:
             self.out_silent = params[NewProtocolTags.out_silent][0] == OUT_SILENT_VALUE
-        if NewProtocolTags.buzzer_all in params:
-            self.sound = params[NewProtocolTags.buzzer_all][0] > 0
-        if NewProtocolTags.error_code_query in params:
-            self.error_code = params[NewProtocolTags.error_code_query][0]
+        if NewProtocolTags.sound in params:
+            self.sound = params[NewProtocolTags.sound][0] > 0
+        if NewProtocolTags.error_code in params:
+            self.error_code = params[NewProtocolTags.error_code][0]
         if NewProtocolTags.self_clean in params and self.body_type != ListTypes.B5:
             # A B5 body carries this tag as a capability flag (always 1 when the
             # model supports self-clean), so only B0/B1 bodies report live state.
@@ -1360,6 +1382,10 @@ class CapabilityBody(NewProtocolMessageBody):
                 ieco_start in B5_IECO_START_VALUES or ieco_end in B5_IECO_END_VALUES
             )
 
+        if NewProtocolTags.sound in params:
+            # B5 advertises support; live sound state comes from B0/B1 bodies.
+            caps["sound"] = True
+
         # Tags with special parsing logic (handled above).
         manually_parsed_tags = frozenset(
             {
@@ -1373,6 +1399,7 @@ class CapabilityBody(NewProtocolMessageBody):
                 NewProtocolTags.electricity,
                 NewProtocolTags.self_clean,
                 NewProtocolTags.ieco,
+                NewProtocolTags.sound,
             },
         )
 

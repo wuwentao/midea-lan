@@ -1131,6 +1131,13 @@ class TestMideaACDevice:
             self.device.set_swing(True, False)
             mock_build_send.assert_called()
 
+    def test_set_swing_subprotocol(self) -> None:
+        """Test set swing with subprotocol device."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "send_message_v2") as mock_build_send:
+            self.device.set_swing(True, False)
+            mock_build_send.assert_called()
+
     def test_self_clean_syncs_from_self_clean_active(self) -> None:
         """Test that self_clean attribute tracks self_clean_active status reports."""
         with patch("midealan.devices.ac.MessageACResponse") as mock_message_response:

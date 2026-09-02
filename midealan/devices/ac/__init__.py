@@ -12,6 +12,8 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import ListTypes
 
 from .message import (
+    C0_DEFAULT_INVALID_OUTDOOR_TEMPERATURE_VALUES,
+    C0_DEFAULT_TEMPERATURE_OFFSET,
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
     GroupOneQuery,
@@ -132,6 +134,7 @@ BB_FRESH_AIR_DEFAULT_SPEED = 60
 # The BB exhaust preset map has no "medium" (60) entry; use the first
 # advertised non-silent exhaust mode when a power-on command has no prior speed.
 BB_FRESH_AIR_EXHAUST_DEFAULT_SPEED = 80
+MODEL_220F4047_C0_OUTDOOR_TEMPERATURE_PLACEHOLDER = 0x20
 
 
 @dataclass(frozen=True)
@@ -141,13 +144,23 @@ class ACModelCapabilities:
     attributes: frozenset[DeviceAttributes] = frozenset()
     uses_bb_protocol: bool = False
     has_bb_fresh_air: bool = False
+    c0_indoor_temperature_offset: int = C0_DEFAULT_TEMPERATURE_OFFSET
+    c0_invalid_outdoor_temperature_values: frozenset[int] = (
+        C0_DEFAULT_INVALID_OUTDOOR_TEMPERATURE_VALUES
+    )
 
 
 DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
-# These BB fields use model-specific offsets and command payloads observed on
-# exact model/subtype pairs. Keep unrelated devices hidden from attributes and
-# commands whose bytes may have a different meaning on other firmware.
+# These fields use model-specific offsets, sentinels, or command payloads observed
+# on exact model/subtype pairs. Keep unrelated devices on the generic decoder and
+# hidden from commands whose bytes may have a different meaning on other firmware.
 AC_MODEL_CAPABILITIES = {
+    ("220F4047", 8): ACModelCapabilities(
+        c0_indoor_temperature_offset=0,
+        c0_invalid_outdoor_temperature_values=frozenset(
+            {MODEL_220F4047_C0_OUTDOOR_TEMPERATURE_PLACEHOLDER},
+        ),
+    ),
     ("23096633", 1): ACModelCapabilities(
         attributes=frozenset(
             {
@@ -482,8 +495,14 @@ class MideaACDevice(MideaDevice):
         """Midea AC device process message."""
         message = MessageACResponse(
             bytearray(msg),
-            self._power_analysis_method,
-            self._uses_new_protocol_temperature,
+            power_analysis_method=self._power_analysis_method,
+            new_protocol_temperature=self._uses_new_protocol_temperature,
+            c0_indoor_temperature_offset=(
+                self._model_capabilities.c0_indoor_temperature_offset
+            ),
+            c0_invalid_outdoor_temperature_values=(
+                self._model_capabilities.c0_invalid_outdoor_temperature_values
+            ),
         )
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}

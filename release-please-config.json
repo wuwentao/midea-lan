@@ -1,7 +1,7 @@
 {
   "include-commit-authors": true,
   "include-v-in-tag": true,
-  "include-component-in-tag": false,
+  "include-component-in-tag": true,
   "packages": {
     ".": {
       "release-type": "python",

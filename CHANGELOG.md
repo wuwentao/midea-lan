@@ -1,5 +1,12 @@
 # Changelog
 
+## [2026.9.1](https://github.com/wuwentao/midea-lan/compare/v2026.9.0...v2026.9.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* **ci:** add push trigger to release-please workflow ([#78](https://github.com/wuwentao/midea-lan/issues/78)) ([12fd765](https://github.com/wuwentao/midea-lan/commit/12fd7652c91d9152a5dad2f806d0a7b737d3524c))
+
 ## [2026.9.0](https://github.com/wuwentao/midea-lan/compare/v2026.8.0...v2026.9.0) (2026-09-02)
 
 

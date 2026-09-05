@@ -36,6 +36,10 @@ SOCKET_TIMEOUT = 10  # socket connection default timeout
 QUERY_TIMEOUT = (
     5  # default is 1s, 0xAC have more queries, set to 2s, latest: increase to 5s
 )
+# A single timeout during the initial protocol probe blacklists the command for
+# the whole connection, even when it was just a slow/not-yet-ready device rather
+# than a genuinely unsupported protocol. Give it one more try before giving up on it.
+QUERY_PROBE_RETRIES = 2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -545,10 +549,30 @@ class MideaDevice(threading.Thread):
                 self.build_send(cmd, query=True)
                 # init check_protocol, skip timeout exception
                 if check_protocol:
-                    try:
-                        self._await_query_reply()
-                    # only catch TimoutError for check_protocol
+                    # only catch TimeoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
+                    attempt = 0
+                    try:
+                        while True:
+                            try:
+                                self._await_query_reply()
+                                break
+                            except TimeoutError:
+                                attempt += 1
+                                if attempt >= QUERY_PROBE_RETRIES:
+                                    raise
+                                # A single timeout is not proof the protocol is
+                                # unsupported: a not-yet-ready device can miss the
+                                # first reply window (issue #658). Retry once before
+                                # blacklisting it for the whole connection.
+                                _LOGGER.debug(
+                                    "[%s] Probe for %s timed out (%s/%s), retrying",
+                                    self._device_id,
+                                    cmd.__class__.__name__,
+                                    attempt,
+                                    QUERY_PROBE_RETRIES,
+                                )
+                                self.build_send(cmd, query=True)
                     except TimeoutError:
                         if cmd in real_cmds:
                             error_count += 1

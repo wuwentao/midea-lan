@@ -454,6 +454,7 @@ class TestMideaDevice:
                     bytearray([0x0]),
                     bytearray([0x0]),
                     TimeoutError(),
+                    TimeoutError(),
                 ],
             ),
             patch.object(self.device, "build_send", return_value=None),
@@ -503,7 +504,11 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError()],
+                side_effect=[
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -521,8 +526,11 @@ class TestMideaDevice:
         """A failed appliance query must not count against the status queries.
 
         Ungated, its timeout increments error_count to 1, which already equals
-        len(real_cmds) on the first iteration -- so a device whose real status query
-        works perfectly well would be declared to support no protocol at all.
+        len(real_cmds) on the first iteration -- so a device whose real status
+        query works perfectly well would be declared to support no protocol at
+        all. A single probe timeout is retried once before blacklisting, so a
+        device that never answers the appliance query is only recorded after two
+        consecutive timeouts.
         """
         socket_mock = MagicMock()
         real_cmd = MagicMock()
@@ -531,7 +539,7 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[TimeoutError(), bytearray([0x0])],
+                side_effect=[TimeoutError(), TimeoutError(), bytearray([0x0])],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -543,11 +551,48 @@ class TestMideaDevice:
             self.device._socket = socket_mock
             assert self.device._appliance_query is True
             self.device.refresh_status(True)  # must not raise
-            # The timed-out appliance query must still be blacklisted, which is what
-            # stops it being re-sent on the next refresh. close_socket() re-arms
-            # _appliance_query, so this list is the only thing holding it back on a
-            # device that never answers it.
+            # The never-answering appliance query must still be blacklisted, which
+            # is what stops it being re-sent on the next refresh. close_socket()
+            # re-arms _appliance_query, so this list is the only thing holding it
+            # back on a device that never answers it.
             assert "MessageQueryAppliance" in self.device._unsupported_protocol
+            assert socket_mock.recv.call_count == 3
+
+    def test_slow_status_query_succeeds_on_probe_retry(self) -> None:
+        """A single probe timeout is retried, not treated as unsupported.
+
+        Regression for issue #658: a not-yet-ready 0xAC device can reply slower
+        than QUERY_TIMEOUT on the first try. One timeout during the checked pass
+        must not poison _unsupported_protocol for the whole connection; the
+        retried command answers and stays usable.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        self.device._appliance_query = False
+        sent: list[object] = []
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                side_effect=[TimeoutError(), bytearray([0x0])],
+            ),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                side_effect=[MessageResult.SUCCESS],
+            ),
+        ):
+            self.device._socket = socket_mock
+            self.device.refresh_status(True)  # must not raise
+        assert real_cmd.__class__.__name__ not in self.device._unsupported_protocol
+        # Sent once, timed out once, sent again, and answered on the retry.
+        assert sent == [real_cmd, real_cmd]
 
     def test_garbled_appliance_reply_does_not_fail_the_device(self) -> None:
         """Third path into the same trap: a ResponseException on the appliance query.
@@ -667,11 +712,11 @@ class TestMideaDevice:
 
         The init probes (e.g. AC B5 capability queries) need the message
         protocol version the appliance reply reports. If the appliance query
-        times out, _appliance_query stays True and the version is unresolved, so
-        the checked pass must advance straight to build_query() rather than probe
-        with a stale version -- a probe timing out here would be blacklisted for
-        the whole connection, costing capability discovery on a device whose
-        status queries work.
+        keeps timing out (even across its single probe retry), _appliance_query
+        stays True and the version is unresolved, so the checked pass must advance
+        straight to build_query() rather than probe with a stale version -- a probe
+        timing out here would be blacklisted for the whole connection, costing
+        capability discovery on a device whose status queries work.
         """
         socket_mock = MagicMock()
         init_cmd = MagicMock(name="init_cmd")
@@ -680,15 +725,15 @@ class TestMideaDevice:
         real_cmd.__class__.__name__ = "StatusQuery"
         sent: list[object] = []
 
-        # Appliance query times out (no reply clears _appliance_query), then the
-        # status query answers.
+        # Appliance query times out twice (the probe retries once before giving
+        # up), then the status query answers.
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", return_value=[init_cmd]),
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[TimeoutError(), bytearray([0x0])],
+                side_effect=[TimeoutError(), TimeoutError(), bytearray([0x0])],
             ),
             patch.object(
                 self.device,
@@ -705,10 +750,12 @@ class TestMideaDevice:
             assert self.device._appliance_query is True
             self.device.refresh_status(True)
 
-        # appliance query, then straight to the status query -- no init probe.
+        # appliance query (initial send plus its retry), then straight to the
+        # status query -- no init probe.
         assert sent[0].__class__.__name__ == "MessageQueryAppliance"
+        assert sent[1].__class__.__name__ == "MessageQueryAppliance"
         assert init_cmd not in sent
-        assert sent[1] is real_cmd
+        assert sent[2] is real_cmd
         # _appliance_query is still armed for the next connect-time probe.
         assert self.device._appliance_query is True
 
@@ -767,9 +814,10 @@ class TestMideaDevice:
     def test_followup_init_query_blacklisted_on_timeout(self) -> None:
         """An armed follow-up probe that times out is recorded, not re-sent.
 
-        Once the additional probe is spliced in and times out during the checked
-        pass, it lands in _unsupported_protocol, so it is never queued again even
-        though build_init_query() keeps reporting it as armed.
+        Once the additional probe is spliced in and times out twice (its single
+        probe retry is also unanswered) during the checked pass, it lands in
+        _unsupported_protocol, so it is never queued again even though
+        build_init_query() keeps reporting it as armed.
         """
         socket_mock = MagicMock()
         self.device._appliance_query = False
@@ -795,14 +843,20 @@ class TestMideaDevice:
                 armed["additional"] = True
             return MessageResult.SUCCESS
 
-        # basic reply succeeds, additional probe times out, status query succeeds.
+        # basic reply succeeds, additional probe times out twice (retried once),
+        # status query succeeds.
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", side_effect=build_init),
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError(), bytearray([0x0])],
+                side_effect=[
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    TimeoutError(),
+                    bytearray([0x0]),
+                ],
             ),
             patch.object(
                 self.device,
@@ -815,8 +869,9 @@ class TestMideaDevice:
             self.device.refresh_status(True)  # must not raise (real query answered)
 
         assert "_Additional" in self.device._unsupported_protocol
-        # Sent exactly once despite still being reported as armed.
-        assert sum(isinstance(c, _Additional) for c in sent) == 1
+        # Sent twice despite still being reported as armed: the first timeout is
+        # retried before the probe is blacklisted.
+        assert sum(isinstance(c, _Additional) for c in sent) == 2
 
     def test_blacklisted_init_query_still_advances_stage_in_checked_pass(self) -> None:
         """A skipped (already-unsupported) init stage still advances to the next.
@@ -950,7 +1005,12 @@ class TestMideaDevice:
                 socket_mock,
                 "recv",
                 # appliance ok, first real ok, second real times out
-                side_effect=[bytearray([0x0]), bytearray([0x0]), TimeoutError()],
+                side_effect=[
+                    bytearray([0x0]),
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -972,7 +1032,13 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
+                side_effect=[
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -984,11 +1050,11 @@ class TestMideaDevice:
             self.device._socket = socket_mock
             with pytest.raises(NoSupportedProtocol):
                 self.device.refresh_status(True)
-            # Both must have failed on their own timeout. If they shared a class name
-            # the second would take the SKIP path, consuming only two of the three
-            # recv side effects and testing a different branch than this one claims.
+            # Both must have failed on their own (retried) timeouts. If they shared
+            # a class name the second would take the SKIP path, consuming fewer recv
+            # side effects and testing a different branch than this one claims.
             assert self.device._unsupported_protocol == ["QueryA", "QueryB"]
-            assert socket_mock.recv.call_count == 3
+            assert socket_mock.recv.call_count == 5
 
     def test_close_socket_rearms_appliance_query(self) -> None:
         """close_socket must re-arm the appliance query for the next connection.

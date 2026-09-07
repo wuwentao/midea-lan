@@ -18,9 +18,14 @@ from midealan.message import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# A decoded B5 capability value. Most tags decode to a bool/int flag, but the
-# temperature tag decodes to a nested per-mode setpoint-limit map
-# ({"cool"|"auto"|"heat": {"min": float, "max": float}, "decimals": bool}).
+# A decoded B5 capability value. Most tags decode to a bool/int flag, but some
+# tags decode to a nested map. The temperature tag yields a per-mode setpoint
+# limit map, keyed "cool"/"auto"/"heat" with "min"/"max" floats plus a
+# "decimals" bool. The mode tag yields a supported-modes map, keyed
+# "heat"/"cool"/"dry"/"auto" with bool values. The wind_swing tag yields a
+# supported-swing map, keyed "horizontal"/"vertical" with bool values. The
+# wind_speed tag yields a supported-fan-speed map, keyed
+# "silent"/"low"/"medium"/"high"/"auto"/"custom" with bool values.
 CapabilityValue = bool | int | dict[str, dict[str, float] | bool]
 
 A1_MIN_BODY_LENGTH = 18
@@ -1392,34 +1397,31 @@ class CapabilityBody(NewProtocolMessageBody):
         # Manual parsing for tags with complex/special logic
         if CapabilityTag.mode in params:
             value = params[CapabilityTag.mode][0]
-            caps["heat_mode"] = value in B5_HEAT_MODE_VALUES
-            caps["cool_mode"] = value not in B5_NO_COOL_MODE_VALUES
-            caps["dry_mode"] = value in B5_DRY_MODE_VALUES
-            caps["auto_mode"] = value in B5_AUTO_MODE_VALUES
+            caps["modes"] = {
+                "heat": value in B5_HEAT_MODE_VALUES,
+                "cool": value not in B5_NO_COOL_MODE_VALUES,
+                "dry": value in B5_DRY_MODE_VALUES,
+                "auto": value in B5_AUTO_MODE_VALUES,
+            }
 
         if CapabilityTag.wind_swing in params:
             value = params[CapabilityTag.wind_swing][0]
-            caps["swing_horizontal"] = value in B5_SWING_HORIZONTAL_VALUES
-            caps["swing_vertical"] = value < B5_LOW_VALUE_MAX
+            caps["swing_modes"] = {
+                "horizontal": value in B5_SWING_HORIZONTAL_VALUES,
+                "vertical": value < B5_LOW_VALUE_MAX,
+            }
 
         if CapabilityTag.wind_speed in params:
             value = params[CapabilityTag.wind_speed][0]
-            caps["fan_silent"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_SILENT_VALUES
-            )
-            caps["fan_low"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_LOW_HIGH_VALUES
-            )
-            caps["fan_medium"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_MEDIUM_VALUES
-            )
-            caps["fan_high"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_LOW_HIGH_VALUES
-            )
-            caps["fan_auto"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_AUTO_VALUES
-            )
-            caps["fan_custom"] = value == B5_FAN_CUSTOM_VALUE
+            custom = value == B5_FAN_CUSTOM_VALUE
+            caps["fan_speeds"] = {
+                "silent": custom or value in B5_FAN_SILENT_VALUES,
+                "low": custom or value in B5_FAN_LOW_HIGH_VALUES,
+                "medium": custom or value in B5_FAN_MEDIUM_VALUES,
+                "high": custom or value in B5_FAN_LOW_HIGH_VALUES,
+                "auto": custom or value in B5_FAN_AUTO_VALUES,
+                "custom": custom,
+            }
 
         if CapabilityTag.eco in params:
             caps["eco"] = params[CapabilityTag.eco][0] in B5_ECO_VALUES

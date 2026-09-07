@@ -433,12 +433,16 @@ class TestNewProtocolQuery:
     def test_new_protocol_query_body_ignores_unknown_capability_keys(self) -> None:
         """Test capability keys that name no CapabilityTag member are skipped.
 
-        Manually-parsed capability keys (heat_mode, fan_low, ...) are not tag
-        names and must not raise or be appended to the query.
+        Manually-parsed capability keys (modes, swing_modes, fan_speeds, ...)
+        are not tag names and must not raise or be appended to the query.
         """
         msg = PropertiesQuery(
             protocol_version=ProtocolVersion.V1,
-            capabilities={"heat_mode": True, "fan_low": True, "cool_mode": True},
+            capabilities={
+                "modes": {"heat": True, "cool": True},
+                "swing_modes": {"horizontal": True},
+                "fan_speeds": {"low": True},
+            },
         )
         params_count = msg.body[1]
         assert params_count == len(PropertiesQuery._default_properties)
@@ -1221,14 +1225,18 @@ class TestMessageACResponse:
                 "dry": False,
                 "auto": True,
             },
-            "swing_horizontal": True,
-            "swing_vertical": True,
-            "fan_silent": False,
-            "fan_low": True,
-            "fan_medium": True,
-            "fan_high": True,
-            "fan_auto": True,
-            "fan_custom": False,
+            "swing_modes": {
+                "horizontal": True,
+                "vertical": True,
+            },
+            "fan_speeds": {
+                "silent": False,
+                "low": True,
+                "medium": True,
+                "high": True,
+                "auto": True,
+                "custom": False,
+            },
             "eco": True,
             "anion": True,
             "turbo_cool": True,
@@ -1362,12 +1370,14 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_silent": True,
-            "fan_low": True,
-            "fan_medium": True,
-            "fan_high": True,
-            "fan_auto": True,
-            "fan_custom": True,
+            "fan_speeds": {
+                "silent": True,
+                "low": True,
+                "medium": True,
+                "high": True,
+                "auto": True,
+                "custom": True,
+            },
         }
 
     def test_message_query_b5_value_9_fan_supports_silent_low_high_auto(
@@ -1383,12 +1393,14 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_silent": True,
-            "fan_low": True,
-            "fan_medium": False,
-            "fan_high": True,
-            "fan_auto": True,
-            "fan_custom": False,
+            "fan_speeds": {
+                "silent": True,
+                "low": True,
+                "medium": False,
+                "high": True,
+                "auto": True,
+                "custom": False,
+            },
         }
 
     def test_message_query_b5_warns_unknown_tag(

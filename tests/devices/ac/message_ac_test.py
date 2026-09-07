@@ -1221,8 +1221,10 @@ class TestMessageACResponse:
                 "dry": False,
                 "auto": True,
             },
-            "swing_horizontal": True,
-            "swing_vertical": True,
+            "swing_modes": {
+                "horizontal": True,
+                "vertical": True,
+            },
             "fan_silent": False,
             "fan_low": True,
             "fan_medium": True,

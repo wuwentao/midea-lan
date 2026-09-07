@@ -22,7 +22,8 @@ _LOGGER = logging.getLogger(__name__)
 # tags decode to a nested map. The temperature tag yields a per-mode setpoint
 # limit map, keyed "cool"/"auto"/"heat" with "min"/"max" floats plus a
 # "decimals" bool. The mode tag yields a supported-modes map, keyed
-# "heat"/"cool"/"dry"/"auto" with bool values.
+# "heat"/"cool"/"dry"/"auto" with bool values. The wind_swing tag yields a
+# supported-swing map, keyed "horizontal"/"vertical" with bool values.
 CapabilityValue = bool | int | dict[str, dict[str, float] | bool]
 
 A1_MIN_BODY_LENGTH = 18
@@ -1403,8 +1404,10 @@ class CapabilityBody(NewProtocolMessageBody):
 
         if CapabilityTag.wind_swing in params:
             value = params[CapabilityTag.wind_swing][0]
-            caps["swing_horizontal"] = value in B5_SWING_HORIZONTAL_VALUES
-            caps["swing_vertical"] = value < B5_LOW_VALUE_MAX
+            caps["swing_modes"] = {
+                "horizontal": value in B5_SWING_HORIZONTAL_VALUES,
+                "vertical": value < B5_LOW_VALUE_MAX,
+            }
 
         if CapabilityTag.wind_speed in params:
             value = params[CapabilityTag.wind_speed][0]

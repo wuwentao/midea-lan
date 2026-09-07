@@ -495,7 +495,7 @@ class PropertiesQuery(MessageACBase):
         },
     )
 
-    _default_query_params: tuple[int, ...] = (
+    _default_properties: tuple[int, ...] = (
         CapabilityTag.indirect_wind,
         CapabilityTag.breezeless,
         CapabilityTag.indoor_humidity,
@@ -504,6 +504,15 @@ class PropertiesQuery(MessageACBase):
         CapabilityTag.fresh_air_2,
         CapabilityTag.wind_lr_angle,
         CapabilityTag.wind_ud_angle,
+    )
+
+    _capability_properties: tuple[int, ...] = (
+        CapabilityTag.self_clean,
+        CapabilityTag.rate_select,
+        CapabilityTag.out_silent,
+        CapabilityTag.ieco,
+        CapabilityTag.sound,
+        CapabilityTag.error_code,
     )
 
     def __init__(
@@ -532,14 +541,16 @@ class PropertiesQuery(MessageACBase):
 
     @property
     def _body(self) -> bytearray:
-        params = list(self._default_query_params)
-        default_tags = frozenset(self._default_query_params)
+        params = list(self._default_properties)
+        default_tags = frozenset(self._default_properties)
+        properties_tags = frozenset(self._capability_properties)
 
         # Auto-append tags from the merged capabilities map. A capability key is
         # queried only when it names a CapabilityTag member and its value is
         # truthy, so a device that never advertised a feature (or that a user
         # disabled via customize) is not asked for it. Tags are sorted by value
         # so the produced body is deterministic.
+        properties_query: list[CapabilityTag] = []
         additional_tags: list[CapabilityTag] = []
         for key, value in self._capabilities.items():
             if not value:
@@ -552,15 +563,25 @@ class PropertiesQuery(MessageACBase):
                 continue
             if tag in self._CAPABILITY_ONLY_TAGS:
                 continue  # B5-advertisement-only; never valid as a B1 query tag.
-            additional_tags.append(tag)
+            if tag in properties_tags:
+                properties_query.append(tag)
+            else:
+                additional_tags.append(tag)
+        # Sort each list, then extend params with both in sorted order
+        properties_query.sort()
         additional_tags.sort()
-        params.extend(additional_tags)
+        # Merge both lists and sort together to maintain overall tag value order
+        appended_tags = properties_query + additional_tags
+        appended_tags.sort()
+        params.extend(appended_tags)
         if not self._build_logged:
             self._build_logged = True
             _LOGGER.debug(
-                "PropertiesQuery build: appended=%s query_tags=%s capabilities=%s",
+                "PropertiesQuery build: default_properties=%s "
+                "capability_properties=%s additional_tags=%s capabilities=%s",
+                [CapabilityTag(tag).name for tag in default_tags],
+                [tag.name for tag in properties_query],
                 [tag.name for tag in additional_tags],
-                [CapabilityTag(param).name for param in params],
                 self._capabilities,
             )
 

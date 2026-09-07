@@ -391,7 +391,7 @@ class TestNewProtocolQuery:
             capabilities={"self_clean": False, "rate_select": 0},
         )
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params)
+        assert params_count == len(PropertiesQuery._default_properties)
         assert CapabilityTag.self_clean not in msg.body
         assert CapabilityTag.rate_select not in msg.body
 
@@ -416,7 +416,7 @@ class TestNewProtocolQuery:
         params_count = msg.body[1]
         # Only 3 tags appended: self_clean (0x0039), temperature (0x0225),
         # sound (0x022C). eco/filter_remind/humidity are blocked.
-        assert params_count == len(PropertiesQuery._default_query_params) + 3
+        assert params_count == len(PropertiesQuery._default_properties) + 3
         # Appended tags come after the default list, sorted by value:
         # self_clean 0x0039, temperature 0x0225, sound 0x022C.
         assert msg.body[:-2][-6:] == bytearray(
@@ -441,7 +441,7 @@ class TestNewProtocolQuery:
             capabilities={"heat_mode": True, "fan_low": True, "cool_mode": True},
         )
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params)
+        assert params_count == len(PropertiesQuery._default_properties)
 
     def test_new_protocol_query_body_blocks_capability_only_poisoners(self) -> None:
         """Test B5-only poisoner tags never appear in B1 query even when truthy.
@@ -471,7 +471,7 @@ class TestNewProtocolQuery:
         )
         params_count = msg.body[1]
         # None of the 13 poisoners should be appended.
-        assert params_count == len(PropertiesQuery._default_query_params)
+        assert params_count == len(PropertiesQuery._default_properties)
 
     def test_new_protocol_query_sound_appends_when_b5_advertises(self) -> None:
         """Test sound appends when B5 capability parsing sets it to True."""
@@ -480,7 +480,7 @@ class TestNewProtocolQuery:
             capabilities={"sound": True},
         )
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params) + 1
+        assert params_count == len(PropertiesQuery._default_properties) + 1
         assert msg.body[:-2][-2:] == bytearray(
             [
                 CapabilityTag.sound & 0xFF,
@@ -495,7 +495,7 @@ class TestNewProtocolQuery:
             capabilities={"out_silent": True},
         )
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params) + 1
+        assert params_count == len(PropertiesQuery._default_properties) + 1
         assert msg.body[:-2][-2:] == bytearray(
             [
                 CapabilityTag.out_silent & 0xFF,
@@ -510,7 +510,7 @@ class TestNewProtocolQuery:
             capabilities={"error_code": True},
         )
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params) + 1
+        assert params_count == len(PropertiesQuery._default_properties) + 1
         assert msg.body[:-2][-2:] == bytearray(
             [
                 CapabilityTag.error_code & 0xFF,
@@ -520,7 +520,7 @@ class TestNewProtocolQuery:
 
     def test_new_protocol_query_dedup_default_tags(self) -> None:
         """Test that a truthy capability key matching a default tag is skipped."""
-        # fresh_air_1 is in _default_query_params; even if caps["fresh_air_1"]
+        # fresh_air_1 is in _default_properties; even if caps["fresh_air_1"]
         # is truthy, it must not be appended a second time.
         msg = PropertiesQuery(
             protocol_version=ProtocolVersion.V1,
@@ -528,7 +528,7 @@ class TestNewProtocolQuery:
         )
         params_count = msg.body[1]
         # Count should equal defaults (no additional tag appended).
-        assert params_count == len(PropertiesQuery._default_query_params)
+        assert params_count == len(PropertiesQuery._default_properties)
         # Verify fresh_air_1 appears exactly once in the body.
         tag_bytes = bytearray(
             [CapabilityTag.fresh_air_1 & 0xFF, CapabilityTag.fresh_air_1 >> 8],
@@ -573,7 +573,7 @@ class TestCapabilityBodyParsing:
         msg = PropertiesQuery(protocol_version=ProtocolVersion.V1, capabilities=caps)
         params_count = msg.body[1]
         # Neither eco nor filter_remind should be in the query (blocked).
-        assert params_count == len(PropertiesQuery._default_query_params)
+        assert params_count == len(PropertiesQuery._default_properties)
 
     def test_b5_sound_presence_yields_true_capability(self) -> None:
         """Test B5 sound presence sets caps['sound'] = True."""
@@ -596,7 +596,7 @@ class TestCapabilityBodyParsing:
         # Query with this capability should include sound.
         msg = PropertiesQuery(protocol_version=ProtocolVersion.V1, capabilities=caps)
         params_count = msg.body[1]
-        assert params_count == len(PropertiesQuery._default_query_params) + 1
+        assert params_count == len(PropertiesQuery._default_properties) + 1
 
 
 class TestNewProtocolSetOutSilent:

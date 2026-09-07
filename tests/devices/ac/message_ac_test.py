@@ -1215,10 +1215,12 @@ class TestMessageACResponse:
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
             # Manually parsed capabilities with special logic
-            "heat_mode": True,
-            "cool_mode": True,
-            "dry_mode": False,
-            "auto_mode": True,
+            "modes": {
+                "heat": True,
+                "cool": True,
+                "dry": False,
+                "auto": True,
+            },
             "swing_horizontal": True,
             "swing_vertical": True,
             "fan_silent": False,
@@ -1407,7 +1409,7 @@ class TestMessageACResponse:
 
         # Known tag should parse
         assert hasattr(response, "capabilities")
-        assert "heat_mode" in response.capabilities
+        assert "modes" in response.capabilities
         # Unknown tag should trigger warning
         assert any(
             "Unknown capability tag" in record.message and "0x0299" in record.message

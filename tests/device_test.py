@@ -11,6 +11,7 @@ from midealan.cloud import DEFAULT_KEYS
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import (
     MESSAGE_TYPE_INDEX,
+    QUERY_PROBE_RETRIES,
     QUERY_TIMEOUT,
     RESPONSE_TIMEOUT,
     AuthException,
@@ -593,6 +594,50 @@ class TestMideaDevice:
         assert real_cmd.__class__.__name__ not in self.device._unsupported_protocol
         # Sent once, timed out once, sent again, and answered on the retry.
         assert sent == [real_cmd, real_cmd]
+
+    def test_retry_send_timeout_is_not_blacklisted(self) -> None:
+        """A timeout while *resending* a probe must not blacklist the command.
+
+        Only the reply waits time out to prove a protocol is unsupported. A
+        TimeoutError raised by the retry build_send() is a transport failure and
+        belongs on the same connection-recovery path as the initial send (which
+        sits outside the checked-pass try): it must propagate out of
+        refresh_status rather than land in _unsupported_protocol.
+        """
+        socket_mock = MagicMock()
+        real_cmd = MagicMock()
+        self.device._appliance_query = False
+        sent: list[object] = []
+        send_calls = 0
+
+        def build_send(cmd: object, query: bool = False) -> None:  # noqa: ARG001
+            nonlocal send_calls
+            send_calls += 1
+            # First (initial) send succeeds; the retry send times out.
+            if send_calls >= QUERY_PROBE_RETRIES:
+                raise TimeoutError
+            sent.append(cmd)
+
+        with (
+            patch.object(self.device, "build_query", return_value=[real_cmd]),
+            patch.object(
+                socket_mock,
+                "recv",
+                # The reply times out once, which triggers the retry send.
+                side_effect=[TimeoutError()],
+            ),
+            patch.object(self.device, "build_send", side_effect=build_send),
+        ):
+            self.device._socket = socket_mock
+            # The retry send's timeout propagates to connection recovery.
+            with pytest.raises(TimeoutError):
+                self.device.refresh_status(True)
+        # Never blacklisted: a retry-send failure is not proof of an
+        # unsupported protocol.
+        assert real_cmd.__class__.__name__ not in self.device._unsupported_protocol
+        # Initial send happened; the retry send raised before appending.
+        assert sent == [real_cmd]
+        assert send_calls == QUERY_PROBE_RETRIES
 
     def test_garbled_appliance_reply_does_not_fail_the_device(self) -> None:
         """Third path into the same trap: a ResponseException on the appliance query.

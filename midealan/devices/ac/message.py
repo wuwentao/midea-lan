@@ -1353,33 +1353,41 @@ class CapabilityBody(NewProtocolMessageBody):
         # indicates whether the device supports 0.5°C increments.
         if CapabilityTag.temperature in params:
             temp_data = params[CapabilityTag.temperature]
-            size = len(temp_data)
-            decimals_index = (
-                B5_TEMPERATURE_DECIMALS_INDEX_LONG
-                if size > B5_TEMPERATURE_DECIMALS_SIZE_THRESHOLD
-                else B5_TEMPERATURE_DECIMALS_INDEX_SHORT
-            )
-            caps["temperature"] = {
-                "cool": {
-                    "min": temp_data[B5_TEMPERATURE_COOL_MIN_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                    "max": temp_data[B5_TEMPERATURE_COOL_MAX_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                },
-                "auto": {
-                    "min": temp_data[B5_TEMPERATURE_AUTO_MIN_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                    "max": temp_data[B5_TEMPERATURE_AUTO_MAX_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                },
-                "heat": {
-                    "min": temp_data[B5_TEMPERATURE_HEAT_MIN_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                    "max": temp_data[B5_TEMPERATURE_HEAT_MAX_INDEX]
-                    / B5_TEMPERATURE_HALF_DEGREE,
-                },
-                "decimals": temp_data[decimals_index] != 0,
-            }
+            # Skip temperature capability if data is too short to safely decode
+            # all range and decimals fields (requires indices 0-5, plus decimals)
+            if len(temp_data) < B5_TEMPERATURE_HEAT_MAX_INDEX + 1:
+                _LOGGER.warning(
+                    "Temperature capability data too short (%d bytes), skipping",
+                    len(temp_data),
+                )
+            else:
+                size = len(temp_data)
+                decimals_index = (
+                    B5_TEMPERATURE_DECIMALS_INDEX_LONG
+                    if size > B5_TEMPERATURE_DECIMALS_SIZE_THRESHOLD
+                    else B5_TEMPERATURE_DECIMALS_INDEX_SHORT
+                )
+                caps["temperature"] = {
+                    "cool": {
+                        "min": temp_data[B5_TEMPERATURE_COOL_MIN_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                        "max": temp_data[B5_TEMPERATURE_COOL_MAX_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                    },
+                    "auto": {
+                        "min": temp_data[B5_TEMPERATURE_AUTO_MIN_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                        "max": temp_data[B5_TEMPERATURE_AUTO_MAX_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                    },
+                    "heat": {
+                        "min": temp_data[B5_TEMPERATURE_HEAT_MIN_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                        "max": temp_data[B5_TEMPERATURE_HEAT_MAX_INDEX]
+                        / B5_TEMPERATURE_HALF_DEGREE,
+                    },
+                    "decimals": temp_data[decimals_index] != 0,
+                }
 
         # Manual parsing for tags with complex/special logic
         if CapabilityTag.mode in params:

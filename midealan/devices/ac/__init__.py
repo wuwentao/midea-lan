@@ -712,8 +712,11 @@ class MideaACDevice(MideaDevice):
             mode,
             TEMPERATURE_LIMIT_DEFAULT_KEY,
         )
-        limits = temperature[range_key]
+        limits = temperature.get(range_key)
         if not isinstance(limits, dict):
+            return None
+        # Validate that both min and max keys exist before indexing
+        if "min" not in limits or "max" not in limits:
             return None
         return (limits["min"], limits["max"])
 

@@ -1266,6 +1266,19 @@ class TestMessageACResponse:
         assert temp["cool"]["min"] == 17.0
         assert temp["cool"]["max"] == 30.0
 
+    def test_message_query_b5_temperature_too_short(self) -> None:
+        """Test temperature capability is skipped when data is too short."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, params count
+        # Temperature with only 5 bytes: missing heat max index (needs 6 minimum)
+        body += bytearray([0x25, 0x02, 0x05, 34, 60, 1, 60, 34])
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+        assert hasattr(response, "capabilities")
+        # Temperature capability should be skipped due to insufficient data
+        assert "temperature" not in response.capabilities
+
     def test_message_query_b5_detects_additional_capabilities(self) -> None:
         """Test the basic B5 frame's trailing flag arms the additional query.
 

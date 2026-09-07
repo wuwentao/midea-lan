@@ -312,6 +312,28 @@ class TestMideaACDevice:
         assert self.device.attributes[DeviceAttributes.min_temperature] == 17
         assert self.device.attributes[DeviceAttributes.max_temperature] == 28
 
+    def test_capability_temperature_limits_missing_range(self) -> None:
+        """Test capability limits fall back when the mode range is absent.
+
+        The nested ``temperature`` map may lack the entry for the current mode
+        (e.g. a malformed B5 payload). The resolver must return None instead of
+        raising, so the consumer keeps its own default range.
+        """
+        self.device._attributes[DeviceAttributes.mode] = 2  # -> "cool"
+        # temperature dict is present but has no "cool" key.
+        self.device._capabilities["temperature"] = {"heat": {"min": 16, "max": 30}}
+        assert self.device._capability_temperature_limits() is None
+
+    def test_capability_temperature_limits_missing_min_max(self) -> None:
+        """Test capability limits return None when min/max keys are missing.
+
+        A range entry that is a dict but lacks the ``min``/``max`` keys must not
+        raise a KeyError; the resolver returns None instead.
+        """
+        self.device._attributes[DeviceAttributes.mode] = 2  # -> "cool"
+        self.device._capabilities["temperature"] = {"cool": {"min": 16}}
+        assert self.device._capability_temperature_limits() is None
+
     def test_build_query(self) -> None:
         """Test build query."""
         self.device._used_subprotocol = True

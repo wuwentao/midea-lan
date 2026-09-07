@@ -23,7 +23,9 @@ _LOGGER = logging.getLogger(__name__)
 # limit map, keyed "cool"/"auto"/"heat" with "min"/"max" floats plus a
 # "decimals" bool. The mode tag yields a supported-modes map, keyed
 # "heat"/"cool"/"dry"/"auto" with bool values. The wind_swing tag yields a
-# supported-swing map, keyed "horizontal"/"vertical" with bool values.
+# supported-swing map, keyed "horizontal"/"vertical" with bool values. The
+# wind_speed tag yields a supported-fan-speed map, keyed
+# "silent"/"low"/"medium"/"high"/"auto"/"custom" with bool values.
 CapabilityValue = bool | int | dict[str, dict[str, float] | bool]
 
 A1_MIN_BODY_LENGTH = 18
@@ -1411,22 +1413,15 @@ class CapabilityBody(NewProtocolMessageBody):
 
         if CapabilityTag.wind_speed in params:
             value = params[CapabilityTag.wind_speed][0]
-            caps["fan_silent"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_SILENT_VALUES
-            )
-            caps["fan_low"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_LOW_HIGH_VALUES
-            )
-            caps["fan_medium"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_MEDIUM_VALUES
-            )
-            caps["fan_high"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_LOW_HIGH_VALUES
-            )
-            caps["fan_auto"] = (
-                value == B5_FAN_CUSTOM_VALUE or value in B5_FAN_AUTO_VALUES
-            )
-            caps["fan_custom"] = value == B5_FAN_CUSTOM_VALUE
+            custom = value == B5_FAN_CUSTOM_VALUE
+            caps["fan_speeds"] = {
+                "silent": custom or value in B5_FAN_SILENT_VALUES,
+                "low": custom or value in B5_FAN_LOW_HIGH_VALUES,
+                "medium": custom or value in B5_FAN_MEDIUM_VALUES,
+                "high": custom or value in B5_FAN_LOW_HIGH_VALUES,
+                "auto": custom or value in B5_FAN_AUTO_VALUES,
+                "custom": custom,
+            }
 
         if CapabilityTag.eco in params:
             caps["eco"] = params[CapabilityTag.eco][0] in B5_ECO_VALUES

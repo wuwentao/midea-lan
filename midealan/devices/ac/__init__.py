@@ -14,6 +14,7 @@ from midealan.message import ListTypes
 from .message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
+    CapabilityValue,
     GroupOneQuery,
     GroupSevenQuery,
     GroupTwoQuery,
@@ -52,6 +53,12 @@ ACQuery = (
 
 # AC mode constants
 DRY_MODE = 3
+
+# Maps the reported mode value to the capabilities["temperature"] range key.
+# auto=1, cool=2, dry=3, heat=4, fan=5; dry and fan reuse the cool range.
+TEMPERATURE_LIMIT_MODE_KEYS = {1: "auto", 2: "cool", 3: "cool", 4: "heat", 5: "cool"}
+# Fallback range key for an unknown mode (e.g. 0 when the unit is off).
+TEMPERATURE_LIMIT_DEFAULT_KEY = "cool"
 
 
 class DeviceAttributes(StrEnum):
@@ -328,15 +335,14 @@ class MideaACDevice(MideaDevice):
         self._used_subprotocol: bool = self._model_capabilities.uses_bb_protocol
         self._bb_sn8_flag: bool = False
         self._bb_timer: bool = False
-        # per-mode setpoint limits from the B5 capability, keyed by mode value
-        self._temperature_limits: dict[int, tuple[float, float]] | None = None
         # decoded B5 capability flags (accumulated across B5 frames). Values are
-        # mostly booleans, but some (e.g. rate_select level count) are ints.
-        self._capabilities: dict[str, bool | int] = {}
+        # mostly booleans, but some are ints (e.g. rate_select level count) or a
+        # nested per-mode setpoint-limit map (the "temperature" key).
+        self._capabilities: dict[str, CapabilityValue] = {}
         # user-provided capability overrides from customize. Merged over the
         # B5-parsed values (see the capabilities property), so a user can force
         # a feature the B5 query missed, or disable one it reported in error.
-        self._customize_capabilities: dict[str, bool | int] = {}
+        self._customize_capabilities: dict[str, CapabilityValue] = {}
         # B5 capability query control. Both queries run once, like the appliance
         # query: on success the flag is cleared so it is never re-sent (the reply
         # never changes); on timeout the device layer records it in
@@ -396,7 +402,7 @@ class MideaACDevice(MideaDevice):
         2-gear map (50/75/100), 2 or 3 select the 5-gear map. Anything else
         (including 0/unsupported) yields an empty map so no options are offered.
         """
-        _levels: int = self.capabilities.get("rate_select", 0)
+        _levels = cast("int", self.capabilities.get("rate_select", 0))
         if _levels in (2, 3):
             return MideaACDevice._rate_select_level5
         if _levels == 1:
@@ -605,8 +611,10 @@ class MideaACDevice(MideaDevice):
             if update_self_clean:
                 self._attributes[DeviceAttributes.self_clean] = active
                 new_status[DeviceAttributes.self_clean.value] = active
-        new_status.update(self._refresh_temperature_limits(message))
+        # Merge capabilities first so a B5 frame's temperature limits are in the
+        # merged map before the setpoint limits are resolved from it.
         new_status.update(self._update_capabilities(message))
+        new_status.update(self._refresh_temperature_limits())
         return new_status
 
     @staticmethod
@@ -680,7 +688,7 @@ class MideaACDevice(MideaDevice):
         return {"capabilities": self.capabilities}
 
     @property
-    def capabilities(self) -> dict[str, bool | int]:
+    def capabilities(self) -> dict[str, CapabilityValue]:
         """Return the effective capability flags for the device.
 
         This is the B5-parsed capability map overlaid with the user's customize
@@ -692,24 +700,29 @@ class MideaACDevice(MideaDevice):
     def _capability_temperature_limits(self) -> tuple[float, float] | None:
         """Return the capability setpoint limits for the current mode, if any.
 
-        An unknown mode (e.g. 0 when off) falls back to the cool range.
+        Reads the per-mode limits from the merged ``capabilities`` map (the
+        nested ``temperature`` entry). An unknown mode (e.g. 0 when off) falls
+        back to the cool range.
         """
-        if self._temperature_limits is None:
+        temperature = self.capabilities.get("temperature")
+        if not isinstance(temperature, dict):
             return None
         mode = self._attributes[DeviceAttributes.mode]
-        return self._temperature_limits.get(mode, self._temperature_limits[2])
+        range_key = TEMPERATURE_LIMIT_MODE_KEYS.get(
+            mode,
+            TEMPERATURE_LIMIT_DEFAULT_KEY,
+        )
+        limits = temperature[range_key]
+        if not isinstance(limits, dict):
+            return None
+        return (limits["min"], limits["max"])
 
-    def _refresh_temperature_limits(
-        self,
-        message: MessageACResponse | None = None,
-    ) -> dict[str, Any]:
+    def _refresh_temperature_limits(self) -> dict[str, Any]:
         """Resolve min/max setpoint limits.
 
         Priority: customize option > capability response > None (the consumer
         then falls back to its own default range).
         """
-        if message is not None and hasattr(message, "temperature_limits"):
-            self._temperature_limits = message.temperature_limits
         capability_limits = self._capability_temperature_limits()
         minimum = self._customize_min_temperature
         if minimum is None and capability_limits is not None:

@@ -1202,7 +1202,7 @@ class TestMessageACResponse:
         body += bytearray([0x1E, 0x02, 0x01, 1])  # anion
         body += bytearray([0x17, 0x02, 0x01, 1])  # filter_remind
         body += bytearray([0x1A, 0x02, 0x01, 1])  # strong_wind
-        body += bytearray([0x25, 0x02, 0x07, 34, 60, 34, 60, 34, 60, 0])  # temperature
+        body += bytearray([0x25, 0x02, 0x07, 34, 60, 34, 60, 34, 60, 1])  # temperature
         # screen_display_capability
         body += bytearray([0x24, 0x02, 0x01, 1])
         body += bytearray([0x2C, 0x02, 0x01, 1])  # sound
@@ -1210,16 +1210,8 @@ class TestMessageACResponse:
         body += bytearray(1)  # trailing checksum byte (stripped by MessageResponse)
 
         response = MessageACResponse(self.header + body)
-        # Temperature limits are extracted into temperature_limits attribute
-        assert hasattr(response, "temperature_limits")
-        assert response.temperature_limits == {
-            1: (17.0, 30.0),
-            2: (17.0, 30.0),
-            3: (17.0, 30.0),
-            4: (17.0, 30.0),
-            5: (17.0, 30.0),
-        }
-        # All capability tags are parsed into capabilities dict
+        # All capability tags are parsed into capabilities dict, including the
+        # temperature capability as a nested per-mode setpoint-limit map.
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
             # Manually parsed capabilities with special logic
@@ -1242,11 +1234,37 @@ class TestMessageACResponse:
             "display_control": True,
             # Presence-based capability (raw value ignored)
             "sound": True,
+            # Per-mode setpoint limits (0.5 C units): 34/2=17.0, 60/2=30.0.
+            # Decimals flag (index 6 for size=7) indicates 0.5 C support.
+            "temperature": {
+                "cool": {"min": 17.0, "max": 30.0},
+                "auto": {"min": 17.0, "max": 30.0},
+                "heat": {"min": 17.0, "max": 30.0},
+                "decimals": True,
+            },
             # Auto-parsed tags (raw value from first byte)
             "filter_remind": 1,
-            "temperature": 34,
             "humidity": 1,
         }
+
+    def test_message_query_b5_temperature_decimals_short_size(self) -> None:
+        """Test temperature decimals parsing with short size (<=6 bytes)."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, params count
+        # Temperature with 6 bytes: cool/auto/heat min/max only, no trailing byte
+        # Decimals flag is at index 2 (auto min) when size <= 6
+        body += bytearray([0x25, 0x02, 0x06, 34, 60, 1, 60, 34, 60])  # temperature
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+        assert hasattr(response, "capabilities")
+        assert "temperature" in response.capabilities
+        temp = response.capabilities["temperature"]
+        assert isinstance(temp, dict)
+        # Index 2 (third byte = 1) is the decimals flag when size = 6
+        assert temp["decimals"] is True
+        assert temp["cool"]["min"] == 17.0
+        assert temp["cool"]["max"] == 30.0
 
     def test_message_query_b5_detects_additional_capabilities(self) -> None:
         """Test the basic B5 frame's trailing flag arms the additional query.

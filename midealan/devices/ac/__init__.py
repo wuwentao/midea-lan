@@ -60,6 +60,15 @@ TEMPERATURE_LIMIT_MODE_KEYS = {1: "auto", 2: "cool", 3: "cool", 4: "heat", 5: "c
 # Fallback range key for an unknown mode (e.g. 0 when the unit is off).
 TEMPERATURE_LIMIT_DEFAULT_KEY = "cool"
 
+# HA fan mode mapping (Phase 2)
+# The device auto fan mode is the fixed value 102; discrete speeds map to
+# named HA fan modes by upper-bound range.
+FAN_SPEED_AUTO = 102
+FAN_SPEED_SILENT = 20
+FAN_SPEED_LOW = 40
+FAN_SPEED_MEDIUM = 60
+FAN_SPEED_HIGH = 80
+
 
 class DeviceAttributes(StrEnum):
     """Midea AC device attributes."""
@@ -896,6 +905,254 @@ class MideaACDevice(MideaDevice):
 
         # Priority 3: default basic set (for devices without B5 support)
         return ["none", "comfort", "eco", "boost", "sleep"]
+
+    # HA Mode Mapping Methods (Phase 2)
+
+    @property
+    def current_hvac_mode(self) -> str:
+        """Return current HVAC mode as Home Assistant string.
+
+        Maps device power + mode to HA hvac_mode:
+        - power=off → "off"
+        - power=on + mode=1 → "auto"
+        - power=on + mode=2 → "cool"
+        - power=on + mode=3 → "dry"
+        - power=on + mode=4 → "heat"
+        - power=on + mode=5 → "fan_only"
+
+        Returns:
+            HA hvac_mode string: "off", "auto", "cool", "heat", "dry", "fan_only"
+
+        """
+        if not self._attributes[DeviceAttributes.power]:
+            return "off"
+
+        mode = self._attributes[DeviceAttributes.mode]
+        mode_map = {
+            1: "auto",
+            2: "cool",
+            3: "dry",
+            4: "heat",
+            5: "fan_only",
+        }
+        return mode_map.get(mode, "auto")
+
+    def set_hvac_mode(self, hvac_mode: str) -> None:
+        """Set HVAC mode from Home Assistant string.
+
+        Converts HA hvac_mode to device attributes and applies them.
+
+        Args:
+            hvac_mode: HA hvac_mode string from supported_hvac_modes
+
+        Raises:
+            ValueError: if hvac_mode not in supported_hvac_modes
+
+        """
+        if hvac_mode not in self.supported_hvac_modes:
+            msg = f"Unsupported hvac_mode: {hvac_mode}"
+            raise ValueError(msg)
+
+        if hvac_mode == "off":
+            self.set_attribute(DeviceAttributes.power, False)
+            return
+
+        # Map HA mode to device mode value
+        mode_map = {
+            "auto": 1,
+            "cool": 2,
+            "dry": 3,
+            "heat": 4,
+            "fan_only": 5,
+        }
+        device_mode = mode_map[hvac_mode]
+
+        # Turn on power if needed, then set mode
+        if not self._attributes[DeviceAttributes.power]:
+            self.set_attribute(DeviceAttributes.power, True)
+        self.set_attribute(DeviceAttributes.mode, device_mode)
+
+    @property
+    def current_fan_mode(self) -> str:
+        """Return current fan mode as Home Assistant string.
+
+        Maps device fan_speed to HA fan mode using ranges:
+        - 102 → "auto" (auto fan speed)
+        - 0-19 → "silent"
+        - 20-39 → "low"
+        - 40-59 → "medium"
+        - 60-79 → "high"
+        - 80+ → "auto"
+
+        For "custom" fixed speed mode, returns "custom".
+
+        Returns:
+            HA fan_mode string
+
+        """
+        fan_speed = self._attributes[DeviceAttributes.fan_speed]
+
+        # 102 is the standard auto fan mode
+        if fan_speed == FAN_SPEED_AUTO:
+            return "auto"
+
+        # Map fan_speed ranges to HA modes
+        if fan_speed < FAN_SPEED_SILENT:
+            return "silent"
+        if fan_speed < FAN_SPEED_LOW:
+            return "low"
+        if fan_speed < FAN_SPEED_MEDIUM:
+            return "medium"
+        if fan_speed < FAN_SPEED_HIGH:
+            return "high"
+
+        # 80-100 or other values → "auto"
+        return "auto"
+
+    def set_fan_mode(self, fan_mode: str) -> None:
+        """Set fan mode from Home Assistant string.
+
+        Converts HA fan mode to device fan_speed value.
+
+        Args:
+            fan_mode: HA fan_mode string from supported_fan_modes
+
+        Raises:
+            ValueError: if fan_mode not in supported_fan_modes
+
+        """
+        if fan_mode not in self.supported_fan_modes:
+            msg = f"Unsupported fan_mode: {fan_mode}"
+            raise ValueError(msg)
+
+        # Map HA fan mode to device fan_speed value
+        fan_speed_map = {
+            "auto": FAN_SPEED_AUTO,
+            "silent": FAN_SPEED_SILENT,
+            "low": FAN_SPEED_LOW,
+            "medium": FAN_SPEED_MEDIUM,
+            "high": FAN_SPEED_HIGH,
+            "custom": FAN_SPEED_AUTO,
+        }
+        fan_speed = fan_speed_map[fan_mode]
+        self.set_attribute(DeviceAttributes.fan_speed, fan_speed)
+
+    @property
+    def current_swing_mode(self) -> str:
+        """Return current swing mode as Home Assistant string.
+
+        Maps device swing flags to HA swing mode:
+        - vertical=False, horizontal=False → "off"
+        - vertical=True, horizontal=False → "vertical"
+        - vertical=False, horizontal=True → "horizontal"
+        - vertical=True, horizontal=True → "both"
+
+        Returns:
+            HA swing_mode string
+
+        """
+        vertical = self._attributes[DeviceAttributes.swing_vertical]
+        horizontal = self._attributes[DeviceAttributes.swing_horizontal]
+
+        if vertical and horizontal:
+            return "both"
+        if vertical:
+            return "vertical"
+        if horizontal:
+            return "horizontal"
+        return "off"
+
+    def set_swing_mode(self, swing_mode: str) -> None:
+        """Set swing mode from Home Assistant string.
+
+        Converts HA swing mode to device swing flags.
+
+        Args:
+            swing_mode: HA swing_mode string from supported_swing_modes
+
+        Raises:
+            ValueError: if swing_mode not in supported_swing_modes
+
+        """
+        if swing_mode not in self.supported_swing_modes:
+            msg = f"Unsupported swing_mode: {swing_mode}"
+            raise ValueError(msg)
+
+        # Map HA swing mode to device swing flags
+        swing_map = {
+            "off": (False, False),
+            "vertical": (True, False),
+            "horizontal": (False, True),
+            "both": (True, True),
+        }
+        vertical, horizontal = swing_map[swing_mode]
+        self.set_attribute(DeviceAttributes.swing_vertical, vertical)
+        self.set_attribute(DeviceAttributes.swing_horizontal, horizontal)
+
+    @property
+    def current_preset_mode(self) -> str:
+        """Return current preset mode as Home Assistant string.
+
+        Maps device preset flags to HA preset mode with priority order:
+        - boost_mode=True → "boost"
+        - eco_mode=True → "eco"
+        - ieco=True → "ieco"
+        - sleep_mode=True → "sleep"
+        - comfort_mode=True → "comfort"
+        - else → "none"
+
+        Returns:
+            HA preset_mode string
+
+        """
+        # Check presets in priority order
+        if self._attributes.get(DeviceAttributes.boost_mode):
+            return "boost"
+        if self._attributes.get(DeviceAttributes.eco_mode):
+            return "eco"
+        if self._attributes.get(DeviceAttributes.ieco):
+            return "ieco"
+        if self._attributes.get(DeviceAttributes.sleep_mode):
+            return "sleep"
+        if self._attributes.get(DeviceAttributes.comfort_mode):
+            return "comfort"
+        return "none"
+
+    def set_preset_mode(self, preset_mode: str) -> None:
+        """Set preset mode from Home Assistant string.
+
+        Converts HA preset mode to device preset flags.
+        Turns off all other presets (mutually exclusive).
+
+        Args:
+            preset_mode: HA preset_mode string from supported_preset_modes
+
+        Raises:
+            ValueError: if preset_mode not in supported_preset_modes
+
+        """
+        if preset_mode not in self.supported_preset_modes:
+            msg = f"Unsupported preset_mode: {preset_mode}"
+            raise ValueError(msg)
+
+        # Map HA preset to device attribute
+        # set_attribute() already handles mutual exclusivity for presets
+        preset_attr_map = {
+            "none": None,
+            "boost": DeviceAttributes.boost_mode,
+            "eco": DeviceAttributes.eco_mode,
+            "ieco": DeviceAttributes.ieco,
+            "sleep": DeviceAttributes.sleep_mode,
+            "comfort": DeviceAttributes.comfort_mode,
+        }
+
+        attr = preset_attr_map[preset_mode]
+        if attr is None:
+            # Turn off all presets by setting any preset to False
+            # The set_attribute logic will turn off all others
+            self.set_attribute(DeviceAttributes.eco_mode, False)
+        else:
+            self.set_attribute(attr, True)
 
     def _capability_temperature_limits(self) -> tuple[float, float] | None:
         """Return the capability setpoint limits for the current mode, if any.

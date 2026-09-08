@@ -1814,3 +1814,357 @@ class TestHASupportProperties:
         # falls through to default basic set
         expected = ["none", "comfort", "eco", "boost", "sleep"]
         assert self.device.supported_preset_modes == expected
+
+
+class TestHAModeMapping:
+    """Test Home Assistant mode mapping methods (Phase 2)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Set up test device with known state."""
+        self.device = MideaACDevice(
+            name="Test AC",
+            device_id=123456789012345,
+            ip_address="192.168.1.100",
+            port=6444,
+            token="AA" * 40,
+            key="BB" * 16,
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=0,
+            customize="",
+        )
+        # Set device to known initial state
+        self.device._attributes[DeviceAttributes.power] = True
+        self.device._attributes[DeviceAttributes.mode] = 2  # cool
+        self.device._attributes[DeviceAttributes.fan_speed] = 102  # auto
+        self.device._attributes[DeviceAttributes.swing_vertical] = False
+        self.device._attributes[DeviceAttributes.swing_horizontal] = False
+        self.device._attributes[DeviceAttributes.boost_mode] = False
+        self.device._attributes[DeviceAttributes.eco_mode] = False
+        self.device._attributes[DeviceAttributes.ieco] = False
+        self.device._attributes[DeviceAttributes.sleep_mode] = False
+        self.device._attributes[DeviceAttributes.comfort_mode] = False
+
+    # current_hvac_mode getter tests
+
+    def test_current_hvac_mode_off(self) -> None:
+        """Test current_hvac_mode when power is off."""
+        self.device._attributes[DeviceAttributes.power] = False
+        assert self.device.current_hvac_mode == "off"
+
+    def test_current_hvac_mode_auto(self) -> None:
+        """Test current_hvac_mode for auto mode."""
+        self.device._attributes[DeviceAttributes.mode] = 1
+        assert self.device.current_hvac_mode == "auto"
+
+    def test_current_hvac_mode_cool(self) -> None:
+        """Test current_hvac_mode for cool mode."""
+        self.device._attributes[DeviceAttributes.mode] = 2
+        assert self.device.current_hvac_mode == "cool"
+
+    def test_current_hvac_mode_dry(self) -> None:
+        """Test current_hvac_mode for dry mode."""
+        self.device._attributes[DeviceAttributes.mode] = 3
+        assert self.device.current_hvac_mode == "dry"
+
+    def test_current_hvac_mode_heat(self) -> None:
+        """Test current_hvac_mode for heat mode."""
+        self.device._attributes[DeviceAttributes.mode] = 4
+        assert self.device.current_hvac_mode == "heat"
+
+    def test_current_hvac_mode_fan_only(self) -> None:
+        """Test current_hvac_mode for fan_only mode."""
+        self.device._attributes[DeviceAttributes.mode] = 5
+        assert self.device.current_hvac_mode == "fan_only"
+
+    def test_current_hvac_mode_unknown(self) -> None:
+        """Test current_hvac_mode defaults to auto for unknown mode."""
+        self.device._attributes[DeviceAttributes.mode] = 99
+        assert self.device.current_hvac_mode == "auto"
+
+    # set_hvac_mode tests
+
+    def test_set_hvac_mode_off(self) -> None:
+        """Test set_hvac_mode to off sends power=False."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("off")
+            message = mock_send.call_args[0][0]
+            assert message.power is False
+
+    def test_set_hvac_mode_auto(self) -> None:
+        """Test set_hvac_mode to auto sends mode=1.
+
+        Starts from power=off to cover the power-on branch.
+        """
+        self.device._attributes[DeviceAttributes.power] = False
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("auto")
+            # First call powers on the device
+            first_message = mock_send.call_args_list[0][0][0]
+            assert first_message.power is True
+            # Last call sets the mode
+            last_message = mock_send.call_args[0][0]
+            assert last_message.mode == 1
+
+    def test_set_hvac_mode_cool(self) -> None:
+        """Test set_hvac_mode to cool sends mode=2."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("cool")
+            message = mock_send.call_args[0][0]
+            assert message.mode == 2
+
+    def test_set_hvac_mode_heat(self) -> None:
+        """Test set_hvac_mode to heat sends mode=4."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("heat")
+            message = mock_send.call_args[0][0]
+            assert message.mode == 4
+
+    def test_set_hvac_mode_dry(self) -> None:
+        """Test set_hvac_mode to dry sends mode=3."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("dry")
+            message = mock_send.call_args[0][0]
+            assert message.mode == 3
+
+    def test_set_hvac_mode_fan_only(self) -> None:
+        """Test set_hvac_mode to fan_only sends mode=5."""
+        # fan_only requires explicit enable in customize
+        self.device._customize_capabilities = {"fan_only": True}
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_hvac_mode("fan_only")
+            message = mock_send.call_args[0][0]
+            assert message.mode == 5
+
+    def test_set_hvac_mode_invalid(self) -> None:
+        """Test set_hvac_mode raises ValueError for invalid mode."""
+        with pytest.raises(ValueError, match="Unsupported hvac_mode"):
+            self.device.set_hvac_mode("invalid_mode")
+
+    # current_fan_mode getter tests
+
+    def test_current_fan_mode_auto(self) -> None:
+        """Test current_fan_mode for auto (102)."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 102
+        assert self.device.current_fan_mode == "auto"
+
+    def test_current_fan_mode_silent(self) -> None:
+        """Test current_fan_mode for silent range."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 10
+        assert self.device.current_fan_mode == "silent"
+
+    def test_current_fan_mode_low(self) -> None:
+        """Test current_fan_mode for low range."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 30
+        assert self.device.current_fan_mode == "low"
+
+    def test_current_fan_mode_medium(self) -> None:
+        """Test current_fan_mode for medium range."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 50
+        assert self.device.current_fan_mode == "medium"
+
+    def test_current_fan_mode_high(self) -> None:
+        """Test current_fan_mode for high range."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 70
+        assert self.device.current_fan_mode == "high"
+
+    def test_current_fan_mode_high_range_upper(self) -> None:
+        """Test current_fan_mode for 80+ maps to auto."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 85
+        assert self.device.current_fan_mode == "auto"
+
+    # set_fan_mode tests
+
+    def test_set_fan_mode_auto(self) -> None:
+        """Test set_fan_mode to auto sends fan_speed=102."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("auto")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 102
+
+    def test_set_fan_mode_silent(self) -> None:
+        """Test set_fan_mode to silent sends fan_speed=20."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("silent")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 20
+
+    def test_set_fan_mode_low(self) -> None:
+        """Test set_fan_mode to low sends fan_speed=40."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("low")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 40
+
+    def test_set_fan_mode_medium(self) -> None:
+        """Test set_fan_mode to medium sends fan_speed=60."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("medium")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 60
+
+    def test_set_fan_mode_high(self) -> None:
+        """Test set_fan_mode to high sends fan_speed=80."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("high")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 80
+
+    def test_set_fan_mode_custom(self) -> None:
+        """Test set_fan_mode to custom sends fan_speed=102."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_fan_mode("custom")
+            message = mock_send.call_args[0][0]
+            assert message.fan_speed == 102
+
+    def test_set_fan_mode_invalid(self) -> None:
+        """Test set_fan_mode raises ValueError for invalid mode."""
+        with pytest.raises(ValueError, match="Unsupported fan_mode"):
+            self.device.set_fan_mode("invalid_mode")
+
+    # current_swing_mode getter tests
+
+    def test_current_swing_mode_off(self) -> None:
+        """Test current_swing_mode when both off."""
+        assert self.device.current_swing_mode == "off"
+
+    def test_current_swing_mode_vertical(self) -> None:
+        """Test current_swing_mode for vertical only."""
+        self.device._attributes[DeviceAttributes.swing_vertical] = True
+        assert self.device.current_swing_mode == "vertical"
+
+    def test_current_swing_mode_horizontal(self) -> None:
+        """Test current_swing_mode for horizontal only."""
+        self.device._attributes[DeviceAttributes.swing_horizontal] = True
+        assert self.device.current_swing_mode == "horizontal"
+
+    def test_current_swing_mode_both(self) -> None:
+        """Test current_swing_mode for both directions."""
+        self.device._attributes[DeviceAttributes.swing_vertical] = True
+        self.device._attributes[DeviceAttributes.swing_horizontal] = True
+        assert self.device.current_swing_mode == "both"
+
+    # set_swing_mode tests
+
+    def test_set_swing_mode_off(self) -> None:
+        """Test set_swing_mode to off sends both False."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_swing_mode("off")
+            # Last call sets swing_horizontal
+            message = mock_send.call_args[0][0]
+            assert message.swing_horizontal is False
+
+    def test_set_swing_mode_vertical(self) -> None:
+        """Test set_swing_mode to vertical sends vertical=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_swing_mode("vertical")
+            # First call sets swing_vertical=True
+            first_message = mock_send.call_args_list[0][0][0]
+            assert first_message.swing_vertical is True
+
+    def test_set_swing_mode_horizontal(self) -> None:
+        """Test set_swing_mode to horizontal sends horizontal=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_swing_mode("horizontal")
+            # Last call sets swing_horizontal=True
+            message = mock_send.call_args[0][0]
+            assert message.swing_horizontal is True
+
+    def test_set_swing_mode_both(self) -> None:
+        """Test set_swing_mode to both sends both True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_swing_mode("both")
+            first_message = mock_send.call_args_list[0][0][0]
+            last_message = mock_send.call_args[0][0]
+            assert first_message.swing_vertical is True
+            assert last_message.swing_horizontal is True
+
+    def test_set_swing_mode_invalid(self) -> None:
+        """Test set_swing_mode raises ValueError for invalid mode."""
+        with pytest.raises(ValueError, match="Unsupported swing_mode"):
+            self.device.set_swing_mode("invalid_mode")
+
+    # current_preset_mode getter tests
+
+    def test_current_preset_mode_none(self) -> None:
+        """Test current_preset_mode when no preset is active."""
+        assert self.device.current_preset_mode == "none"
+
+    def test_current_preset_mode_boost(self) -> None:
+        """Test current_preset_mode for boost (highest priority)."""
+        self.device._attributes[DeviceAttributes.boost_mode] = True
+        self.device._attributes[DeviceAttributes.eco_mode] = True
+        assert self.device.current_preset_mode == "boost"
+
+    def test_current_preset_mode_eco(self) -> None:
+        """Test current_preset_mode for eco."""
+        self.device._attributes[DeviceAttributes.eco_mode] = True
+        assert self.device.current_preset_mode == "eco"
+
+    def test_current_preset_mode_ieco(self) -> None:
+        """Test current_preset_mode for ieco."""
+        self.device._attributes[DeviceAttributes.ieco] = True
+        assert self.device.current_preset_mode == "ieco"
+
+    def test_current_preset_mode_sleep(self) -> None:
+        """Test current_preset_mode for sleep."""
+        self.device._attributes[DeviceAttributes.sleep_mode] = True
+        assert self.device.current_preset_mode == "sleep"
+
+    def test_current_preset_mode_comfort(self) -> None:
+        """Test current_preset_mode for comfort (lowest priority)."""
+        self.device._attributes[DeviceAttributes.comfort_mode] = True
+        assert self.device.current_preset_mode == "comfort"
+
+    # set_preset_mode tests
+
+    def test_set_preset_mode_none(self) -> None:
+        """Test set_preset_mode to none sends eco_mode=False."""
+        self.device._attributes[DeviceAttributes.eco_mode] = True
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("none")
+            message = mock_send.call_args[0][0]
+            assert message.eco_mode is False
+
+    def test_set_preset_mode_boost(self) -> None:
+        """Test set_preset_mode to boost sends boost_mode=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("boost")
+            message = mock_send.call_args[0][0]
+            assert message.boost_mode is True
+
+    def test_set_preset_mode_eco(self) -> None:
+        """Test set_preset_mode to eco sends eco_mode=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("eco")
+            message = mock_send.call_args[0][0]
+            assert message.eco_mode is True
+
+    def test_set_preset_mode_ieco(self) -> None:
+        """Test set_preset_mode to ieco sends ieco=True."""
+        # ieco is B5-only, requires it in capabilities
+        self.device._capabilities = {"modes": ["cool"], "ieco": True}
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("ieco")
+            message = mock_send.call_args[0][0]
+            assert message.ieco is True
+
+    def test_set_preset_mode_sleep(self) -> None:
+        """Test set_preset_mode to sleep sends sleep_mode=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("sleep")
+            message = mock_send.call_args[0][0]
+            assert message.sleep_mode is True
+
+    def test_set_preset_mode_comfort(self) -> None:
+        """Test set_preset_mode to comfort sends comfort_mode=True."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_preset_mode("comfort")
+            message = mock_send.call_args[0][0]
+            assert message.comfort_mode is True
+
+    def test_set_preset_mode_invalid(self) -> None:
+        """Test set_preset_mode raises ValueError for invalid mode."""
+        with pytest.raises(ValueError, match="Unsupported preset_mode"):
+            self.device.set_preset_mode("invalid_mode")

@@ -439,9 +439,9 @@ class TestNewProtocolQuery:
         msg = PropertiesQuery(
             protocol_version=ProtocolVersion.V1,
             capabilities={
-                "modes": {"heat": True, "cool": True},
-                "swing_modes": {"horizontal": True},
-                "fan_speeds": {"low": True},
+                "modes": ["heat", "cool"],
+                "swing_modes": ["horizontal"],
+                "fan_speeds": ["low"],
             },
         )
         params_count = msg.body[1]
@@ -1219,24 +1219,9 @@ class TestMessageACResponse:
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
             # Manually parsed capabilities with special logic
-            "modes": {
-                "heat": True,
-                "cool": True,
-                "dry": False,
-                "auto": True,
-            },
-            "swing_modes": {
-                "horizontal": True,
-                "vertical": True,
-            },
-            "fan_speeds": {
-                "silent": False,
-                "low": True,
-                "medium": True,
-                "high": True,
-                "auto": True,
-                "custom": False,
-            },
+            "modes": ["heat", "cool", "auto"],
+            "swing_modes": ["horizontal", "vertical"],
+            "fan_speeds": ["low", "medium", "high", "auto"],
             "eco": True,
             "anion": True,
             "turbo_cool": True,
@@ -1370,14 +1355,7 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_speeds": {
-                "silent": True,
-                "low": True,
-                "medium": True,
-                "high": True,
-                "auto": True,
-                "custom": True,
-            },
+            "fan_speeds": ["silent", "low", "medium", "high", "auto", "custom"],
         }
 
     def test_message_query_b5_value_9_fan_supports_silent_low_high_auto(
@@ -1393,14 +1371,7 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_speeds": {
-                "silent": True,
-                "low": True,
-                "medium": False,
-                "high": True,
-                "auto": True,
-                "custom": False,
-            },
+            "fan_speeds": ["silent", "low", "high", "auto"],
         }
 
     def test_message_query_b5_warns_unknown_tag(

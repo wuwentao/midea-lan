@@ -748,12 +748,7 @@ class TestMideaACDevice:
         self.device.process_message(self._response(body))
 
         assert self.device.capabilities == {
-            "modes": {
-                "heat": True,
-                "cool": True,
-                "dry": False,
-                "auto": True,
-            },
+            "modes": ["heat", "cool", "auto"],
             "eco": True,
             "anion": True,
         }
@@ -774,7 +769,7 @@ class TestMideaACDevice:
         status = self.device.process_message(self._response(body))
 
         assert "capabilities" in status
-        assert status["capabilities"]["modes"]["heat"] is True
+        assert "heat" in status["capabilities"]["modes"]
         assert status["capabilities"] == self.device.capabilities
         # It is a copy, not the internal dict, so listeners cannot corrupt it.
         assert status["capabilities"] is not self.device.capabilities
@@ -878,8 +873,8 @@ class TestMideaACDevice:
         # the raw B5 b5_electricity level count (4 in this frame), not a bool.
         assert self.device.capabilities["rate_select"] == 4
         modes = self.device.capabilities["modes"]
-        assert isinstance(modes, dict)
-        assert modes["cool"] is True
+        assert isinstance(modes, list)
+        assert "cool" in modes
 
     def test_process_message(self) -> None:
         """Test process message."""

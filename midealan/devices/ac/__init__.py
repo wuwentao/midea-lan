@@ -1108,7 +1108,44 @@ class MideaACDevice(MideaDevice):
                 # missed (or disable one it wrongly reported). Values follow the
                 # capabilities map: truthy enables the tag, falsy disables it.
                 if params and isinstance(params.get("capabilities"), dict):
-                    self._customize_capabilities = params["capabilities"]
+                    caps_input = params["capabilities"]
+                    # Normalize capabilities: convert legacy dict format to array
+                    normalized_caps: dict[str, Any] = {}
+                    for key, value in caps_input.items():
+                        if key in ("modes", "fan_speeds", "swing_modes"):
+                            if isinstance(value, dict):
+                                # Legacy dict format: {"heat": true, "cool": true}
+                                # Convert to array: ["heat", "cool"]
+                                normalized_caps[key] = [
+                                    k for k, v in value.items() if v
+                                ]
+                            elif isinstance(value, list):
+                                # New array format: ["heat", "cool"]
+                                # Validate all elements are strings
+                                if all(isinstance(item, str) for item in value):
+                                    normalized_caps[key] = value
+                                else:
+                                    # Invalid array elements, skip with warning
+                                    _LOGGER.warning(
+                                        "[%s] Invalid capability array for %s: "
+                                        "contains non-string elements",
+                                        self.device_id,
+                                        key,
+                                    )
+                                    continue
+                            else:
+                                # Invalid format, skip with warning
+                                _LOGGER.warning(
+                                    "[%s] Invalid capability format for %s: %s",
+                                    self.device_id,
+                                    key,
+                                    type(value).__name__,
+                                )
+                                continue
+                        else:
+                            # Other capabilities remain as-is
+                            normalized_caps[key] = value
+                    self._customize_capabilities = normalized_caps
             except Exception:
                 _LOGGER.exception("[%s] Set customize error", self.device_id)
             self.update_all({"temperature_step": self._temperature_step})

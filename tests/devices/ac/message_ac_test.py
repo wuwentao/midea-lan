@@ -439,9 +439,9 @@ class TestNewProtocolQuery:
         msg = PropertiesQuery(
             protocol_version=ProtocolVersion.V1,
             capabilities={
-                "modes": {"heat": True, "cool": True},
-                "swing_modes": {"horizontal": True},
-                "fan_speeds": {"low": True},
+                "modes": ["heat", "cool"],
+                "swing_modes": ["horizontal"],
+                "fan_speeds": ["low"],
             },
         )
         params_count = msg.body[1]
@@ -1219,24 +1219,9 @@ class TestMessageACResponse:
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
             # Manually parsed capabilities with special logic
-            "modes": {
-                "heat": True,
-                "cool": True,
-                "dry": False,
-                "auto": True,
-            },
-            "swing_modes": {
-                "horizontal": True,
-                "vertical": True,
-            },
-            "fan_speeds": {
-                "silent": False,
-                "low": True,
-                "medium": True,
-                "high": True,
-                "auto": True,
-                "custom": False,
-            },
+            "modes": ["heat", "cool", "auto"],
+            "swing_modes": ["horizontal", "vertical"],
+            "fan_speeds": ["low", "medium", "high", "auto"],
             "eco": True,
             "anion": True,
             "turbo_cool": True,
@@ -1370,14 +1355,7 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_speeds": {
-                "silent": True,
-                "low": True,
-                "medium": True,
-                "high": True,
-                "auto": True,
-                "custom": True,
-            },
+            "fan_speeds": ["silent", "low", "medium", "high", "auto", "custom"],
         }
 
     def test_message_query_b5_value_9_fan_supports_silent_low_high_auto(
@@ -1393,14 +1371,7 @@ class TestMessageACResponse:
 
         assert hasattr(response, "capabilities")
         assert response.capabilities == {
-            "fan_speeds": {
-                "silent": True,
-                "low": True,
-                "medium": False,
-                "high": True,
-                "auto": True,
-                "custom": False,
-            },
+            "fan_speeds": ["silent", "low", "high", "auto"],
         }
 
     def test_message_query_b5_warns_unknown_tag(
@@ -1427,6 +1398,68 @@ class TestMessageACResponse:
             "Unknown capability tag" in record.message and "0x0299" in record.message
             for record in caplog.records
         )
+
+    def test_message_query_b5_mode_excludes_unsupported_modes(self) -> None:
+        """Test B5 mode capability excludes modes based on value."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, 1 param
+        # Value 3: no heat (not in B5_HEAT_MODE_VALUES),
+        # has cool (not in B5_NO_COOL_MODE_VALUES),
+        # no dry (not in B5_DRY_MODE_VALUES),
+        # no auto (not in B5_AUTO_MODE_VALUES)
+        body += bytearray([0x14, 0x02, 0x01, 3])  # mode tag with value 3
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "capabilities")
+        assert response.capabilities["modes"] == ["cool"]
+
+    def test_message_query_b5_mode_excludes_cool_when_in_no_cool_values(
+        self,
+    ) -> None:
+        """Test B5 mode capability excludes cool for no-cool values."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, 1 param
+        # Value 10: has heat (in B5_HEAT_MODE_VALUES),
+        # no cool (in B5_NO_COOL_MODE_VALUES),
+        # no dry (not in B5_DRY_MODE_VALUES),
+        # no auto (not in B5_AUTO_MODE_VALUES)
+        body += bytearray([0x14, 0x02, 0x01, 10])  # mode tag with value 10
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "capabilities")
+        assert response.capabilities["modes"] == ["heat"]
+
+    def test_message_query_b5_swing_excludes_unsupported_directions(self) -> None:
+        """Test B5 swing capability excludes directions based on value."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, 1 param
+        # Value 2: no horizontal (not in B5_SWING_HORIZONTAL_VALUES),
+        # no vertical (value >= B5_LOW_VALUE_MAX which is 2)
+        body += bytearray([0x15, 0x02, 0x01, 2])  # wind_swing tag with value 2
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "capabilities")
+        assert response.capabilities["swing_modes"] == []
+
+    def test_message_query_b5_fan_speed_excludes_unsupported_speeds(self) -> None:
+        """Test B5 fan speed capability excludes speeds based on value."""
+        self.header[9] = 0x03
+        body = bytearray([0xB5, 0x01])  # Body type, 1 param
+        # Value 8: not custom, no silent, no low/high, no medium, no auto
+        # (8 is not in any of the B5_FAN_* sets)
+        body += bytearray([0x10, 0x02, 0x01, 8])  # wind_speed tag with value 8
+        body += bytearray(1)  # trailing checksum byte
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "capabilities")
+        assert response.capabilities["fan_speeds"] == []
 
     @pytest.mark.parametrize(
         ("raw_value", "expected"),

@@ -26,7 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 # supported-swing map, keyed "horizontal"/"vertical" with bool values. The
 # wind_speed tag yields a supported-fan-speed map, keyed
 # "silent"/"low"/"medium"/"high"/"auto"/"custom" with bool values.
-CapabilityValue = bool | int | dict[str, dict[str, float] | bool]
+CapabilityValue = bool | int | list[str] | dict[str, dict[str, float] | bool]
 
 A1_MIN_BODY_LENGTH = 18
 
@@ -1339,7 +1339,10 @@ class CapabilityBody(NewProtocolMessageBody):
             return False
         return bool(remaining[-B5_ADDITIONAL_CAPABILITIES_TRAILER_LENGTH])
 
-    def _parse_capabilities(self, params: dict[int, bytearray]) -> None:
+    def _parse_capabilities(  # noqa: C901
+        self,
+        params: dict[int, bytearray],
+    ) -> None:
         """Decode capability values into feature flags.
 
         Parse capabilities using two strategies:
@@ -1397,31 +1400,43 @@ class CapabilityBody(NewProtocolMessageBody):
         # Manual parsing for tags with complex/special logic
         if CapabilityTag.mode in params:
             value = params[CapabilityTag.mode][0]
-            caps["modes"] = {
-                "heat": value in B5_HEAT_MODE_VALUES,
-                "cool": value not in B5_NO_COOL_MODE_VALUES,
-                "dry": value in B5_DRY_MODE_VALUES,
-                "auto": value in B5_AUTO_MODE_VALUES,
-            }
+            modes = []
+            if value in B5_HEAT_MODE_VALUES:
+                modes.append("heat")
+            if value not in B5_NO_COOL_MODE_VALUES:
+                modes.append("cool")
+            if value in B5_DRY_MODE_VALUES:
+                modes.append("dry")
+            if value in B5_AUTO_MODE_VALUES:
+                modes.append("auto")
+            caps["modes"] = modes
 
         if CapabilityTag.wind_swing in params:
             value = params[CapabilityTag.wind_swing][0]
-            caps["swing_modes"] = {
-                "horizontal": value in B5_SWING_HORIZONTAL_VALUES,
-                "vertical": value < B5_LOW_VALUE_MAX,
-            }
+            swing_modes = []
+            if value in B5_SWING_HORIZONTAL_VALUES:
+                swing_modes.append("horizontal")
+            if value < B5_LOW_VALUE_MAX:
+                swing_modes.append("vertical")
+            caps["swing_modes"] = swing_modes
 
         if CapabilityTag.wind_speed in params:
             value = params[CapabilityTag.wind_speed][0]
             custom = value == B5_FAN_CUSTOM_VALUE
-            caps["fan_speeds"] = {
-                "silent": custom or value in B5_FAN_SILENT_VALUES,
-                "low": custom or value in B5_FAN_LOW_HIGH_VALUES,
-                "medium": custom or value in B5_FAN_MEDIUM_VALUES,
-                "high": custom or value in B5_FAN_LOW_HIGH_VALUES,
-                "auto": custom or value in B5_FAN_AUTO_VALUES,
-                "custom": custom,
-            }
+            fan_speeds = []
+            if custom or value in B5_FAN_SILENT_VALUES:
+                fan_speeds.append("silent")
+            if custom or value in B5_FAN_LOW_HIGH_VALUES:
+                fan_speeds.append("low")
+            if custom or value in B5_FAN_MEDIUM_VALUES:
+                fan_speeds.append("medium")
+            if custom or value in B5_FAN_LOW_HIGH_VALUES:
+                fan_speeds.append("high")
+            if custom or value in B5_FAN_AUTO_VALUES:
+                fan_speeds.append("auto")
+            if custom:
+                fan_speeds.append("custom")
+            caps["fan_speeds"] = fan_speeds
 
         if CapabilityTag.eco in params:
             caps["eco"] = params[CapabilityTag.eco][0] in B5_ECO_VALUES

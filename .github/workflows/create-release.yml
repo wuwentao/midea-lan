@@ -1,0 +1,116 @@
+# Auto-tag and release workflow
+#
+# This workflow automatically runs when a release PR (title containing "release") is merged to main.
+# It:
+#   - Extracts version from .release-please-manifest.json
+#   - Creates and pushes git tag vX.Y.Z
+#   - Publishes GitHub Release with changelog excerpt
+#
+# No manual intervention needed - this is triggered by merging the PR from manual-release.yml
+name: Create Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Only run if PR was merged (not just closed) and title contains "release"
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.title, 'release')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main # Ensure we're on main after merge
+
+      - name: Extract version from manifest
+        id: version
+        run: |
+          VERSION=$(jq -r '."."' .release-please-manifest.json)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Detected version: ${VERSION}"
+
+      - name: Verify version in Python code matches
+        run: |
+          PYTHON_VERSION=$(grep '__version__ = ' midealan/version.py | sed 's/__version__ = "\(.*\)"/\1/')
+          if [ "$PYTHON_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Error: Version mismatch between manifest (${{ steps.version.outputs.version }}) and version.py ($PYTHON_VERSION)"
+            exit 1
+          fi
+          echo "✓ Version verified: ${{ steps.version.outputs.version }}"
+
+      - name: Check if tag already exists
+        id: check_tag
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "⚠️  Tag v${{ steps.version.outputs.version }} already exists, skipping release creation"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "✓ Tag v${{ steps.version.outputs.version }} does not exist, will create"
+          fi
+
+      - name: Extract changelog for this version
+        if: steps.check_tag.outputs.exists == 'false'
+        id: changelog
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Find the section between this version and the next heading
+          CHANGELOG=$(awk "/## \[${VERSION}\]/,/## \[/" CHANGELOG.md | sed '$d' | tail -n +2)
+
+          if [ -z "$CHANGELOG" ]; then
+            echo "Warning: Could not extract changelog for version ${VERSION}, using fallback"
+            CHANGELOG="Release ${VERSION}"
+          fi
+
+          # Write to file to handle multiline content
+          echo "$CHANGELOG" > /tmp/release_notes.md
+          echo "Extracted changelog preview:"
+          head -n 10 /tmp/release_notes.md
+
+      - name: Create git tag
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+          echo "✅ Created and pushed tag v${{ steps.version.outputs.version }}"
+
+      - name: Create GitHub Release
+        if: steps.check_tag.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file /tmp/release_notes.md \
+            --verify-tag
+
+          echo "✅ GitHub Release created: https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }}"
+
+      - name: Summary
+        if: steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "### 🚀 Release Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag**: \`v${{ steps.version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release**: [View on GitHub](https://github.com/${{ github.repository }}/releases/tag/v${{ steps.version.outputs.version }})" >> $GITHUB_STEP_SUMMARY
+
+      - name: Summary (skipped)
+        if: steps.check_tag.outputs.exists == 'true'
+        run: |
+          echo "### ⏭️  Release Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Tag v${{ steps.version.outputs.version }} already exists." >> $GITHUB_STEP_SUMMARY

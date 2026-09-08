@@ -697,6 +697,206 @@ class MideaACDevice(MideaDevice):
         """
         return {**self._capabilities, **self._customize_capabilities}
 
+    @property
+    def supported_hvac_modes(self) -> list[str]:
+        """Return list of supported HVAC modes for Home Assistant.
+
+        Priority: customize > B5 capabilities > default full set.
+
+        Maps device modes to HA climate entity modes:
+        - off (always supported)
+        - auto, cool, heat, dry, fan_only
+
+        Returns:
+            List of HA-compatible HVAC mode strings in canonical order.
+
+        """
+        # Priority 1: customize override (if "modes" explicitly set)
+        if "modes" in self._customize_capabilities:
+            modes = ["off"]
+            customize_modes_raw = self._customize_capabilities["modes"]
+            customize_modes = (
+                customize_modes_raw if isinstance(customize_modes_raw, list) else []
+            )
+            mode_map = ["auto", "cool", "heat", "dry"]
+            modes.extend(mode for mode in mode_map if mode in customize_modes)
+            # fan_only: only if explicitly enabled in customize
+            if self._customize_capabilities.get("fan_only"):
+                modes.append("fan_only")
+            return modes
+
+        # Priority 2: B5 capabilities (if device reported B5 response)
+        if "modes" in self._capabilities:
+            modes = ["off"]
+            device_modes_raw = self._capabilities.get("modes", [])
+            device_modes = (
+                device_modes_raw if isinstance(device_modes_raw, list) else []
+            )
+            mode_map = ["auto", "cool", "heat", "dry"]
+            modes.extend(mode for mode in mode_map if mode in device_modes)
+            # fan_only: only if explicitly enabled in customize
+            if self._customize_capabilities.get("fan_only"):
+                modes.append("fan_only")
+            return modes
+
+        # Priority 3: default full set (for devices without B5 support)
+        modes = ["off", "auto", "cool", "heat", "dry"]
+        # fan_only: only if explicitly enabled in customize
+        if self._customize_capabilities.get("fan_only"):
+            modes.append("fan_only")
+        return modes
+
+    @property
+    def supported_fan_modes(self) -> list[str]:
+        """Return list of supported fan modes for Home Assistant.
+
+        Priority: customize > B5 capabilities > default full set.
+
+        Maps device fan speeds to HA fan mode names in canonical order.
+        Special case: if "custom" is in the list, return full set.
+
+        Returns:
+            List of HA-compatible fan mode strings.
+
+        """
+        fan_map = ["auto", "silent", "low", "medium", "high", "custom"]
+
+        # Priority 1: customize override (if "fan_speeds" explicitly set)
+        if "fan_speeds" in self._customize_capabilities:
+            customize_speeds_raw = self._customize_capabilities["fan_speeds"]
+            customize_speeds = (
+                customize_speeds_raw if isinstance(customize_speeds_raw, list) else []
+            )
+            return [speed for speed in fan_map if speed in customize_speeds]
+
+        # Priority 2: B5 capabilities (if device reported B5 response)
+        if "fan_speeds" in self._capabilities:
+            device_speeds_raw = self._capabilities.get("fan_speeds", [])
+            device_speeds = (
+                device_speeds_raw if isinstance(device_speeds_raw, list) else []
+            )
+            # If custom is in the list, return full set
+            if "custom" in device_speeds:
+                return fan_map
+            return [speed for speed in fan_map if speed in device_speeds]
+
+        # Priority 3: default full set (for devices without B5 support)
+        return fan_map
+
+    @property
+    def supported_swing_modes(self) -> list[str]:
+        """Return list of supported swing modes for Home Assistant.
+
+        Priority: customize > B5 capabilities > default full set.
+
+        Derives combined swing modes from device capabilities:
+        - off (always supported - no swing)
+        - vertical (if vertical in capabilities)
+        - horizontal (if horizontal in capabilities)
+        - both (if both vertical and horizontal supported)
+
+        Returns:
+            List of HA-compatible swing mode strings.
+
+        """
+        modes = ["off"]  # Always supported
+
+        # Priority 1: customize override (if "swing_modes" explicitly set)
+        if "swing_modes" in self._customize_capabilities:
+            directions_raw = self._customize_capabilities["swing_modes"]
+            directions = directions_raw if isinstance(directions_raw, list) else []
+            has_vertical = "vertical" in directions
+            has_horizontal = "horizontal" in directions
+            if has_vertical:
+                modes.append("vertical")
+            if has_horizontal:
+                modes.append("horizontal")
+            if has_vertical and has_horizontal:
+                modes.append("both")
+            return modes
+
+        # Priority 2: B5 capabilities (if device reported B5 response)
+        if "swing_modes" in self._capabilities:
+            directions_raw = self._capabilities.get("swing_modes", [])
+            directions = directions_raw if isinstance(directions_raw, list) else []
+            has_vertical = "vertical" in directions
+            has_horizontal = "horizontal" in directions
+            if has_vertical:
+                modes.append("vertical")
+            if has_horizontal:
+                modes.append("horizontal")
+            if has_vertical and has_horizontal:
+                modes.append("both")
+            return modes
+
+        # Priority 3: default full set (for devices without B5 support)
+        return ["off", "vertical", "horizontal", "both"]
+
+    @property
+    def supported_preset_modes(self) -> list[str]:
+        """Return list of supported preset modes for Home Assistant.
+
+        Priority: customize > B5 capabilities > default basic set.
+
+        Default presets (always available):
+        - none, comfort, eco, boost, sleep
+
+        B5-only presets (only if reported by device):
+        - ieco (if ieco in capabilities)
+
+        Returns:
+            List of HA-compatible preset mode strings.
+
+        """
+        # Priority 1: customize override
+        # Check if customize has explicit preset feature flags
+        has_customize_features = any(
+            key in self._customize_capabilities
+            for key in [
+                "eco_mode",
+                "ieco",
+                "turbo_cool",
+                "turbo_heat",
+                "sleep_mode",
+                "comfort_mode",
+            ]
+        )
+
+        if has_customize_features:
+            # Use merged capabilities (customize overrides B5)
+            caps = {**self._capabilities, **self._customize_capabilities}
+            presets = ["none"]
+            if caps.get("comfort_mode", True):
+                presets.append("comfort")
+            if caps.get("eco_mode"):
+                presets.append("eco")
+            if caps.get("turbo_cool") or caps.get("turbo_heat"):
+                presets.append("boost")
+            if caps.get("sleep_mode", True):
+                presets.append("sleep")
+            if caps.get("ieco"):
+                presets.append("ieco")
+            return presets
+
+        # Priority 2: B5 capabilities (if device reported B5 response)
+        if self._capabilities:
+            caps = self._capabilities
+            # Check if we have modes (indicator of B5 support)
+            if "modes" in caps:
+                presets = ["none", "comfort"]  # always available
+                if caps.get("eco_mode"):
+                    presets.append("eco")
+                if caps.get("turbo_cool") or caps.get("turbo_heat"):
+                    presets.append("boost")
+                presets.append("sleep")  # always available
+                # B5-only presets
+                if caps.get("ieco"):
+                    presets.append("ieco")
+                return presets
+
+        # Priority 3: default basic set (for devices without B5 support)
+        return ["none", "comfort", "eco", "boost", "sleep"]
+
     def _capability_temperature_limits(self) -> tuple[float, float] | None:
         """Return the capability setpoint limits for the current mode, if any.
 

@@ -4,9 +4,10 @@
 name: release-please
 
 on:
-  push:
-    branches:
-      - main
+  # Disabled auto-trigger: manual release workflow takes over
+  # push:
+  #   branches:
+  #     - main
   workflow_dispatch:
     inputs:
       version:

@@ -1,5 +1,41 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [2026.9.1](https://github.com/wuwentao/midea-lan/compare/v2026.9.0...v2026.9.1) (2026-09-08)
+
+### Features
+
+- **ac:** Add HA integration support properties [#92](https://github.com/wuwentao/midea-lan/pull/92) ([6274cd7](https://github.com/wuwentao/midea-lan/commit/6274cd79177d72f68d52c4884fb458a52c8d117a))
+
+- Add manual release workflow with git-cliff [#94](https://github.com/wuwentao/midea-lan/pull/94) ([045b9ef](https://github.com/wuwentao/midea-lan/commit/045b9efea8c354a38100294eca1b6ac1988e1bb7))
+
+
+### Bug Fixes
+
+- **ci:** Add push trigger to release-please workflow [#78](https://github.com/wuwentao/midea-lan/pull/78) ([12fd765](https://github.com/wuwentao/midea-lan/commit/12fd7652c91d9152a5dad2f806d0a7b737d3524c))
+
+- Remove non-existent release label from PR creation [#96](https://github.com/wuwentao/midea-lan/pull/96) ([e96ddb5](https://github.com/wuwentao/midea-lan/commit/e96ddb5ffc4293aac71b52eacfd6c34ea471351b))
+
+- Handle stale branch and existing PR in manual-release workflow [#97](https://github.com/wuwentao/midea-lan/pull/97) ([d686d25](https://github.com/wuwentao/midea-lan/commit/d686d258b3fe042731209e7075b8b9e44014bfa4))
+
+- Generate prettier-compatible manifest json format [#99](https://github.com/wuwentao/midea-lan/pull/99) ([c4466a3](https://github.com/wuwentao/midea-lan/commit/c4466a3136fa8d44fc088f43d242c56b5114b255))
+
+
+### Refactor
+
+- **ac:** Improve PropertiesQuery tag categorization and add ieco support [#86](https://github.com/wuwentao/midea-lan/pull/86) ([d265568](https://github.com/wuwentao/midea-lan/commit/d265568d567cd374b7ff33a94068a55bc8a59c34))
+
+- **ac:** Store B5 temperature limits in capabilities map [#87](https://github.com/wuwentao/midea-lan/pull/87) ([ad6272d](https://github.com/wuwentao/midea-lan/commit/ad6272dc4b6669203fd216f9f188fc852bda4767))
+
+- **ac:** Nest B5 mode flags into capabilities modes map [#88](https://github.com/wuwentao/midea-lan/pull/88) ([b16efb8](https://github.com/wuwentao/midea-lan/commit/b16efb8341827c7831502ee343c06c37ce7e5dd5))
+
+- **ac:** Unify capabilities format to arrays [#91](https://github.com/wuwentao/midea-lan/pull/91) ([ca0d21a](https://github.com/wuwentao/midea-lan/commit/ca0d21a7903491e785daf82d3da1f889787279e4))
+
+# Changelog
+
 ## [2026.9.0](https://github.com/wuwentao/midea-lan/compare/v2026.8.0...v2026.9.0) (2026-09-02)
 
 

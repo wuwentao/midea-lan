@@ -66,7 +66,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           # Find the section between this version and the next heading
-          CHANGELOG=$(awk "/## \[${VERSION}\]/,/## \[/" CHANGELOG.md | sed '$d' | tail -n +2)
+          CHANGELOG=$(sed -n "/## \[${VERSION}\]/,/^## \[/p" CHANGELOG.md | sed '1d;$d')
 
           if [ -z "$CHANGELOG" ]; then
             echo "Warning: Could not extract changelog for version ${VERSION}, using fallback"

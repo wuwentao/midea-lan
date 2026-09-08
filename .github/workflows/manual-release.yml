@@ -82,7 +82,8 @@ jobs:
 
       - name: Update version in manifest
         run: |
-          echo '{".":'\ '"${{ inputs.version }}"}' > .release-please-manifest.json
+          # Use jq to produce prettier-compatible formatting (multi-line, 2-space indent)
+          jq -n --arg v "${{ inputs.version }}" '{".": $v}' > .release-please-manifest.json
 
       - name: Update version in Python code
         run: |

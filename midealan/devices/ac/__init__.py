@@ -1121,7 +1121,18 @@ class MideaACDevice(MideaDevice):
                                 ]
                             elif isinstance(value, list):
                                 # New array format: ["heat", "cool"]
-                                normalized_caps[key] = value
+                                # Validate all elements are strings
+                                if all(isinstance(item, str) for item in value):
+                                    normalized_caps[key] = value
+                                else:
+                                    # Invalid array elements, skip with warning
+                                    _LOGGER.warning(
+                                        "[%s] Invalid capability array for %s: "
+                                        "contains non-string elements",
+                                        self.device_id,
+                                        key,
+                                    )
+                                    continue
                             else:
                                 # Invalid format, skip with warning
                                 _LOGGER.warning(

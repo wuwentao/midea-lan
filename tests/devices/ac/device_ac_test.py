@@ -1354,3 +1354,87 @@ class TestMideaACDevice:
     def test_invalid_customize_format(self) -> None:
         """Test invalid customize format."""
         self.device.set_customize("{")
+
+    def test_customize_capabilities_legacy_dict_format(self) -> None:
+        """Test customize with legacy dict format converts to array format."""
+        customize_str = """{
+            "capabilities": {
+                "modes": {"heat": true, "cool": true, "dry": false, "auto": true},
+                "fan_speeds": {
+                    "silent": false, "low": true, "medium": true, "high": true
+                },
+                "swing_modes": {"vertical": true, "horizontal": false, "both": true}
+            }
+        }"""
+        self.device.set_customize(customize_str)
+
+        # Legacy dict format should be converted to array format
+        assert self.device.capabilities["modes"] == ["heat", "cool", "auto"]
+        assert self.device.capabilities["fan_speeds"] == ["low", "medium", "high"]
+        assert self.device.capabilities["swing_modes"] == ["vertical", "both"]
+
+    def test_customize_capabilities_array_format(self) -> None:
+        """Test customize with array format works directly."""
+        customize_str = """{
+            "capabilities": {
+                "modes": ["heat", "cool"],
+                "fan_speeds": ["low", "high", "auto"],
+                "swing_modes": ["vertical"]
+            }
+        }"""
+        self.device.set_customize(customize_str)
+
+        # Array format should be used as-is
+        assert self.device.capabilities["modes"] == ["heat", "cool"]
+        assert self.device.capabilities["fan_speeds"] == ["low", "high", "auto"]
+        assert self.device.capabilities["swing_modes"] == ["vertical"]
+
+    def test_customize_capabilities_invalid_format_skipped(self) -> None:
+        """Test customize with invalid format is skipped with warning."""
+        customize_str = """{
+            "capabilities": {
+                "modes": "invalid_string_not_dict_or_list",
+                "fan_speeds": 123,
+                "other_capability": true
+            }
+        }"""
+        self.device.set_customize(customize_str)
+
+        # Invalid formats should be skipped and not set
+        assert "modes" not in self.device._customize_capabilities
+        assert "fan_speeds" not in self.device._customize_capabilities
+        # Other valid capabilities should still be set
+        assert self.device._customize_capabilities.get("other_capability") is True
+
+    def test_customize_capabilities_mixed_valid_invalid(self) -> None:
+        """Test customize with mix of valid and invalid capability formats."""
+        customize_str = """{
+            "capabilities": {
+                "modes": ["heat", "cool"],
+                "fan_speeds": "invalid",
+                "other_capability": true
+            }
+        }"""
+        self.device.set_customize(customize_str)
+
+        # Valid formats should be applied
+        assert self.device.capabilities["modes"] == ["heat", "cool"]
+        # Other capabilities should remain as-is
+        assert self.device.capabilities["other_capability"] is True
+
+    def test_customize_capabilities_array_with_non_string_elements(self) -> None:
+        """Test customize rejects arrays containing non-string elements."""
+        customize_str = """{
+            "capabilities": {
+                "modes": ["heat", 123, "cool"],
+                "fan_speeds": [1, 2, 3],
+                "other_capability": true
+            }
+        }"""
+        self.device.set_customize(customize_str)
+
+        # Arrays with non-string elements should be rejected and not set
+        assert "modes" not in self.device._customize_capabilities
+        assert "fan_speeds" not in self.device._customize_capabilities
+        # Other valid capabilities should still be set
+        assert self.device._customize_capabilities.get("other_capability") is True

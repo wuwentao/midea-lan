@@ -1,5 +1,18 @@
 # Changelog
 
+## [2026.10.0](https://github.com/wuwentao/midea-lan/compare/v2026.9.0...v2026.10.0) (2026-09-08)
+
+
+### Features
+
+* **ac:** add HA integration support properties ([#92](https://github.com/wuwentao/midea-lan/issues/92)) ([6274cd7](https://github.com/wuwentao/midea-lan/commit/6274cd79177d72f68d52c4884fb458a52c8d117a))
+
+
+### Bug Fixes
+
+* **ac:** validate array elements in capabilities customize ([ca0d21a](https://github.com/wuwentao/midea-lan/commit/ca0d21a7903491e785daf82d3da1f889787279e4))
+* **ci:** add push trigger to release-please workflow ([#78](https://github.com/wuwentao/midea-lan/issues/78)) ([12fd765](https://github.com/wuwentao/midea-lan/commit/12fd7652c91d9152a5dad2f806d0a7b737d3524c))
+
 ## [2026.9.0](https://github.com/wuwentao/midea-lan/compare/v2026.8.0...v2026.9.0) (2026-09-02)
 
 

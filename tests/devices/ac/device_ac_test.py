@@ -1438,3 +1438,379 @@ class TestMideaACDevice:
         assert "fan_speeds" not in self.device._customize_capabilities
         # Other valid capabilities should still be set
         assert self.device._customize_capabilities.get("other_capability") is True
+
+
+class TestHASupportProperties:
+    """Test Home Assistant integration support properties."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Set up test device."""
+        self.device = MideaACDevice(
+            name="Test AC",
+            device_id=123456789012345,
+            ip_address="192.168.1.100",
+            port=6444,
+            token="AA" * 40,
+            key="BB" * 16,
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=0,
+            customize="",
+        )
+
+    def test_supported_hvac_modes_all_modes(self) -> None:
+        """Test supported_hvac_modes with all modes available."""
+        self.device._capabilities = {
+            "modes": ["auto", "cool", "heat", "dry"],
+        }
+        expected = ["off", "auto", "cool", "heat", "dry"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_partial_modes(self) -> None:
+        """Test supported_hvac_modes with only some modes available."""
+        self.device._capabilities = {
+            "modes": ["cool", "heat"],
+        }
+        expected = ["off", "cool", "heat"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_no_cool(self) -> None:
+        """Test supported_hvac_modes for heat-only device."""
+        self.device._capabilities = {
+            "modes": ["heat", "auto"],
+        }
+        expected = ["off", "auto", "heat"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_with_fan_only(self) -> None:
+        """Test supported_hvac_modes includes fan_only when enabled in customize."""
+        self.device._capabilities = {
+            "modes": ["cool", "heat"],
+        }
+        self.device._customize_capabilities = {
+            "fan_only": True,
+        }
+        expected = ["off", "cool", "heat", "fan_only"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_empty_capabilities(self) -> None:
+        """Test supported_hvac_modes with empty capabilities.
+
+        Returns default full set.
+        """
+        self.device._capabilities = {}
+        expected = ["off", "auto", "cool", "heat", "dry"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_customize_override(self) -> None:
+        """Test supported_hvac_modes respects customize overrides."""
+        self.device._capabilities = {
+            "modes": ["auto", "cool", "heat", "dry"],
+        }
+        self.device._customize_capabilities = {
+            "modes": ["cool", "heat"],
+        }
+        # customize overrides B5 capabilities
+        expected = ["off", "cool", "heat"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_fan_modes_all_speeds(self) -> None:
+        """Test supported_fan_modes with all speeds available."""
+        self.device._capabilities = {
+            "fan_speeds": ["auto", "silent", "low", "medium", "high", "custom"],
+        }
+        expected = ["auto", "silent", "low", "medium", "high", "custom"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_partial_speeds(self) -> None:
+        """Test supported_fan_modes with only some speeds available."""
+        self.device._capabilities = {
+            "fan_speeds": ["auto", "low", "high"],
+        }
+        expected = ["auto", "low", "high"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_no_silent(self) -> None:
+        """Test supported_fan_modes without silent speed."""
+        self.device._capabilities = {
+            "fan_speeds": ["auto", "low", "medium", "high"],
+        }
+        expected = ["auto", "low", "medium", "high"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_empty_capabilities(self) -> None:
+        """Test supported_fan_modes with empty capabilities.
+
+        Returns default full set.
+        """
+        self.device._capabilities = {}
+        expected: list[str] = ["auto", "silent", "low", "medium", "high", "custom"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_customize_override(self) -> None:
+        """Test supported_fan_modes respects customize overrides."""
+        self.device._capabilities = {
+            "fan_speeds": ["auto", "silent", "low", "medium", "high"],
+        }
+        self.device._customize_capabilities = {
+            "fan_speeds": ["auto", "low", "high"],
+        }
+        # customize overrides B5 capabilities
+        expected = ["auto", "low", "high"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_custom_returns_full_set(self) -> None:
+        """Test supported_fan_modes returns full set when custom is present."""
+        self.device._capabilities = {
+            "fan_speeds": ["auto", "custom"],
+        }
+        # custom in list means return full set
+        expected = ["auto", "silent", "low", "medium", "high", "custom"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_fan_modes_custom_in_customize(self) -> None:
+        """Test supported_fan_modes with custom in customize returns only custom."""
+        self.device._customize_capabilities = {
+            "fan_speeds": ["custom"],
+        }
+        # custom in customize is explicit user config, only return what's specified
+        expected = ["custom"]
+        assert self.device.supported_fan_modes == expected
+
+    def test_supported_swing_modes_both_directions(self) -> None:
+        """Test supported_swing_modes with both directions available."""
+        self.device._capabilities = {
+            "swing_modes": ["vertical", "horizontal"],
+        }
+        expected = ["off", "vertical", "horizontal", "both"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_swing_modes_vertical_only(self) -> None:
+        """Test supported_swing_modes with only vertical available."""
+        self.device._capabilities = {
+            "swing_modes": ["vertical"],
+        }
+        expected = ["off", "vertical"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_swing_modes_horizontal_only(self) -> None:
+        """Test supported_swing_modes with only horizontal available."""
+        self.device._capabilities = {
+            "swing_modes": ["horizontal"],
+        }
+        expected = ["off", "horizontal"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_swing_modes_none(self) -> None:
+        """Test supported_swing_modes with no swing support.
+
+        Returns default full set.
+        """
+        self.device._capabilities = {}
+        expected = ["off", "vertical", "horizontal", "both"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_swing_modes_customize_override(self) -> None:
+        """Test supported_swing_modes respects customize overrides."""
+        self.device._capabilities = {
+            "swing_modes": ["vertical", "horizontal"],
+        }
+        self.device._customize_capabilities = {
+            "swing_modes": ["vertical"],
+        }
+        # customize overrides B5 capabilities
+        expected = ["off", "vertical"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_preset_modes_all_features(self) -> None:
+        """Test supported_preset_modes with all features available."""
+        self.device._capabilities = {
+            "modes": ["auto", "cool", "heat"],  # B5 indicator
+            "eco_mode": True,
+            "turbo_cool": True,
+            "turbo_heat": True,
+            "sleep_mode": True,
+            "comfort_mode": True,
+        }
+        expected = ["none", "comfort", "eco", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_eco_only(self) -> None:
+        """Test supported_preset_modes with only eco available."""
+        self.device._capabilities = {
+            "modes": ["cool"],  # B5 indicator
+            "eco_mode": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        expected = ["none", "comfort", "eco", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_ieco(self) -> None:
+        """Test supported_preset_modes with ieco (independent preset)."""
+        self.device._capabilities = {
+            "modes": ["cool"],  # B5 indicator
+            "ieco": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        # ieco is a separate preset from eco
+        expected = ["none", "comfort", "sleep", "ieco"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_eco_and_ieco(self) -> None:
+        """Test supported_preset_modes with both eco and ieco modes.
+
+        eco_mode and ieco are independent presets (not the same).
+        """
+        self.device._capabilities = {
+            "modes": ["cool"],  # B5 indicator
+            "eco_mode": True,
+            "ieco": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        # eco and ieco are both present as separate presets
+        expected = ["none", "comfort", "eco", "sleep", "ieco"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_turbo_cool_only(self) -> None:
+        """Test supported_preset_modes with only turbo_cool (maps to boost)."""
+        self.device._capabilities = {
+            "modes": ["cool"],  # B5 indicator
+            "turbo_cool": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        expected = ["none", "comfort", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_turbo_heat_only(self) -> None:
+        """Test supported_preset_modes with only turbo_heat (maps to boost)."""
+        self.device._capabilities = {
+            "modes": ["heat"],  # B5 indicator
+            "turbo_heat": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        expected = ["none", "comfort", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_both_turbo(self) -> None:
+        """Test supported_preset_modes with both turbo modes (single boost preset)."""
+        self.device._capabilities = {
+            "modes": ["cool", "heat"],  # B5 indicator
+            "turbo_cool": True,
+            "turbo_heat": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        expected = ["none", "comfort", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_empty_capabilities(self) -> None:
+        """Test supported_preset_modes with empty capabilities.
+
+        Returns default basic set (without B5-only presets).
+        """
+        self.device._capabilities = {}
+        expected = ["none", "comfort", "eco", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_partial_features(self) -> None:
+        """Test supported_preset_modes with some features available."""
+        self.device._capabilities = {
+            "modes": ["cool"],  # B5 indicator
+            "eco_mode": True,
+            "sleep_mode": True,
+        }
+        # comfort and sleep are always available (no B5 flag)
+        expected = ["none", "comfort", "eco", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_customize_priority(self) -> None:
+        """Test supported_preset_modes with customize override."""
+        self.device._capabilities = {
+            "modes": ["cool"],
+            "eco_mode": True,
+        }
+        self.device._customize_capabilities = {
+            "eco_mode": False,  # Disable eco via customize
+            "turbo_cool": True,  # Enable boost via customize
+        }
+        # customize overrides B5 capabilities
+        expected = ["none", "comfort", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_customize_with_ieco(self) -> None:
+        """Test supported_preset_modes customize with ieco."""
+        self.device._customize_capabilities = {
+            "ieco": True,
+            "comfort_mode": False,  # Disable comfort
+        }
+        # customize controls all presets
+        expected = ["none", "sleep", "ieco"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_customize_enable_eco(self) -> None:
+        """Test supported_preset_modes customize enables eco."""
+        self.device._customize_capabilities = {
+            "eco_mode": True,  # Enable eco via customize
+            "sleep_mode": True,  # Explicitly enable sleep
+        }
+        # customize with eco and explicit sleep
+        expected = ["none", "comfort", "eco", "sleep"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_preset_modes_customize_disable_sleep(self) -> None:
+        """Test supported_preset_modes customize disables sleep."""
+        self.device._customize_capabilities = {
+            "sleep_mode": False,  # Explicitly disable sleep
+        }
+        # customize with sleep disabled
+        expected = ["none", "comfort"]
+        assert self.device.supported_preset_modes == expected
+
+    def test_supported_hvac_modes_customize_with_fan_only(self) -> None:
+        """Test supported_hvac_modes customize modes with fan_only enabled."""
+        self.device._customize_capabilities = {
+            "modes": ["cool", "heat"],
+            "fan_only": True,
+        }
+        # customize modes + fan_only enabled
+        expected = ["off", "cool", "heat", "fan_only"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_hvac_modes_default_with_fan_only(self) -> None:
+        """Test supported_hvac_modes default set with fan_only enabled."""
+        self.device._capabilities = {}
+        self.device._customize_capabilities = {
+            "fan_only": True,
+        }
+        # default full set + fan_only (no modes in customize or B5)
+        expected = ["off", "auto", "cool", "heat", "dry", "fan_only"]
+        assert self.device.supported_hvac_modes == expected
+
+    def test_supported_swing_modes_customize_horizontal_only(self) -> None:
+        """Test supported_swing_modes customize with horizontal only."""
+        self.device._customize_capabilities = {
+            "swing_modes": ["horizontal"],
+        }
+        expected = ["off", "horizontal"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_swing_modes_customize_both(self) -> None:
+        """Test supported_swing_modes customize with both directions."""
+        self.device._customize_capabilities = {
+            "swing_modes": ["vertical", "horizontal"],
+        }
+        expected = ["off", "vertical", "horizontal", "both"]
+        assert self.device.supported_swing_modes == expected
+
+    def test_supported_preset_modes_b5_without_modes_key(self) -> None:
+        """Test supported_preset_modes B5 capabilities without modes key.
+
+        Falls through to default basic set.
+        """
+        self.device._capabilities = {
+            "eco_mode": True,  # capabilities present but no "modes" key
+        }
+        # No "modes" key means not a valid B5 preset indicator
+        # falls through to default basic set
+        expected = ["none", "comfort", "eco", "boost", "sleep"]
+        assert self.device.supported_preset_modes == expected

@@ -1,6 +1,12 @@
 # Auto-tag and release workflow
-# Triggers when a release PR is merged to main
-# Creates git tag and GitHub release automatically
+#
+# This workflow automatically runs when a release PR (title containing "release") is merged to main.
+# It:
+#   - Extracts version from .release-please-manifest.json
+#   - Creates and pushes git tag vX.Y.Z
+#   - Publishes GitHub Release with changelog excerpt
+#
+# No manual intervention needed - this is triggered by merging the PR from manual-release.yml
 name: Create Release
 
 on:

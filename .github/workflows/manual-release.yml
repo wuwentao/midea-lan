@@ -1,6 +1,21 @@
 # Manual release workflow
-# Allows you to specify the version number manually via workflow_dispatch
-# Generates changelog, updates version files, and creates a release PR
+#
+# Usage (maintainers only):
+#   1. Go to Actions → Manual Release → Run workflow
+#   2. Enter version number (e.g., 2026.9.1)
+#   3. Review and merge the generated release PR
+#   4. The create-release.yml workflow auto-tags and publishes the GitHub release
+#
+# This workflow:
+#   - Validates version format (X.Y.Z)
+#   - Generates changelog from conventional commits (via git-cliff)
+#   - Updates .release-please-manifest.json and midealan/version.py
+#   - Creates a release branch and opens a PR with all changes
+#
+# Benefits over automatic release-please:
+#   - Single PR per release (not two)
+#   - Manual version control (CalVer-friendly, no auto-increment from feat: commits)
+#   - Full control over version numbers
 name: Manual Release
 
 on:

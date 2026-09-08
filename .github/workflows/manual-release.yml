@@ -136,8 +136,7 @@ jobs:
             --base main \
             --head "${{ steps.branch.outputs.branch }}" \
             --title "chore(main): release ${{ inputs.version }}" \
-            --body "${PR_BODY}" \
-            --label "release")
+            --body "${PR_BODY}")
 
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
           echo "✅ Release PR created: ${PR_URL}"

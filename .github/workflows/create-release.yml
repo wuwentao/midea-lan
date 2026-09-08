@@ -90,7 +90,10 @@ jobs:
       - name: Create GitHub Release
         if: steps.check_tag.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Use PAT (not GITHUB_TOKEN) so the release:published event cascades
+          # to trigger the PyPI deploy job in python-build.yml. Releases created
+          # with GITHUB_TOKEN do NOT trigger other workflows (loop prevention).
+          GH_TOKEN: ${{ secrets.MIDEA_GITHUB_PAT }}
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
             --title "v${{ steps.version.outputs.version }}" \

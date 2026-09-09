@@ -90,6 +90,19 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
+  # ── PyPI deployment ──
+  # Trigger: this job runs ONLY on the "release: published" event (see the
+  # `on.release` trigger at the top and the `if` below). That event is emitted
+  # by create-release.yml, which creates the GitHub Release with a PAT so the
+  # event cascades to this workflow (GITHUB_TOKEN-created releases do NOT trigger
+  # other workflows). If a release is published but this job did not run, check
+  # that create-release.yml used MIDEA_GITHUB_PAT and not GITHUB_TOKEN.
+  #
+  # Auth: the upload uses PyPI Trusted Publisher (OIDC) - note `permissions:
+  # id-token: write`, the `environment: pypi`, and that pypa/gh-action-pypi-publish
+  # is called WITHOUT any username/password/api-token. GitHub mints a short-lived
+  # OIDC token that PyPI trusts. There is NO PyPI API token and NO PAT involved in
+  # the actual upload - do not add one.
   deploy:
     name: Deploy Release to PyPI
     needs: [build]

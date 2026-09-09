@@ -1,3 +1,18 @@
+# ⚠️ DEPRECATED - superseded by manual-release.yml + create-release.yml.
+#
+# The push trigger is disabled (commented out below); only workflow_dispatch
+# remains as an emergency fallback. Prefer the manual release flow:
+#   manual-release.yml  -> creates the release PR (version + changelog)
+#   create-release.yml  -> tags + publishes the GitHub Release on PR merge
+#   python-build.yml    -> deploys to PyPI on release:published (Trusted Publisher/OIDC)
+#
+# Historical note on the token below: release-please created the GitHub Release
+# itself, and used MIDEA_GITHUB_PAT (a PAT, not GITHUB_TOKEN) so the
+# "release: published" event would cascade and trigger the PyPI deploy job in
+# python-build.yml. GITHUB_TOKEN-created releases do NOT trigger other workflows.
+# create-release.yml keeps using the same PAT for exactly this reason.
+#
+# ── Original description ──
 # This workflow uses the release-please GitHub Action to automate releases.
 # it only works on the main branch: PR mereged to main will trigger the release-please action
 # and PR will be created to update the version in the manifest file and create a release with the new version.
@@ -28,6 +43,8 @@ jobs:
         uses: googleapis/release-please-action@v5
         id: release
         with:
+          # PAT (not GITHUB_TOKEN): the release it publishes must cascade to
+          # trigger the PyPI deploy in python-build.yml. See file header note.
           token: ${{ secrets.MIDEA_GITHUB_PAT }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json

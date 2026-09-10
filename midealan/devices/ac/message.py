@@ -189,6 +189,7 @@ class CapabilityTag(IntEnum):
     self_clean = 0x0039
     child_prevent_cold_wind = 0x003A
     error_code = 0x003F
+    unknown = 0x0040
     mode_query = 0x0041
     indirect_wind = 0x0042  # prevent_straight_wind
     gentle_wind_sense = 0x0043
@@ -218,6 +219,7 @@ class CapabilityTag(IntEnum):
     arom = 0x0069
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
+    self_clean_active = 0x00E2
     ieco = 0x00E3
     pre_cool_hot = 0x0201
     pm25_value = 0x020B
@@ -519,23 +521,23 @@ class PropertiesQuery(MessageACBase):
     )
 
     _default_properties: tuple[int, ...] = (
-        CapabilityTag.indirect_wind,
-        CapabilityTag.breezeless,
-        CapabilityTag.indoor_humidity,
-        CapabilityTag.screen_display,
-        CapabilityTag.fresh_air_1,
-        CapabilityTag.fresh_air_2,
-        CapabilityTag.wind_lr_angle,
-        CapabilityTag.wind_ud_angle,
+        CapabilityTag.indirect_wind,  # 0x0042
+        CapabilityTag.breezeless,  # 0x0018
+        CapabilityTag.indoor_humidity,  # 0x0015
+        CapabilityTag.screen_display,  # 0x0017
+        CapabilityTag.fresh_air_1,  # 0x0233
+        CapabilityTag.fresh_air_2,  # 0x004B
+        CapabilityTag.wind_lr_angle,  # 0x000A
+        CapabilityTag.wind_ud_angle,  # 0x0009
     )
 
     _capability_properties: tuple[int, ...] = (
-        CapabilityTag.self_clean,
-        CapabilityTag.rate_select,
-        CapabilityTag.out_silent,
-        CapabilityTag.ieco,
-        CapabilityTag.sound,
-        CapabilityTag.error_code,
+        CapabilityTag.self_clean,  # 0x0039
+        CapabilityTag.rate_select,  # 0x0048
+        CapabilityTag.out_silent,  # 0x00CD
+        CapabilityTag.ieco,  # 0x00E3
+        CapabilityTag.sound,  # 0x022C
+        CapabilityTag.error_code,  # 0x003F
     )
 
     def __init__(
@@ -1457,6 +1459,9 @@ class CapabilityBody(NewProtocolMessageBody):
         if CapabilityTag.electricity in params:
             caps["rate_select"] = params[CapabilityTag.electricity][0]
 
+        if CapabilityTag.rate_select in params:
+            caps["rate_select_2"] = params[CapabilityTag.rate_select][0]
+
         if CapabilityTag.self_clean in params:
             caps["self_clean"] = params[CapabilityTag.self_clean][0] > 0
 
@@ -1475,18 +1480,19 @@ class CapabilityBody(NewProtocolMessageBody):
         # Tags with special parsing logic (handled above).
         manually_parsed_tags = frozenset(
             {
-                CapabilityTag.temperature,
-                CapabilityTag.mode,
-                CapabilityTag.wind_swing,
-                CapabilityTag.wind_speed,
-                CapabilityTag.eco,
-                CapabilityTag.anion,
-                CapabilityTag.strong_wind,
+                CapabilityTag.temperature,  # 0x0225
+                CapabilityTag.mode,  # 0x0214
+                CapabilityTag.wind_swing,  # 0x0215
+                CapabilityTag.wind_speed,  # 0x210
+                CapabilityTag.eco,  # 0x0212
+                CapabilityTag.anion,  # 0x021E
+                CapabilityTag.strong_wind,  # 0x021A
                 CapabilityTag.screen_display_capability,
-                CapabilityTag.electricity,
-                CapabilityTag.self_clean,
-                CapabilityTag.ieco,
-                CapabilityTag.sound,
+                CapabilityTag.electricity,  # 0x0216
+                CapabilityTag.rate_select,  # 0x0048
+                CapabilityTag.self_clean,  # 0x0039
+                CapabilityTag.ieco,  # 0x00E3
+                CapabilityTag.sound,  # 0x022C
             },
         )
 

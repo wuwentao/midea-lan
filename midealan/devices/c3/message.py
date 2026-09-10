@@ -677,6 +677,21 @@ class C3UnitParaUpBody(MessageBody):
 class MessageC3Response(MessageResponse):
     """C3 message response."""
 
+    # Populated dynamically by MessageResponse.set_attr(), which copies
+    # every attribute of the parsed body onto the response via setattr().
+    # mypy cannot see attributes added that way; declaring them here as
+    # class-level annotations has no effect on runtime behaviour (set_attr()
+    # remains the only place that assigns them) and only gives mypy the
+    # static type it needs for the accesses in message_c3_test.py.
+    idu_software_version: int | None
+    odu_software_version: int | None
+    idu_software_version_str: str | None
+    odu_software_version_str: str | None
+    fg_capacity_need: int
+    current_unit_capacity: int
+    total_energy_consumption: int
+    total_produced_energy: int
+
     def __init__(self, message: bytes) -> None:
         """Initialize C3 message response."""
         super().__init__(bytearray(message))

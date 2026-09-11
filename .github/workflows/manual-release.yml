@@ -9,7 +9,7 @@
 # This workflow:
 #   - Validates version format (X.Y.Z)
 #   - Generates changelog from conventional commits (via git-cliff)
-#   - Updates .release-please-manifest.json and midealan/version.py
+#   - Updates midealan/version.py
 #   - Creates a release branch and opens a PR with all changes
 #
 # Benefits over automatic release-please:
@@ -38,6 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
+          ref: main # Always use main branch (not the selected ref from workflow_dispatch)
           fetch-depth: 0 # Need full history for changelog generation
           token: ${{ secrets.MIDEA_GITHUB_PAT }}
 
@@ -80,11 +81,6 @@ jobs:
               --prepend CHANGELOG.md
           fi
 
-      - name: Update version in manifest
-        run: |
-          # Use jq to produce prettier-compatible formatting (multi-line, 2-space indent)
-          jq -n --arg v "${{ inputs.version }}" '{".": $v}' > .release-please-manifest.json
-
       - name: Update version in Python code
         run: |
           sed -i 's/__version__ = ".*"/__version__ = "${{ inputs.version }}"/' midealan/version.py
@@ -100,13 +96,13 @@ jobs:
           BRANCH="release-${{ inputs.version }}"
           # Recreate the branch locally (any stale local ref is overwritten)
           git checkout -B "${BRANCH}"
-          git add CHANGELOG.md .release-please-manifest.json midealan/version.py
+          git add CHANGELOG.md midealan/version.py
           git commit -m "chore(main): release ${{ inputs.version }}" \
             -m "Release version ${{ inputs.version }}" \
             -m "" \
             -m "Changes:" \
             -m "- Update CHANGELOG.md" \
-            -m "- Update version in manifest and Python code" \
+            -m "- Update version in Python code" \
             -m "" \
             -m "Co-authored-by: github-actions[bot] <github-actions[bot]@users.noreply.github.com>"
           # Force-push to overwrite any stale branch from a previous failed run.

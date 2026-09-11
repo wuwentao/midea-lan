@@ -2,7 +2,7 @@
 #
 # This workflow automatically runs when a release PR (title containing "release") is merged to main.
 # It:
-#   - Extracts version from .release-please-manifest.json
+#   - Extracts version from midealan/version.py
 #   - Creates and pushes git tag vX.Y.Z
 #   - Publishes GitHub Release with changelog excerpt
 #
@@ -20,8 +20,13 @@ permissions:
 
 jobs:
   release:
-    # Only run if PR was merged (not just closed) and title contains "release"
-    if: github.event.pull_request.merged == true && contains(github.event.pull_request.title, 'release')
+    # Only run if PR was merged (not just closed), title contains "release",
+    # and the PR is from this repository's release-* branch (prevents external PRs from triggering release)
+    if: |
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.title, 'release') &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release-')
     runs-on: ubuntu-latest
 
     steps:
@@ -29,23 +34,19 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          ref: main # Ensure we're on main after merge
+          ref: ${{ github.sha }} # Tag the exact merged commit (immutable)
 
-      - name: Extract version from manifest
+      - name: Extract version from Python code
         id: version
         run: |
-          VERSION=$(jq -r '."."' .release-please-manifest.json)
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "Detected version: ${VERSION}"
-
-      - name: Verify version in Python code matches
-        run: |
-          PYTHON_VERSION=$(grep '__version__ = ' midealan/version.py | sed 's/__version__ = "\(.*\)"/\1/')
-          if [ "$PYTHON_VERSION" != "${{ steps.version.outputs.version }}" ]; then
-            echo "Error: Version mismatch between manifest (${{ steps.version.outputs.version }}) and version.py ($PYTHON_VERSION)"
+          VERSION=$(grep '__version__ = ' midealan/version.py | sed 's/__version__ = "\(.*\)"/\1/')
+          # Validate version format before using it (prevent injection)
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Version must be in format X.Y.Z (got: $VERSION)"
             exit 1
           fi
-          echo "✓ Version verified: ${{ steps.version.outputs.version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Detected version: ${VERSION}"
 
       - name: Check if tag already exists
         id: check_tag

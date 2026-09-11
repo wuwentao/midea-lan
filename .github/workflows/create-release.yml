@@ -90,7 +90,23 @@ jobs:
       - name: Create GitHub Release
         if: steps.check_tag.outputs.exists == 'false'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ── Why MIDEA_GITHUB_PAT and not the default GITHUB_TOKEN? ──
+          # This step must be created with a Personal Access Token (PAT), because
+          # GitHub Actions has a loop-prevention rule: any event produced using the
+          # default GITHUB_TOKEN does NOT trigger further workflow runs. If we used
+          # GITHUB_TOKEN here, the "release: published" event would fire but would
+          # NOT trigger the PyPI deploy job in python-build.yml, so the package would
+          # never be published. Using a PAT makes the event cascade normally.
+          #
+          # NOTE: this PAT is only about *triggering* the deploy. It is NOT the PyPI
+          # credential. The actual upload to PyPI in python-build.yml uses PyPI
+          # Trusted Publisher (OIDC) - see the deploy job there. The two concerns are
+          # separate: PAT = "who fires the release event", OIDC = "who authenticates
+          # the upload to PyPI".
+          #
+          # The old release-please workflow used the same PAT for the same reason
+          # (see release-please.yml `token:` input).
+          GH_TOKEN: ${{ secrets.MIDEA_GITHUB_PAT }}
         run: |
           gh release create "v${{ steps.version.outputs.version }}" \
             --title "v${{ steps.version.outputs.version }}" \

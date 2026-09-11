@@ -12,6 +12,8 @@ on:
   # Trigger the workflow on published releases
   release:
     types: [published]
+  # Allow manual triggering for deployment recovery
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -90,10 +92,27 @@ jobs:
           name: coverage-report
           path: coverage.xml
 
+  # ── PyPI deployment ──
+  # Trigger: this job runs on the "release: published" event OR manual workflow_dispatch.
+  # The release:published event is emitted by create-release.yml, which creates the
+  # GitHub Release with a PAT so the event cascades to this workflow (GITHUB_TOKEN-created
+  # releases do NOT trigger other workflows). If a release is published but this job did
+  # not run, check that create-release.yml used MIDEA_GITHUB_PAT and not GITHUB_TOKEN.
+  #
+  # Manual trigger: use workflow_dispatch (Actions → PR and Python checks → Run workflow)
+  # as a recovery option when the automatic release:published trigger fails. For security,
+  # manual runs are restricted to release tags (refs/tags/v*) via the condition below.
+  # The pypi environment should be configured with required reviewers for additional protection.
+  #
+  # Auth: the upload uses PyPI Trusted Publisher (OIDC) - note `permissions:
+  # id-token: write`, the `environment: pypi`, and that pypa/gh-action-pypi-publish
+  # is called WITHOUT any username/password/api-token. GitHub mints a short-lived
+  # OIDC token that PyPI trusts. There is NO PyPI API token and NO PAT involved in
+  # the actual upload - do not add one.
   deploy:
     name: Deploy Release to PyPI
     needs: [build]
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     environment:
       name: pypi

@@ -300,6 +300,7 @@ class MideaCDDevice(MideaDevice):
                 # an unverified RSJ000CB assumption; subtype alone cannot
                 # distinguish models with different protocol versions.
                 check_device = self.model in {
+                    "RSJ000CB",
                     "RSJRAC01",
                     "RSJRAC06",
                     "RSJRAC07",

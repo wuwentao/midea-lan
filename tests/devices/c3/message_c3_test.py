@@ -954,6 +954,24 @@ class TestParseSnBlock:
         assert _parse_sn_block(body, 33, HMI_SN_OFFSET) == CAPTURED_HMI_SN.decode()
         assert _parse_sn_block(body, 1, HMI_SN_OFFSET) == "DECOY"
 
+    def test_padding_only_block_is_rejected(self) -> None:
+        """A block holding nothing but a terminator and padding decodes to None."""
+        block = b"\x00" + b"-" * (SN_BLOCK_LEN - 1)
+        body = _body_with_sn(block)
+        assert _parse_sn_block(body, 1, HMI_SN_OFFSET) is None
+
+    def test_non_ascii_block_is_rejected(self) -> None:
+        """Bytes outside ASCII make the record untrustworthy, not a mojibake serial."""
+        block = b"\xff\xfe\x00" + b"-" * (SN_BLOCK_LEN - 3)
+        body = _body_with_sn(block)
+        assert _parse_sn_block(body, 1, HMI_SN_OFFSET) is None
+
+    def test_non_printable_ascii_block_is_rejected(self) -> None:
+        """Valid ASCII is still rejected when it carries a control character."""
+        block = b"AB\x01CD\x00" + b"-" * (SN_BLOCK_LEN - 6)
+        body = _body_with_sn(block)
+        assert _parse_sn_block(body, 1, HMI_SN_OFFSET) is None
+
     def test_nul_terminated_short_serial_is_decoded(self) -> None:
         """Test a serial shorter than the block stops at the terminator."""
         body = _body_with_sn(_sn_block(b"SHORT1"))

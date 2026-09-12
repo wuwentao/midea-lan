@@ -23,7 +23,7 @@ from midealan.cloud import (
     get_midea_cloud,
     get_preset_account_cloud,
 )
-from midealan.exceptions import ElementMissing
+from midealan.exceptions import CloudAuthError, CloudError, ElementMissing
 
 # ``CloudSecurity.get_udp_id(100, method)``. Hard-coded on purpose: deriving them
 # with the same helper the implementation calls would not catch a request that
@@ -1512,3 +1512,116 @@ class CloudTest(IsolatedAsyncioTestCase):
 
         device = await cloud.get_device_info(99)
         assert device is None
+
+
+class DayReportTest(IsolatedAsyncioTestCase):
+    """Day report test case."""
+
+    @staticmethod
+    def _cloud(
+        session: Mock,
+        api_url: str = "https://mp-prod.smartmidea.net/mas/v5/app/proxy?alias=",
+    ) -> MideaCloud:
+        """Build a cloud client for the day report tests."""
+        return MideaCloud(
+            session=session,
+            security=Mock(),
+            app_id="appid",
+            app_key="appkey",
+            account="account",
+            password="password",
+            api_url=api_url,
+        )
+
+    @staticmethod
+    def _session(payload: object) -> Mock:
+        """Return a session whose single request answers with a payload."""
+        response = Mock()
+        response.json = AsyncMock(return_value=payload)
+        session = Mock()
+        session.request = AsyncMock(return_value=response)
+        return session
+
+    async def test_get_day_report(self) -> None:
+        """Request the usage report with the access token and proxy alias."""
+        session = self._session({"retCode": "0", "result": {"date": "2026-09-10"}})
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        result = await cloud.get_day_report(100)
+        assert result == {"date": "2026-09-10"}
+        call = session.request.await_args
+        assert call.args[0] == "POST"
+        assert call.args[1] == (
+            "https://mp-prod.smartmidea.net/mas/v5/app/proxy?alias=/cfhrs/e3/v1/api"
+        )
+        assert call.kwargs["headers"] == {
+            "content-type": "application/json; charset=utf-8",
+            "accessToken": "token",
+        }
+        assert call.kwargs["json"] == {
+            "msg": "dayReportV2",
+            "params": {"applianceId": "100"},
+        }
+
+    async def test_get_day_report_empty_result(self) -> None:
+        """Return None when the cloud holds no report for the appliance."""
+        session = self._session({"retCode": "0"})
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        assert await cloud.get_day_report(100) is None
+
+    async def test_get_day_report_auth_error(self) -> None:
+        """Map a rejected access token to CloudAuthError."""
+        session = self._session({"code": 40002, "msg": "token invalid"})
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        with pytest.raises(CloudAuthError):
+            await cloud.get_day_report(100)
+
+    async def test_get_day_report_gateway_error(self) -> None:
+        """Map a gateway error to CloudError."""
+        session = self._session({"code": 1234, "msg": "boom"})
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.get_day_report(100)
+
+    async def test_get_day_report_failed_ret_code(self) -> None:
+        """Map a non-zero retCode to CloudError."""
+        session = self._session({"retCode": "1", "desc": "no report"})
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.get_day_report(100)
+
+    async def test_get_day_report_invalid_response(self) -> None:
+        """Reject a response that is not a JSON object."""
+        session = self._session([])
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.get_day_report(100)
+
+    async def test_get_day_report_request_failure(self) -> None:
+        """Map a connection failure to CloudError."""
+        session = Mock()
+        session.request = AsyncMock(side_effect=ClientConnectionError())
+        cloud = self._cloud(session)
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.get_day_report(100)
+
+    async def test_get_day_report_no_token(self) -> None:
+        """Reject a report request without an access token."""
+        with pytest.raises(CloudAuthError):
+            await self._cloud(Mock()).get_day_report(100)
+
+    async def test_get_day_report_no_alias(self) -> None:
+        """Reject a report request on a cloud without the proxy alias."""
+        cloud = self._cloud(
+            Mock(),
+            api_url="https://mapp.appsmb.com",  # codespell:ignore
+        )
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.get_day_report(100)

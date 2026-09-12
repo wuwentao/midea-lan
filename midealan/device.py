@@ -36,6 +36,10 @@ SOCKET_TIMEOUT = 10  # socket connection default timeout
 QUERY_TIMEOUT = (
     5  # default is 1s, 0xAC have more queries, set to 2s, latest: increase to 5s
 )
+# A single timeout during the initial protocol probe blacklists the command for
+# the whole connection, even when it was just a slow/not-yet-ready device rather
+# than a genuinely unsupported protocol. Give it one more try before giving up on it.
+QUERY_PROBE_RETRIES = 2
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -545,30 +549,57 @@ class MideaDevice(threading.Thread):
                 self.build_send(cmd, query=True)
                 # init check_protocol, skip timeout exception
                 if check_protocol:
-                    try:
-                        self._await_query_reply()
-                    # only catch TimoutError for check_protocol
+                    # only catch TimeoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
-                    except TimeoutError:
-                        if cmd in real_cmds:
-                            error_count += 1
-                        self._unsupported_protocol.append(cmd.__class__.__name__)
-                        _LOGGER.debug(
-                            "[%s] Does not supports the protocol %s, cmd %s, ignored",
-                            self._device_id,
-                            cmd.__class__.__name__,
-                            cmd,
-                        )
-                    except ResponseException:
-                        # parse msg error
-                        if cmd in real_cmds:
-                            error_count += 1
-                        _LOGGER.debug(
-                            "[%s] refresh_status ResponseException %s, cmd %s",
-                            self._device_id,
-                            cmd.__class__.__name__,
-                            cmd,
-                        )
+                    attempt = 1
+                    while True:
+                        try:
+                            self._await_query_reply()
+                        except TimeoutError:
+                            if attempt < QUERY_PROBE_RETRIES:
+                                # A single timeout is not proof the protocol is
+                                # unsupported: a not-yet-ready device can miss
+                                # the first reply window (issue #658). Retry the
+                                # send before blacklisting it for the whole
+                                # connection.
+                                _LOGGER.debug(
+                                    "[%s] Probe for %s timed out (%s/%s), retrying",
+                                    self._device_id,
+                                    cmd.__class__.__name__,
+                                    attempt,
+                                    QUERY_PROBE_RETRIES,
+                                )
+                                attempt += 1
+                                # A retry *send* that times out is a transport
+                                # failure, not proof of an unsupported protocol:
+                                # let it propagate to connection recovery like
+                                # the initial send above, rather than being
+                                # caught below and blacklisted here.
+                                self.build_send(cmd, query=True)
+                                continue
+                            # The reply timed out on every attempt: only now is
+                            # the command recorded as unsupported.
+                            if cmd in real_cmds:
+                                error_count += 1
+                            self._unsupported_protocol.append(cmd.__class__.__name__)
+                            _LOGGER.debug(
+                                "[%s] Does not supports the protocol %s, "
+                                "cmd %s, ignored",
+                                self._device_id,
+                                cmd.__class__.__name__,
+                                cmd,
+                            )
+                        except ResponseException:
+                            # parse msg error
+                            if cmd in real_cmds:
+                                error_count += 1
+                            _LOGGER.debug(
+                                "[%s] refresh_status ResponseException %s, cmd %s",
+                                self._device_id,
+                                cmd.__class__.__name__,
+                                cmd,
+                            )
+                        break
                     # The reply (or its absence) may resolve the state the next
                     # stage depends on -- the appliance reply enables the
                     # capability probes, a capability reply the status queries.

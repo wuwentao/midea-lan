@@ -1,6 +1,8 @@
 """Midea Lan device test."""
 
 import contextlib
+import logging
+import re
 import threading
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
@@ -10,6 +12,7 @@ import pytest
 from midealan.cloud import DEFAULT_KEYS
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import (
+    MAX_RECONNECT_SLEEP,
     MESSAGE_TYPE_INDEX,
     QUERY_PROBE_RETRIES,
     QUERY_TIMEOUT,
@@ -1500,6 +1503,44 @@ class TestMideaDevice:
             self.device._connect_loop()
 
         assert sleep_calls == [1, 1, 1, 1, 1]
+
+    def test_connect_loop_caps_reconnect_backoff(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test the reconnect backoff stops growing at MAX_RECONNECT_SLEEP.
+
+        issue #658: this loop is also entered when the appliance is reachable
+        and only missed the protocol probe, so the old 600 s ceiling kept the
+        entities unavailable for up to ten minutes after the device answered
+        again and the integration had to be reloaded by hand.
+        """
+        self.device._is_run = True
+        self.device._socket = None
+        sleeps = 0
+
+        def stop_mid_backoff(_seconds: float) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            # Stop once the ramp has saturated, without sleeping for real.
+            if sleeps == 150:
+                self.device._is_run = False
+
+        with (
+            caplog.at_level(logging.WARNING, logger="midealan.device"),
+            patch.object(self.device, "connect", return_value=False),
+            patch("time.sleep", side_effect=stop_mid_backoff),
+        ):
+            self.device._connect_loop()
+
+        backoff = [
+            int(match.group(1))
+            for record in caplog.records
+            if (match := re.search(r"sleep (\d+) seconds and retry", record.message))
+        ]
+        # Exponential until the cap, then flat: a device that comes back waits
+        # at most MAX_RECONNECT_SLEEP for the next attempt.
+        assert backoff == [5, 10, 20, 40, MAX_RECONNECT_SLEEP, MAX_RECONNECT_SLEEP]
 
     def test_run_breaks_when_stopped_during_connect_loop(self) -> None:
         """Test run exits immediately if closed while _connect_loop runs."""

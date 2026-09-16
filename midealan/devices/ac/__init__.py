@@ -414,11 +414,7 @@ class MideaACDevice(MideaDevice):
             # BB responses are independent status groups. Query each group with
             # its own identity so an unsupported response for one group does not
             # suppress later status groups.
-            return [
-                SubProtocolQuery10(self._message_protocol_version),
-                SubProtocolQuery11(self._message_protocol_version),
-                SubProtocolQuery30(self._message_protocol_version),
-            ]
+            return self._subprotocol_queries()
         queries: list[ACQuery] = [
             StateQuery(self._message_protocol_version),
             # Single new-protocol query. Status feature tags (self_clean,
@@ -443,6 +439,31 @@ class MideaACDevice(MideaDevice):
             # _capability_query / _capability_addition_query flags are set.
         ]
         return queries
+
+    def build_query_fallback(self) -> list[ACQuery]:
+        """Return the subprotocol (BB) queries when the primary family is silent.
+
+        Verified on model 223J6397 / subtype 1: the appliance answers the
+        appliance query and every subprotocol query, and none of the B5 or 0x41
+        status queries. Without this fallback the checked probe blacklists the
+        whole primary family, connect() reports NoSupportedProtocol and the
+        device stays unavailable -- reconnecting only re-probes the same silent
+        family. The subprotocol reply sets _used_subprotocol through
+        process_message(), so the recurring refresh switches family as well;
+        when the fallback is silent too nothing is switched, which leaves the
+        primary family in charge for the next reconnect.
+        """
+        if self._used_subprotocol:
+            return []
+        return self._subprotocol_queries()
+
+    def _subprotocol_queries(self) -> list[ACQuery]:
+        """Return the BB subprotocol status queries for this message protocol."""
+        return [
+            SubProtocolQuery10(self._message_protocol_version),
+            SubProtocolQuery11(self._message_protocol_version),
+            SubProtocolQuery30(self._message_protocol_version),
+        ]
 
     def build_init_query(self) -> list[ACQuery]:
         """Return the B5 capability probes that are still due.

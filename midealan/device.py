@@ -484,6 +484,31 @@ class MideaDevice(threading.Thread):
             return real_cmds, True, True
         return real_cmds, status_appended, False
 
+    def _use_query_fallback(self, cmds: list, queued: set[str]) -> list:
+        """Queue the alternative query family and return it.
+
+        Called by refresh_status() when every primary status query timed out. The
+        returned commands are appended to ``cmds`` so the checked pass probes
+        them exactly like the primary ones, and are recorded in ``queued`` so a
+        caller cannot queue the same family twice. An empty list -- what the base
+        class returns -- means the device has no alternative family to try.
+        """
+        fallback = [
+            cmd
+            for cmd in self.build_query_fallback()
+            if cmd.__class__.__name__ not in queued
+        ]
+        for cmd in fallback:
+            queued.add(cmd.__class__.__name__)
+            cmds.append(cmd)
+        if fallback:
+            _LOGGER.debug(
+                "[%s] no reply from the primary query family, probing %s",
+                self._device_id,
+                [cmd.__class__.__name__ for cmd in fallback],
+            )
+        return fallback
+
     def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status.
 
@@ -502,6 +527,9 @@ class MideaDevice(threading.Thread):
         real_cmds: list = []
         status_appended = False
         error_count = 0
+        # Only one fallback family probe per connection, so a device that
+        # answers neither family still fails the connect() fast.
+        fallback_used = False
         # Names already queued this refresh, so a stage command left armed after
         # a timeout (recorded in _unsupported_protocol) is not queued again.
         queued: set[str] = set()
@@ -584,6 +612,13 @@ class MideaDevice(threading.Thread):
                                 # let it propagate to connection recovery like
                                 # the initial send above, rather than being
                                 # caught below and blacklisted here.
+                                # The timed-out attempt may have left a partial
+                                # response in the decode buffer. Drop it before
+                                # re-sending: appending the complete retry reply
+                                # to those stale bytes makes the decoder lose the
+                                # frame (or mis-parse it), which blacklists a
+                                # command whose retry was answered.
+                                self._buffer = b""
                                 self.build_send(cmd, query=True)
                                 continue
                             # The reply timed out on every attempt: only now is
@@ -645,6 +680,26 @@ class MideaDevice(threading.Thread):
             # `real_cmds and` keeps the check vacuously false for a device whose
             # build_query() is empty, which would otherwise raise on 0 == 0.
             if real_cmds and error_count == len(real_cmds):
+                # Every status query of the primary family went unanswered. Some
+                # appliances only answer a different query family (verified on AC
+                # model 223J6397, which answers the BB subprotocol queries and
+                # none of the B5/0x41 ones), so give that family one probe before
+                # declaring the device unsupported. Probing it here -- rather than
+                # on the next reconnect -- keeps the switch reversible: a device
+                # that was merely unreachable answers neither family and stays on
+                # its primary one.
+                fallback = (
+                    self._use_query_fallback(cmds, queued)
+                    if check_protocol and not fallback_used
+                    else []
+                )
+                if fallback:
+                    fallback_used = True
+                    # Score the fallback family on its own, so a fallback that
+                    # fails too is not masked by the primary family's failures.
+                    real_cmds = fallback
+                    error_count = 0
+                    continue
                 _LOGGER.warning(
                     "[%s] all the query cmds failed %s, please report bug",
                     self._device_id,
@@ -770,6 +825,18 @@ class MideaDevice(threading.Thread):
     def build_query(self) -> list:
         """Build query."""
         raise NotImplementedError
+
+    def build_query_fallback(self) -> list:
+        """Build the alternative query family to probe before giving up.
+
+        refresh_status() probes the queries from build_query() and, if every one
+        of them times out, probes this list once before raising
+        NoSupportedProtocol -- so a device that only answers another query family
+        can still be detected. The base class has no alternative family, and
+        returning an empty list keeps the previous behaviour of failing the
+        probe on the first total timeout.
+        """
+        return []
 
     def build_init_query(self) -> list:
         """Build one-time queries to run once at connect time.

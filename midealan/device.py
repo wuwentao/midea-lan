@@ -42,6 +42,13 @@ PERIODIC_QUERY_DELAY = 0.1
 # rather than genuinely unsupported. Give every probe reply one more chance
 # before recording it in _unsupported_protocol.
 QUERY_PROBE_RETRIES = 2
+# Upper bound for the reconnect backoff. The exponential ramp keeps a device
+# that is really gone (powered off, unplugged, no longer on the LAN) from being
+# probed in a tight loop, but the ceiling also applies to the outage this loop
+# is entered for when the appliance is reachable and only missed the protocol
+# probe (issue #658). A recovered device must not have to wait for a ten-minute
+# backoff -- users reloaded the integration by hand instead.
+MAX_RECONNECT_SLEEP = 60
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1014,8 +1021,13 @@ class MideaDevice(threading.Thread):
             # I/O once teardown is in progress.
             if self._should_run() and self.connect(check_protocol=True) is False:
                 connection_retries += 1
-                # Sleep time with exponential backoff, maximum 600 seconds
-                sleep_time = min(5 * (2 ** (connection_retries - 1)), 600)
+                # Sleep time with exponential backoff, capped by
+                # MAX_RECONNECT_SLEEP so an appliance that comes back is retried
+                # long before the old ten-minute ceiling.
+                sleep_time = min(
+                    5 * (2 ** (connection_retries - 1)),
+                    MAX_RECONNECT_SLEEP,
+                )
                 _LOGGER.warning(
                     "[%s] Unable to connect, sleep %s seconds and retry",
                     self._device_id,

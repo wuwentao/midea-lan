@@ -90,16 +90,39 @@ ha core restart
 
 ### 方案 B：让 HA 自己装 fork 版（HACS 自定义仓库，适合长期自用）
 
-1. fork 集成仓库 `wuwentao/midea_ac_lan` 到自己的账号；
-2. 把它 `custom_components/midea_ac_lan/manifest.json` 里的
-   `"midea-lan==2026.9.1"` 改成
-   `"midea-lan @ https://github.com/Rbubblee/midea-lan/archive/refs/heads/personal/ac-probe-fallback-fix.zip"`；
-3. HACS → 右上角菜单 → *Custom repositories* → 填你的 fork 地址、类型选 *Integration* → 添加，
-   然后在 HACS 里用它替换原来的 `midea_ac_lan`（或在 `/config/custom_components/` 里直接替换该目录）；
-4. 重启 HA。HA 处理 URL 形式的 requirement 时 `is_installed()` 永远返回 `False`，
-   所以每次启动它都会用 uv 自己装一次这个 fork，不会被 PyPI 上的 `2026.9.1` 覆盖。
+集成仓库的 fork 已经建好：[Rbubblee/midea_ac_lan](https://github.com/Rbubblee/midea_ac_lan)，
+它的 `main` 相对上游只改了一行（`custom_components/midea_ac_lan/manifest.json` 的依赖）：
 
-代价：以后用 HACS 升级集成时会覆盖 `manifest.json`，需要重新打这一行补丁（或把上游更新 merge 进你的 fork）。
+```json
+"requirements": [
+  "midea-lan @ https://github.com/Rbubblee/midea-lan/archive/<本分支 commit>.zip"
+]
+```
+
+HA 里要做的（只有你能点，我没有管理员/终端权限）：
+
+1. HACS → 右上角三个点 → *Custom repositories* → 填 `https://github.com/Rbubblee/midea_ac_lan`，
+   类型选 *Integration* → Add；
+2. HACS 会提示同一域名已存在：先对原来的 `Midea AC LAN` 建 *Remove*（HACS 只删
+   `custom_components/midea_ac_lan/` 目录和 HACS 记录，HA 的 config entry 和实体注册表会保留）；
+3. 立刻安装刚才添加的 `Rbubblee/midea_ac_lan`（HACS 没有 release 时会取默认分支 `main`）；
+4. 重启 HA core。
+
+为什么这样能生效：HA 对 URL 形式的依赖 `is_installed()` 永远返回 `False`，
+所以每次启动它都会用 `uv pip install --upgrade` 装一次这个 fork。实测过（同版本号也是真替换）：
+
+```
+Uninstalled 1 package in 16ms
+Installed 1 package in 4ms
+ - midea-lan==2026.9.1
+ + midea-lan==2026.9.1 (from https://github.com/Rbubblee/midea-lan/archive/...zip)
+```
+
+代价/注意：
+
+- 本分支以后有新的 commit 时，要同步更新 fork 里 manifest 的那一行（或让我改）；
+- 在 GitHub 上对 fork 点 *Sync fork* 时，如果选 "Discard commits"，这一行补丁会被上游内容覆盖，需要重新打；
+- 想回滚：把 HACS 里的仓库换回 `wuwentao/midea_ac_lan`，重启即可（PyPI 版会自动装回）。
 
 ### 验证修复是否生效
 

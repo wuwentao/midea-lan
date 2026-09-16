@@ -2,7 +2,8 @@
 
 - 分支：`personal/ac-probe-fallback-fix`
 - 基于：`wuwentao/midea-lan` 的 `main`（`ae97f4f`），三个提交都可以单独 cherry-pick
-- 上游 PR：见分支对应的 Pull Request（同一套提交，分支名 `fix/probe-fallback-family`）
+- 上游 PR：[wuwentao/midea-lan#113](https://github.com/wuwentao/midea-lan/pull/113)
+  （同一套提交，分支 `fix/probe-fallback-family`；旧的 #85 已关闭，由 #113 取代）
 
 这个分支是我自用/待上游合并的版本，用来修
 [wuwentao/midea_ac_lan#658](https://github.com/wuwentao/midea_ac_lan/issues/658)：

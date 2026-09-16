@@ -99,14 +99,21 @@ ha core restart
 ]
 ```
 
+仓库里已经打好了 release `2026.9.1.post1`（HACS 需要 release 才显示可安装版本），
+它指向的就是改过依赖的那个提交。
+
 HA 里要做的（只有你能点，我没有管理员/终端权限）：
 
 1. HACS → 右上角三个点 → *Custom repositories* → 填 `https://github.com/Rbubblee/midea_ac_lan`，
    类型选 *Integration* → Add；
-2. HACS 会提示同一域名已存在：先对原来的 `Midea AC LAN` 建 *Remove*（HACS 只删
-   `custom_components/midea_ac_lan/` 目录和 HACS 记录，HA 的 config entry 和实体注册表会保留）；
-3. 立刻安装刚才添加的 `Rbubblee/midea_ac_lan`（HACS 没有 release 时会取默认分支 `main`）；
+2. HACS 里会出现两个同名的 `Midea AC LAN`（域名都是 `midea_ac_lan`）。先对原来那个
+   （`wuwentao/midea_ac_lan`）选 *Remove* —— HACS 只删 `custom_components/midea_ac_lan/`
+   目录和 HACS 自己的记录，HA 的 config entry 与实体注册表都会保留；
+3. 立刻安装刚添加的 `Rbubblee/midea_ac_lan`（选版本 `2026.9.1.post1`）；
 4. 重启 HA core。
+
+如果 HACS 因为同域名不允许同时存在，就按上面的顺序先 Remove 再 Add/Download；
+实在不行也可以手动把 fork 里的 `custom_components/midea_ac_lan/` 覆盖到 `/config/custom_components/`。
 
 为什么这样能生效：HA 对 URL 形式的依赖 `is_installed()` 永远返回 `False`，
 所以每次启动它都会用 `uv pip install --upgrade` 装一次这个 fork。实测过（同版本号也是真替换）：
@@ -121,6 +128,7 @@ Installed 1 package in 4ms
 代价/注意：
 
 - 本分支以后有新的 commit 时，要同步更新 fork 里 manifest 的那一行（或让我改）；
+- 上方 release 的 tag 指向的提交就是 manifest 里 pin 的那个 commit，两者要一起更新；
 - 在 GitHub 上对 fork 点 *Sync fork* 时，如果选 "Discard commits"，这一行补丁会被上游内容覆盖，需要重新打；
 - 想回滚：把 HACS 里的仓库换回 `wuwentao/midea_ac_lan`，重启即可（PyPI 版会自动装回）。
 

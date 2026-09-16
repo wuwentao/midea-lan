@@ -91,16 +91,14 @@ ha core restart
 ### 方案 B：让 HA 自己装 fork 版（HACS 自定义仓库，适合长期自用）
 
 集成仓库的 fork 已经建好：[Rbubblee/midea_ac_lan](https://github.com/Rbubblee/midea_ac_lan)，
-它的 `main` 相对上游只改了一行（`custom_components/midea_ac_lan/manifest.json` 的依赖）：
+它的 `main` 相对上游只改了一行（`custom_components/midea_ac_lan/manifest.json` 的依赖），
+并且带了自动同步（见下）：
 
 ```json
 "requirements": [
-  "midea-lan @ https://github.com/Rbubblee/midea-lan/archive/<本分支 commit>.zip"
+  "midea-lan @ https://github.com/Rbubblee/midea-lan/archive/refs/heads/personal/ac-probe-fallback-fix.zip"
 ]
 ```
-
-仓库里已经打好了 release `2026.9.1.post1`（HACS 需要 release 才显示可安装版本），
-它指向的就是改过依赖的那个提交。
 
 HA 里要做的（只有你能点，我没有管理员/终端权限）：
 
@@ -109,7 +107,7 @@ HA 里要做的（只有你能点，我没有管理员/终端权限）：
 2. HACS 里会出现两个同名的 `Midea AC LAN`（域名都是 `midea_ac_lan`）。先对原来那个
    （`wuwentao/midea_ac_lan`）选 *Remove* —— HACS 只删 `custom_components/midea_ac_lan/`
    目录和 HACS 自己的记录，HA 的 config entry 与实体注册表都会保留；
-3. 立刻安装刚添加的 `Rbubblee/midea_ac_lan`（选版本 `2026.9.1.post1`）；
+3. 立刻安装刚添加的 `Rbubblee/midea_ac_lan`（HACS 会装它最新的 release，例如 `v2026.9.1`）；
 4. 重启 HA core。
 
 如果 HACS 因为同域名不允许同时存在，就按上面的顺序先 Remove 再 Add/Download；
@@ -125,11 +123,27 @@ Installed 1 package in 4ms
  + midea-lan==2026.9.1 (from https://github.com/Rbubblee/midea-lan/archive/...zip)
 ```
 
-代价/注意：
+#### 之后上游发新版时怎么更新（已自动化）
 
-- 本分支以后有新的 commit 时，要同步更新 fork 里 manifest 的那一行（或让我改）；
-- 上方 release 的 tag 指向的提交就是 manifest 里 pin 的那个 commit，两者要一起更新；
-- 在 GitHub 上对 fork 点 *Sync fork* 时，如果选 "Discard commits"，这一行补丁会被上游内容覆盖，需要重新打；
+两个 fork 各有一条 workflow，互补：
+
+- `Rbubblee/midea-lan` 的 **Keep the fix build current**：每 6 小时把本分支 rebase 到上游库
+  `main`，跑 `pytest` + `ruff` + `mypy`，只有全绿才 force-push 这条被 pin 的分支。
+  rebase 冲突时不推送（HA 保持可用），并在 fork 里开一个 issue。
+- `Rbubblee/midea_ac_lan` 的 **Mirror upstream release**：每 6 小时检查上游集成的新 release，
+  有新版就合并上游、重打 pin、把 tag 移到镜像提交并发布 release。
+  HACS 于是照常显示 **Update**，你点一下即可。
+
+它会自己判断三种情况：
+
+1. pin 的构建版本 ≥ 上游要求的 `midea-lan` 版本 → 正常镜像发布；
+2. 上游那个版本已经自带修复（`build_query_fallback` 已存在于官方库里）→ 不再 pin，直接用官方依赖；
+3. 上游要求更新的 `midea-lan`，而 pin 的构建还基于旧版本 → **不发 release**（避免新集成配旧库），
+   在 fork 里开 issue 提示先 rebase，等库侧重建后再自动发布。
+
+注意：
+
+- 更新流程是"HACS 里点 Update → 重启 HA"，不需要你改任何文件；
 - 想回滚：把 HACS 里的仓库换回 `wuwentao/midea_ac_lan`，重启即可（PyPI 版会自动装回）。
 
 ### 验证修复是否生效

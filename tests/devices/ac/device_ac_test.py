@@ -362,6 +362,63 @@ class TestMideaACDevice:
             for q in queries
         )
 
+    def test_build_query_fallback_probes_the_subprotocol_family(self) -> None:
+        """A silent B5 family must be re-probed with the BB queries.
+
+        223J6397 answers the appliance query and the subprotocol queries and
+        none of the B5/0x41 status queries, so the checked probe would
+        blacklist the whole primary family and the device never becomes
+        available. The fallback family is what recovers it.
+        """
+        device = self._make_device("223J6397", 1)
+        device._message_protocol_version = 8
+        assert device._used_subprotocol is False
+
+        fallback = device.build_query_fallback()
+
+        assert [type(query) for query in fallback] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+    def test_build_query_fallback_is_empty_once_subprotocol_is_known(self) -> None:
+        """After a BB reply the recurring queries are the fallback themselves."""
+        device = self._make_device("223J6397", 1)
+        device._message_protocol_version = 8
+        device.process_message(bytes.fromhex(_BB_QUERY_10_REPLY))
+
+        assert device._used_subprotocol is True
+        assert device.build_query_fallback() == []
+        assert [type(query) for query in device.build_query()] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+    def test_process_message_parses_bb_only_model_replies(self) -> None:
+        """Frames recorded from a BB-only appliance (223J6397) are understood.
+
+        The three replies below were captured from SN 210006734918980 after it
+        was probed with the subprotocol queries, while the same unit timed out
+        on every B5/0x41 query in the primary family.
+        """
+        device = self._make_device("223J6397", 1)
+        device._message_protocol_version = 8
+
+        indoor = device.process_message(bytes.fromhex(_BB_QUERY_10_REPLY))
+        basic = device.process_message(bytes.fromhex(_BB_QUERY_11_REPLY))
+        outdoor = device.process_message(bytes.fromhex(_BB_QUERY_30_REPLY))
+
+        assert indoor[DeviceAttributes.indoor_temperature] == 29.5
+        assert indoor[DeviceAttributes.indoor_humidity] == 53
+        assert basic[DeviceAttributes.mode] == 1
+        assert basic[DeviceAttributes.target_temperature] == 25.5
+        assert basic[DeviceAttributes.fan_speed] == 102
+        assert not basic[DeviceAttributes.power]
+        assert outdoor[DeviceAttributes.outdoor_temperature] == 25.5
+        assert device._used_subprotocol is True
+
     def test_build_init_query_capability_lifecycle(self) -> None:
         """Test build_init_query arms/clears the one-shot B5 capability probes."""
         self.device._used_subprotocol = False
@@ -1814,3 +1871,23 @@ class TestHASupportProperties:
         # falls through to default basic set
         expected = ["none", "comfort", "eco", "boost", "sleep"]
         assert self.device.supported_preset_modes == expected
+
+
+# Frames captured from a BB-only 0xAC appliance (model 223J6397, subtype 1,
+# SN 210006734918980) that answers the subprotocol queries and no B5/0x41 query.
+_BB_QUERY_10_REPLY = (
+    "aa82ac00000000000803bb7800ffff10d4f7d4f7050000860b92099209007d00000000"
+    "8000008000000000000000355164020eb5860b0000000000000001000000003cf60000"
+    "000092090000000000000c0000000000000000000000ff280a00363030303030010430"
+    "3004000000000000000000000000000045000100000000007c44"
+)
+_BB_QUERY_11_REPLY = (
+    "aa5aac00000000000803bb5000ffff1100800000000251663200000000320001010001"
+    "630c513266000400000000000000000000000000000000000000400000000000450000"
+    "01e000004000030028280030000000000000a51c"
+)
+_BB_QUERY_30_REPLY = (
+    "aa6aac00000000000803bb6000ffff3000ff050c03f609f609210000c00001a1000099"
+    "000000000001000000f000a63e00f00000686700050000640080100000000000000000"
+    "0000000000000000000000000000000000001700000000ff450000000000002d75"
+)

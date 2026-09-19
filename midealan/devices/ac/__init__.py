@@ -417,14 +417,7 @@ class MideaACDevice(MideaDevice):
     def build_query(self) -> list[ACQuery]:
         """Midea AC device build query."""
         if self._used_subprotocol:
-            # BB responses are independent status groups. Query each group with
-            # its own identity so an unsupported response for one group does not
-            # suppress later status groups.
-            return [
-                SubProtocolQuery10(self._message_protocol_version),
-                SubProtocolQuery11(self._message_protocol_version),
-                SubProtocolQuery30(self._message_protocol_version),
-            ]
+            return self._subprotocol_queries()
         queries: list[ACQuery] = [
             StateQuery(self._message_protocol_version),
             # Single new-protocol query. Status feature tags (self_clean,
@@ -449,6 +442,41 @@ class MideaACDevice(MideaDevice):
             # _capability_query / _capability_addition_query flags are set.
         ]
         return queries
+
+    def _subprotocol_queries(self) -> list[ACQuery]:
+        """Return the BB subprotocol status queries.
+
+        BB responses are independent status groups. Query each group with its
+        own identity so an unsupported response for one group does not suppress
+        later status groups.
+        """
+        return [
+            SubProtocolQuery10(self._message_protocol_version),
+            SubProtocolQuery11(self._message_protocol_version),
+            SubProtocolQuery30(self._message_protocol_version),
+        ]
+
+    def build_query_fallback(self) -> list[ACQuery]:
+        """Return the BB subprotocol queries as the alternative status family.
+
+        An AC always speaks one of two status families: the B5/new-protocol
+        queries build_query() returns for _used_subprotocol == False, or the BB
+        subprotocol queries. The family is normally learned from the replies,
+        but a device that never answers the B5 family has no reply to learn it
+        from -- it answers the appliance query and every BB query while timing
+        out on all B5 and 0x41 ones (observed on model 223J6397 / subtype 1,
+        issue wuwentao/midea_ac_lan#658). Such a device used to be blacklisted
+        by the checked probe, leaving its entities unavailable until the
+        integration was reloaded by hand.
+
+        Returning the BB queries here lets refresh_status() detect it instead.
+        Once a BB reply has been parsed, _used_subprotocol is set and this
+        returns nothing: the recurring build_query() is the fallback itself, so
+        the extra probe happens at most once per connection.
+        """
+        if self._used_subprotocol:
+            return []
+        return self._subprotocol_queries()
 
     def build_init_query(self) -> list[ACQuery]:
         """Return the B5 capability probes that are still due.

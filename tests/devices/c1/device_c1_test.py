@@ -37,11 +37,11 @@ class TestMideaC1Device:
         self,
         device_v3: MideaC1Device,
     ) -> None:
-        """JSON customize applies temperature_step and refresh_interval."""
+        """JSON customize rejects unsupported precision and applies refresh interval."""
         device_v3.set_customize(
             '{"temperature_step": 0.5, "refresh_interval": 45}',
         )
-        assert device_v3.temperature_step == 0.5
+        assert device_v3.temperature_step == 1.0
         assert device_v3._refresh_interval == 45
 
     def test_set_customize_invalid_json(self, device_v3: MideaC1Device) -> None:

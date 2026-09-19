@@ -197,11 +197,15 @@ class MideaC1Device(MideaDevice):
                 params = json.loads(customize)
                 if params and "temperature_step" in params:
                     step = params.get("temperature_step")
-                    if isinstance(step, int | float):
+                    if (
+                        isinstance(step, int | float)
+                        and not isinstance(step, bool)
+                        and float(step) == self._default_temperature_step
+                    ):
                         self._temperature_step = float(step)
                     else:
                         _LOGGER.error(
-                            "[%s] Invalid type for temperature_step: %s",
+                            "[%s] Unsupported temperature_step for C1: %s",
                             self.device_id,
                             step,
                         )

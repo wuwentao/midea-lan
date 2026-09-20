@@ -47,13 +47,13 @@ BB_OUTDOOR_TEMPERATURE_HIGH_INDEX = 6
 
 C0_A0_MIN_BODY_LENGTH = 19
 CONFORT_MODE_MIN_LENGTH = 16
-CONFORT_MODE_MIN_LENGTH2 = 24
-SMART_DRY_MIN_LENGTH = 21
+CONFORT_MODE_MIN_LENGTH2 = 25
+SMART_DRY_MIN_LENGTH = 22
 SWING_LR_MIN_LENGTH = 22
-FRESH_AIR_C0_MIN_LENGTH = 29
+FRESH_AIR_C0_MIN_LENGTH = 30
 ECO_MODE_MIN_SUBPROTOCOL_LENGTH = 27
 FRESH_AIR_LENGTH = 2
-FROST_PROTECT_MIN_LENGTH = 23
+FROST_PROTECT_MIN_LENGTH = 24
 INDIRECT_WIND_VALUE = 0x02
 MAX_MSG_SERIAL_NUM = 254
 OUT_SILENT_VALUE = 0x03
@@ -1133,12 +1133,14 @@ class XA0Body(MessageBody):
         self.full_dust = ((body[13] & 0x20) >> 5) > 0  # dust_full_time
         # comfortPowerSave
         self.comfort_mode = (
-            (body[14] & 0x1) > 0 if len(body) > CONFORT_MODE_MIN_LENGTH else False
+            (body[14] & 0x1) > 0 if len(body) >= CONFORT_MODE_MIN_LENGTH else False
         )
         # smartDryValue
         self.smart_dry = (body[13] & 0x7F) > 0
         # swingLRUnderSwitch
-        self.swing_lr_switch = body[19] & 0x80 if len(body) > SWING_LR_MIN_LENGTH else 0
+        self.swing_lr_switch = (
+            body[19] & 0x80 if len(body) >= SWING_LR_MIN_LENGTH else 0
+        )
         # swingLRValueUnder
         self.swing_lr_value = body[9] & 0x40
         # arom

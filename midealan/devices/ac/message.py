@@ -113,6 +113,9 @@ NEW_PROTOCOL_INDOOR_TEMPERATURE_DECIMAL_BYTE = 41
 LOW_TARGET_TEMPERATURE_BOUNDARY = 17.0
 LOW_TARGET_TEMPERATURE_OFFSET = 12
 LOW_TARGET_TEMPERATURE_MASK = 0x1F
+LOW_TARGET_C0_EXTENSION_INDEX = 13
+LOW_TARGET_C0_EXTENSION_VALUE = 4
+LOW_TARGET_C0_STANDARD_MAX = LOW_TARGET_TEMPERATURE_BOUNDARY + 0.5
 
 # Capability value semantics (reverse-engineered; see _parse_capabilities).
 # The raw byte of each capability is not a 0/1 flag; each has its own value set.
@@ -1535,9 +1538,26 @@ class StateBody(XMessageBody):
         super().__init__(body)
         self.power = (body[1] & 0x1) > 0  # powerValue
         self.mode = (body[2] & 0xE0) >> 5  # modeValue
-        self.target_temperature = (
+        target_temperature = (
             (body[2] & 0x0F) + 16.0 + (0.5 if body[0x02] & 0x10 > 0 else 0.0)
         )  # temperature + smallTemperature
+        # C0 low-temperature replies keep 17/17.5 in byte 2 and store
+        # 16/16.5 in byte 13.
+        low_target_temperature = (
+            body[LOW_TARGET_C0_EXTENSION_INDEX] & LOW_TARGET_TEMPERATURE_MASK
+        )
+        if (
+            low_target_temperature == LOW_TARGET_C0_EXTENSION_VALUE
+            and LOW_TARGET_TEMPERATURE_BOUNDARY
+            <= target_temperature
+            <= LOW_TARGET_C0_STANDARD_MAX
+        ):
+            target_temperature = (
+                low_target_temperature
+                + LOW_TARGET_TEMPERATURE_OFFSET
+                + (target_temperature - LOW_TARGET_TEMPERATURE_BOUNDARY)
+            )
+        self.target_temperature = target_temperature
         self.fan_speed = body[3] & 0x7F  # fanspeedValue
         self.swing_vertical = (body[7] & 0x0C) > 0  # swingUDValue
         self.swing_horizontal = (body[7] & 0x03) > 0  # swingLRValue

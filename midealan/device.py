@@ -472,7 +472,11 @@ class MideaDevice(threading.Thread):
         # recovery SOCKET_TIMEOUT after recv msg
         self._socket.settimeout(SOCKET_TIMEOUT)
 
-    def _probe_query_reply(self, cmd: MessageRequest, real_cmds: list) -> int:
+    def _probe_query_reply(
+        self,
+        cmd: MessageRequest,
+        real_cmds: list,
+    ) -> tuple[int, bool]:
         """Wait for a checked-pass probe reply, retrying once when it times out.
 
         A single timeout is not proof that the protocol is unsupported: a
@@ -486,9 +490,10 @@ class MideaDevice(threading.Thread):
         the timed-out attempt cannot be prepended to the retry reply and make
         decode_8370 lose it.
 
-        Returns the number of failures the caller must add to its error count:
-        1 when the command was given up on or its reply could not be parsed,
-        0 while the probe is still usable.
+        Returns the number of failures the caller must add to its error count
+        and whether the command ended with repeated timeouts. The latter keeps
+        a parse failure or an invalid response from selecting a different
+        protocol family.
         """
         attempt = 1
         while True:
@@ -508,15 +513,20 @@ class MideaDevice(threading.Thread):
                     self.build_send(cmd, query=True)
                     continue
                 # The reply timed out on every attempt: only now is the
-                # command recorded as unsupported.
-                self._unsupported_protocol.append(cmd.__class__.__name__)
+                # command recorded as unsupported, unless the device-specific
+                # hook wants to retry it after a cooldown.
+                self._buffer = b""
+                if self._should_defer_query(cmd):
+                    self._defer_query(cmd)
+                else:
+                    self._unsupported_protocol.append(cmd.__class__.__name__)
                 _LOGGER.debug(
                     "[%s] Does not supports the protocol %s, cmd %s, ignored",
                     self._device_id,
                     cmd.__class__.__name__,
                     cmd,
                 )
-                return 1 if cmd in real_cmds else 0
+                return 1 if cmd in real_cmds else 0, True
             except ResponseException:
                 # parse msg error
                 _LOGGER.debug(
@@ -525,8 +535,15 @@ class MideaDevice(threading.Thread):
                     cmd.__class__.__name__,
                     cmd,
                 )
-                return 1 if cmd in real_cmds else 0
-            return 0
+                return 1 if cmd in real_cmds else 0, False
+            if not self._is_query_response_valid(cmd):
+                _LOGGER.debug(
+                    "[%s] Invalid response family for %s",
+                    self._device_id,
+                    cmd.__class__.__name__,
+                )
+                return 1 if cmd in real_cmds else 0, False
+            return 0, False
 
     def _advance_query_stage(
         self,
@@ -620,6 +637,7 @@ class MideaDevice(threading.Thread):
         real_cmds: list = []
         status_appended = False
         error_count = 0
+        timeout_count = 0
         # Names already queued this refresh, so a stage command left armed after
         # a timeout (recorded in _unsupported_protocol) is not queued again.
         queued: set[str] = set()
@@ -684,7 +702,10 @@ class MideaDevice(threading.Thread):
                 if check_protocol:
                     # only catch TimeoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
-                    error_count += self._probe_query_reply(cmd, real_cmds)
+                    error, repeated_timeout = self._probe_query_reply(cmd, real_cmds)
+                    error_count += error
+                    if repeated_timeout and cmd in real_cmds:
+                        timeout_count += 1
                     # The reply (or its absence) may resolve the state the next
                     # stage depends on -- the appliance reply enables the
                     # capability probes, a capability reply the status queries.
@@ -723,7 +744,11 @@ class MideaDevice(threading.Thread):
             # `real_cmds and` keeps the check vacuously false for a device whose
             # build_query() is empty, which would otherwise raise on 0 == 0.
             if real_cmds and error_count == len(real_cmds):
-                if check_protocol and not fallback_probed:
+                if (
+                    check_protocol
+                    and not fallback_probed
+                    and timeout_count == len(real_cmds)
+                ):
                     # Every query of the primary family is silent, which is not
                     # proof that the appliance serves no status protocol: it
                     # may answer a different family (see
@@ -744,6 +769,7 @@ class MideaDevice(threading.Thread):
                         )
                         real_cmds = fallback_cmds
                         error_count = 0
+                        timeout_count = 0
                         continue
                 _LOGGER.warning(
                     "[%s] all the query cmds failed %s, please report bug",
@@ -879,6 +905,17 @@ class MideaDevice(threading.Thread):
         """Return the delay between periodic query sends."""
         return PERIODIC_QUERY_DELAY
 
+    def _is_query_response_valid(self, _cmd: MessageRequest) -> bool:
+        """Return whether the received response belongs to the queried family."""
+        return True
+
+    def _should_defer_query(self, _cmd: MessageRequest) -> bool:
+        """Return whether a timed-out query should be retried later."""
+        return False
+
+    def _defer_query(self, _cmd: MessageRequest) -> None:
+        """Record a device-specific deferred query after a repeated timeout."""
+
     def build_query_fallback(self) -> list:
         """Build an alternative query family to probe before giving up.
 
@@ -904,14 +941,14 @@ class MideaDevice(threading.Thread):
         appliance query is unsupported, probes still run with the default
         protocol version 0. Their own replies are then processed before the
         status queries are built, so a status query can react to the result
-        (e.g. the AC B5 capability probes decoded here). A device only needs to
-        send these once (their reply never changes); the subclass clears its own
+        (e.g. the AC B5 capability probes decoded here). A device normally sends
+        these once (their reply never changes); the subclass clears its own
         arming flags when the reply is parsed, and any query that times out is
-        recorded in _unsupported_protocol and skipped from then on. The subclass
-        may return a follow-up query only after an earlier init reply is parsed
-        (e.g. the AC additional-capability probe); refresh_status() keeps
-        offering build_init_query() until it is exhausted. The base class has
-        none.
+        either recorded in _unsupported_protocol or deferred by the subclass.
+        The subclass may return a follow-up query only after an earlier init
+        reply is parsed (e.g. the AC additional-capability probe);
+        refresh_status() keeps offering build_init_query() until it is
+        exhausted. The base class has none.
         """
         return []
 

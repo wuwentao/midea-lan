@@ -109,6 +109,11 @@ NEW_PROTOCOL_LEGACY_SETPOINT_BYTE = 3
 NEW_PROTOCOL_INDOOR_TEMPERATURE_BYTE = 40
 NEW_PROTOCOL_INDOOR_TEMPERATURE_DECIMAL_BYTE = 41
 
+# X40 set packets carry low targets in a legacy extension byte.
+LOW_TARGET_TEMPERATURE_BOUNDARY = 17.0
+LOW_TARGET_TEMPERATURE_OFFSET = 12
+LOW_TARGET_TEMPERATURE_MASK = 0x1F
+
 # Capability value semantics (reverse-engineered; see _parse_capabilities).
 # The raw byte of each capability is not a 0/1 flag; each has its own value set.
 B5_HEAT_MODE_VALUES = frozenset({1, 2, 4, 6, 7, 9, 10, 11, 12, 13})
@@ -897,6 +902,13 @@ class StateSet(MessageACBase):
         boost_mode_1 = 0x02 if self.boost_mode else 0
         # Byte 17 natural_wind
         natural_wind = 0x40 if self.natural_wind else 0
+        # Lua bodyBytes[18] extends the normal target field below 17 C.
+        low_target_temperature = (
+            (int(self.target_temperature) - LOW_TARGET_TEMPERATURE_OFFSET)
+            & LOW_TARGET_TEMPERATURE_MASK
+            if self.target_temperature < LOW_TARGET_TEMPERATURE_BOUNDARY
+            else 0
+        )
         # Byte 21 frost_protect
         frost_protect = 0x80 if self.frost_protect else 0
         # Byte 22 comfort_mode
@@ -921,7 +933,7 @@ class StateSet(MessageACBase):
                 0x00,
                 0x00,
                 natural_wind,
-                0x00,
+                low_target_temperature,
                 0x00,
                 0x00,
                 frost_protect,

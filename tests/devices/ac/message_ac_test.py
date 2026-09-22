@@ -941,6 +941,26 @@ class TestMessageSet:
         expected_body[22] = 0x01
         assert msg.body[:-2] == expected_body
 
+    @pytest.mark.parametrize(
+        ("target_temperature", "expected_field"),
+        [
+            (16.0, 0x04),
+            (16.5, 0x04),
+            (17.0, 0x00),
+            (17.5, 0x00),
+        ],
+    )
+    def test_low_temperature_extension(
+        self,
+        target_temperature: float,
+        expected_field: int,
+    ) -> None:
+        """Encode the legacy extension used for targets below 17 C."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.target_temperature = target_temperature
+
+        assert msg.body[18] == expected_field
+
 
 class TestMessageACResponse:
     """Test Message AC Response."""

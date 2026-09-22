@@ -33,6 +33,13 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 
+_B8_CLEAN_MODES = tuple(item.name.lower() for item in B8CleanMode)
+_B8_FAN_LEVELS = tuple(item.name.lower() for item in B8FanLevel)
+_B8_WATER_LEVELS = tuple(item.name.lower() for item in B8WaterLevel)
+_B8_SPEAK_LEVELS = tuple(item.name.lower() for item in B8SpeakLevel)
+_B8_MOVE_DIRECTIONS = tuple(item.name.lower() for item in B8Moviment)
+_B8_WORK_STATUS_CONTROLS = tuple(item.name.lower() for item in B8WorkMode)
+
 
 class DeviceAttributes(StrEnum):
     """Midea B8 device attributes."""
@@ -127,6 +134,36 @@ class MideaB8Device(MideaDevice):
                 DeviceAttributes.laser_sensor_error: False,
             },
         )
+
+    @property
+    def clean_modes(self) -> list[str]:
+        """Return supported clean mode option names."""
+        return list(_B8_CLEAN_MODES)
+
+    @property
+    def fan_levels(self) -> list[str]:
+        """Return supported fan level option names."""
+        return list(_B8_FAN_LEVELS)
+
+    @property
+    def water_levels(self) -> list[str]:
+        """Return supported water level option names."""
+        return list(_B8_WATER_LEVELS)
+
+    @property
+    def speak_levels(self) -> list[str]:
+        """Return supported speak level option names."""
+        return list(_B8_SPEAK_LEVELS)
+
+    @property
+    def move_directions(self) -> list[str]:
+        """Return supported movement direction option names."""
+        return list(_B8_MOVE_DIRECTIONS)
+
+    @property
+    def work_status_controls(self) -> list[str]:
+        """Return supported work status control option names."""
+        return list(_B8_WORK_STATUS_CONTROLS)
 
     def build_query(self) -> list[MessageQuery]:
         """Midea B8 device build query."""

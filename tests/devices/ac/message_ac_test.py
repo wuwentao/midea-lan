@@ -1754,7 +1754,7 @@ class TestMessageACResponse:
     def test_message_query_c0_low_temperature_preserves_status_bits(self) -> None:
         """Keep dust and filter flags while parsing the low target extension."""
         self.header[9] = 0x03
-        body = bytearray(30)
+        body = bytearray(31)
         body[0] = 0xC0
         body[2] = 0x01  # Standard target temperature 17 C.
         body[13] = 0x64  # Low target 16 C, full dust, and filter timeout.

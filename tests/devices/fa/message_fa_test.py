@@ -4,11 +4,18 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.fa.message import (
+    FA_MESSAGE_PROTOCOL_V6,
     FAGeneralMessageBody,
     MessageFABase,
     MessageFAResponse,
+    MessageNewSet,
     MessageQuery,
     MessageSet,
+    MessageV6Set,
+    _get_bits,
+    _new_angle_to_code,
+    _parse_temperature,
+    _value_to_code,
 )
 from midealan.message import ListTypes, MessageType
 
@@ -89,6 +96,7 @@ class TestMessageSet:
         """Test set body lock."""
         msg = MessageSet(ProtocolVersion.V1, 1)
         msg.lock = lock
+        assert msg.lock is lock
         assert msg._body[2] == expected
 
     @pytest.mark.parametrize(
@@ -187,6 +195,183 @@ class TestMessageSet:
         assert len(msg.serialize()) > 0
 
 
+class TestMessageNewSet:
+    """Test the FA protocol v5 set message."""
+
+    def test_body_controls_match_lua_layout(self) -> None:
+        """Test the v5 control fields and offsets from the Lua protocol."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.power = True
+        msg.voice = "open_buzzer"
+        msg.child_lock = True
+        msg.mode = 3
+        msg.fan_speed = 3
+        msg.target_temperature = 25
+        msg.humidity = 50
+        msg.oscillate = True
+        msg.oscillation_mode = "Both"
+        msg.oscillation_angle = 60
+        msg.tilting_angle = 60
+        msg.humidify = True
+        msg.anophelifuge = True
+        msg.anion = True
+        msg.body_feeling_scan = True
+        msg.scene = "sleep"
+        msg.auto_power_off = True
+        msg.display_on_off = True
+        msg.waterions = True
+
+        body = msg._body
+        assert body[1] == 4
+        assert body[2] == 1
+        assert body[3] == 0x07
+        assert body[4] == 3
+        assert body[5] == 66
+        assert body[6] == 50
+        assert body[7] == 0x0C
+        assert body[8] == 0x35
+        assert body[14] == 1
+        assert body[15] == 4
+        assert body[18] == 0x40
+        assert body[22] == 5
+        assert body[23] == 0x40
+        assert body[33] == 1
+        assert body[50] == 12
+
+    def test_body_invalid_controls_are_omitted(self) -> None:
+        """Test invalid v5 controls do not write out-of-range values."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.voice = "unknown"
+        msg.fan_speed = 27
+        msg.target_temperature = 51
+        msg.humidity = 0
+        msg.oscillation_angle = "invalid"
+        msg.tilting_angle = -1
+        msg.scene = "unknown"
+
+        body = msg._body
+        assert body[1] == 0
+        assert body[4] == 0
+        assert body[5] == 0
+        assert body[6] == 0
+        assert body[15] == 0
+
+    def test_body_optional_control_variants(self) -> None:
+        """Test special temperature, enum, and non-boolean control values."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.voice = 1
+        msg.target_temperature = 0x80
+        msg.oscillation_mode = "invalid"
+        msg.oscillation_angle = "Off"
+        msg.tilting_angle = "Off"
+        msg.humidify = 4
+
+        body = msg._body
+        assert body[1] == 1
+        assert body[5] == 0x80
+        assert body[8] == 0x40
+        assert body[50] == 0
+        assert body[24] == 0
+
+    def test_body_defaults_match_lua_layout(self) -> None:
+        """Test protocol marker and invalid-control defaults."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+
+        assert len(msg._body) == 51
+        assert msg._body[3] == 0x80
+        assert msg._body[7] == 0x80
+        assert msg._body[22] == 5
+        assert msg._body[50] == 0
+
+    def test_body_oscillation_on_matches_lua_layout(self) -> None:
+        """Test the v5 oscillation enable command."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.oscillate = True
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = 1275
+
+        assert msg._body[7] == 0x02
+        assert msg._body[50] == 0xFF
+
+    def test_body_oscillation_off_matches_lua_layout(self) -> None:
+        """Test the v5 oscillation disable command."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.oscillate = False
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = 0
+
+        assert msg._body[7] == 0x02
+        assert msg._body[50] == 0
+
+    def test_helper_edge_cases(self) -> None:
+        """Test protocol helper edge cases."""
+        assert _get_bits(bytearray(), 0, 0, 1) == 0
+        assert _parse_temperature(0x80) == 0x80
+        assert _parse_temperature(0) is None
+        assert _value_to_code(True, {}) == 1
+        assert _value_to_code(4, {}) == 4
+        assert _value_to_code("unknown", {1: "known"}) is None
+        assert _new_angle_to_code("Off") == 0
+        assert _new_angle_to_code("invalid") is None
+        assert _new_angle_to_code("60") == 12
+        assert _new_angle_to_code(1280) is None
+        assert _new_angle_to_code("60", {1: "60"}) == 1
+
+    def test_body_horizontal_angle_sets_default_direction(self) -> None:
+        """Test a horizontal angle uses the Lua lr direction."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = 60
+
+        assert msg._body[7] == 0x02
+        assert msg._body[50] == 12
+
+    def test_body_vertical_angle_sets_default_direction(self) -> None:
+        """Test a vertical angle uses the Lua ud direction."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.oscillation_mode = "Tilting"
+        msg.tilting_angle = 60
+
+        assert msg._body[7] == 0x04
+        assert msg._body[24] == 12
+
+
+class TestMessageV6Set:
+    """Test the FA protocol v6 set message."""
+
+    def test_body_defaults_match_lua_layout(self) -> None:
+        """Test the v6 body length, marker, and invalid defaults."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+
+        assert len(msg.body) == 63
+        assert len(msg._body) == 62
+        assert msg._body[3] == 0x80
+        assert msg._body[7] == 0x80
+        assert msg._body[22] == FA_MESSAGE_PROTOCOL_V6
+        assert msg._body[24] == 0xFF
+        assert msg._body[50] == 0xFF
+
+    def test_body_oscillation_on_matches_lua_layout(self) -> None:
+        """Test the v6 horizontal oscillation enable command."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.oscillate = True
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = 1275
+
+        assert msg._body[34] == 0x02
+        assert msg._body[50] == 0xFF
+
+    def test_body_oscillation_off_matches_lua_layout(self) -> None:
+        """Test the v6 horizontal oscillation disable command."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.oscillate = False
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = 0
+
+        assert msg._body[34] == 0x02
+        assert msg._body[50] == 0
+
+
 class TestFAGeneralMessageBody:
     """Test FA general message body."""
 
@@ -201,6 +386,81 @@ class TestFAGeneralMessageBody:
         assert body.humidify is False
         assert body.waterions is False
         assert body.display_on_off is False
+
+    def test_protocol_v5_body(self) -> None:
+        """Test fields and offsets from the model-specific Lua protocol."""
+        body = bytearray(52)
+        body[3] = 0x01
+        body[4] = 0x07
+        body[5] = 3
+        body[6] = 66
+        body[7] = 50
+        body[8] = 0x35
+        body[9] = 0x30
+        body[12] = 55
+        body[13] = 66
+        body[15] = 1
+        body[16] = 4
+        body[19] = 0x40
+        body[23] = 5
+        body[24] = 0x40
+        body[25] = 3
+        body[34] = 1
+        body[51] = 0xFF
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.protocol_version == 5
+        assert parsed.is_new_protocol is True
+        assert parsed.child_lock is True
+        assert parsed.power is True
+        assert parsed.mode == 3
+        assert parsed.fan_speed == 3
+        assert parsed.target_temperature == 25.0
+        assert parsed.humidity == 50
+        assert parsed.oscillate is True
+        assert parsed.oscillation_mode == 2
+        assert parsed.oscillation_angle == 0xFF
+        assert parsed.tilting_angle == 3
+        assert parsed.humidify is True
+        assert parsed.humidify_mode == "1"
+        assert parsed.auto_power_off is True
+        assert parsed.display_on_off is True
+        assert parsed.waterions is True
+        assert parsed.humidify_feedback == 55
+        assert parsed.temperature_feedback == 25.0
+        assert parsed.body_feeling_scan is True
+        assert parsed.scene == "sleep"
+
+    def test_protocol_v6_body(self) -> None:
+        """Test v6 swing fields use the model-specific Lua offsets."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[25] = 0xFF
+        body[35] = 0x02
+        body[51] = 0xFF
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.protocol_version == FA_MESSAGE_PROTOCOL_V6
+        assert parsed.is_new_protocol is True
+        assert parsed.is_v6_protocol is True
+        assert parsed.oscillate is True
+        assert parsed.oscillation_mode == 1
+        assert parsed.oscillation_angle == 0xFF
+        assert parsed.tilting_angle == 0xFF
+
+    def test_protocol_v6_body_swing_off(self) -> None:
+        """Test a v6 zero angle is decoded as swing off."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[35] = 0x02
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.oscillate is False
+        assert parsed.oscillation_mode == 1
+        assert parsed.oscillation_angle == 0
 
 
 class TestMessageFAResponse:
@@ -238,3 +498,36 @@ class TestMessageFAResponse:
             _build_message(ProtocolVersion.V1, MessageType.notify2, body),
         )
         assert not hasattr(msg, "power")
+
+    def test_protocol_v5_response(self) -> None:
+        """Test a protocol v5 response uses the extended body parser."""
+        body = bytearray(52)
+        body[4] = 0x07
+        body[5] = 3
+        body[23] = 5
+        body[51] = 0x03
+
+        msg = MessageFAResponse(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert msg.protocol_version == 5
+        assert getattr(msg, "oscillate", None) is True
+        assert getattr(msg, "oscillation_angle", None) == 3
+        assert getattr(msg, "tilting_angle", None) == 0
+
+    def test_protocol_v6_response(self) -> None:
+        """Test a protocol v6 response uses the extended body parser."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[35] = 0x02
+        body[51] = 0x0C
+
+        msg = MessageFAResponse(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert msg.protocol_version == FA_MESSAGE_PROTOCOL_V6
+        assert getattr(msg, "is_v6_protocol", False) is True
+        assert getattr(msg, "oscillate", None) is True
+        assert getattr(msg, "oscillation_angle", None) == 0x0C

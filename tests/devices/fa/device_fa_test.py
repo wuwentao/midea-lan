@@ -6,7 +6,12 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.fa import DeviceAttributes, MideaFADevice
-from midealan.devices.fa.message import MessageQuery
+from midealan.devices.fa.message import (
+    MessageNewSet,
+    MessageQuery,
+    MessageSet,
+    MessageV6Set,
+)
 from midealan.message import MessageType
 
 
@@ -195,6 +200,265 @@ class TestMideaFADevice:
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
             assert message.oscillate is False
+
+    def test_protocol_v5_oscillation_commands(self) -> None:
+        """Test protocol v5 uses the model-specific set message."""
+        self.device.process_message(
+            _build_message(
+                ProtocolVersion.V1,
+                MessageType.query,
+                bytearray(52),
+            ),
+        )
+        body = bytearray(52)
+        body[23] = 5
+        body[51] = 0
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.oscillate.value, True)
+
+        mock_build_send.assert_called_once()
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageNewSet)
+        assert message.oscillate is True
+        assert message.oscillation_angle == 1275
+        assert message.oscillation_mode == "Oscillation"
+        assert message._body[22] == 5
+        assert message._body[50] == 0xFF
+
+    def test_protocol_v5_oscillation_command_branches(self) -> None:
+        """Test v5 off, mode, angle, and generic command branches."""
+        body = bytearray(52)
+        body[8] = 0x02
+        body[23] = 5
+        body[51] = 12
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        self.device._attributes[DeviceAttributes.oscillate] = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.oscillate.value, False)
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "Oscillation"
+        assert message._body[7] == 0x02
+        mock_build_send.reset_mock()
+
+        self.device._attributes[DeviceAttributes.oscillation_mode] = "Oscillation"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_mode.value,
+                "Tilting",
+            )
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "Tilting"
+        assert message.oscillation_angle == 60
+        mock_build_send.reset_mock()
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+        assert mock_build_send.call_args[0][0].power is True
+
+        assert (
+            self.device.set_new_oscillation(
+                DeviceAttributes.power.value,
+                True,
+            )
+            is None
+        )
+        self.device._attributes[DeviceAttributes.oscillate] = False
+        assert (
+            self.device.set_new_oscillation(
+                DeviceAttributes.oscillate.value,
+                False,
+            )
+            is None
+        )
+        assert self.device._legacy_angle_code("invalid", {}) is None
+        assert (
+            self.device.set_new_oscillation(
+                DeviceAttributes.oscillation_mode.value,
+                "invalid",
+            )
+            is None
+        )
+        self.device._attributes[DeviceAttributes.oscillation_angle] = 60
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_angle.value,
+                "Off",
+            )
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "Oscillation"
+        assert message.oscillation_angle == 0
+
+    def test_process_message_skips_missing_attributes(self) -> None:
+        """Test status processing tolerates a response without FA fields."""
+        response = type(
+            "Response",
+            (),
+            {
+                "message_type": MessageType.query,
+                "protocol_version": 0,
+                "is_new_protocol": False,
+            },
+        )()
+        with patch(
+            "midealan.devices.fa.MessageFAResponse",
+            return_value=response,
+        ):
+            assert self.device.process_message(b"") == {}
+
+    def test_protocol_v5_status_fields(self) -> None:
+        """Test protocol v5 status fields are exposed and decoded."""
+        body = bytearray(52)
+        body[1] = 0x12
+        body[2] = 4
+        body[3] = 0x01
+        body[4] = 0x07
+        body[5] = 3
+        body[6] = 66
+        body[7] = 50
+        body[9] = 0x35
+        body[12] = 55
+        body[13] = 66
+        body[15] = 1
+        body[16] = 4
+        body[19] = 0x40
+        body[23] = 5
+        body[24] = 0x40
+        body[34] = 1
+        body[51] = 12
+
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert status[DeviceAttributes.voice.value] == "open_buzzer"
+        assert status[DeviceAttributes.error_code.value] == 0x12
+        assert status[DeviceAttributes.target_temperature.value] == 25.0
+        assert status[DeviceAttributes.humidity.value] == 50
+        assert status[DeviceAttributes.humidify_mode.value] == "1"
+        assert status[DeviceAttributes.scene.value] == "sleep"
+        assert status[DeviceAttributes.humidify_feedback.value] == 55
+        assert status[DeviceAttributes.temperature_feedback.value] == 25.0
+
+    def test_legacy_long_body_does_not_select_protocol_v5(self) -> None:
+        """Test a legacy long body is not detected as protocol v5."""
+        body = MessageSet(ProtocolVersion.V1, 0).body
+        body[23] = 5
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.oscillate.value, True)
+
+        mock_build_send.assert_called_once()
+        message = mock_build_send.call_args[0][0]
+        assert type(message) is MessageSet
+        assert self.device.fa_protocol == 0
+
+    def test_protocol_v5_oscillation_mode_off(self) -> None:
+        """Test protocol v5 turns swing off for the Off mode."""
+        body = bytearray(52)
+        body[8] = 0x02
+        body[23] = 5
+        body[51] = 0xFF
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_mode.value,
+                "Off",
+            )
+
+        mock_build_send.assert_called_once()
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageNewSet)
+        assert message.oscillate is False
+        assert message.oscillation_angle == 0
+        assert message.oscillation_mode == "Oscillation"
+        assert message._body[7] == 0x02
+        assert message._body[50] == 0
+
+    def test_protocol_v5_angle_commands_set_direction(self) -> None:
+        """Test v5 angle commands include their Lua default direction."""
+        body = bytearray(52)
+        body[23] = 5
+        body[51] = 0
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_angle.value,
+                "60",
+            )
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "Oscillation"
+        assert message._body[7] == 0x02
+        assert message._body[50] == 12
+
+        mock_build_send.reset_mock()
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.tilting_angle.value,
+                "60",
+            )
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "Tilting"
+        assert message._body[7] == 0x04
+        assert message._body[24] == 12
+
+    def test_protocol_v6_oscillation_commands(self) -> None:
+        """Test protocol v6 uses the 63-byte model-specific set message."""
+        body = bytearray(63)
+        body[23] = 6
+        body[35] = 0x02
+        body[51] = 0
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert self.device.fa_protocol == 6
+        assert self.device.attributes[DeviceAttributes.oscillate] is False
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.oscillate.value, True)
+
+        mock_build_send.assert_called_once()
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageV6Set)
+        assert message.oscillate is True
+        assert message.oscillation_angle == 1275
+        assert message.oscillation_mode == "Oscillation"
+        assert len(message.body) == 63
+        assert message._body[22] == 6
+        assert message._body[34] == 0x02
+        assert message._body[50] == 0xFF
+
+    def test_protocol_v6_power_command_uses_v6_body(self) -> None:
+        """Test v6 power commands do not fall back to the legacy body."""
+        body = bytearray(63)
+        body[23] = 6
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageV6Set)
+        assert len(message.body) == 63
+        assert message._body[22] == 6
 
     def test_set_attribute_oscillation_mode(self) -> None:
         """Test set attribute oscillation mode."""

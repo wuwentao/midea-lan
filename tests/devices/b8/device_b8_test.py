@@ -219,6 +219,10 @@ class TestMideaB8Device:
             assert mock_build_send.call_args.args[0].body == bytearray(
                 [ListTypes.X22, B8WorkMode.PAUSE, 0x00],
             )
+            mock_build_send.reset_mock()
+
+            self.device.set_attribute(DeviceAttributes.work_status.value, "invalid")
+            mock_build_send.assert_not_called()
 
     def test_build_query(self) -> None:
         """Test build query."""

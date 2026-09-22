@@ -7,6 +7,8 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.fa import DeviceAttributes, MideaFADevice
 from midealan.devices.fa.message import (
+    V6_DEFAULT_SWING_ANGLE,
+    V6_DEFAULT_SWING_ANGLE_CODE,
     MessageNewSet,
     MessageQuery,
     MessageSet,
@@ -437,12 +439,12 @@ class TestMideaFADevice:
         message = mock_build_send.call_args[0][0]
         assert isinstance(message, MessageV6Set)
         assert message.oscillate is True
-        assert message.oscillation_angle == 1275
+        assert message.oscillation_angle == V6_DEFAULT_SWING_ANGLE
         assert message.oscillation_mode == "Oscillation"
         assert len(message.body) == 63
         assert message._body[22] == 6
         assert message._body[34] == 0x02
-        assert message._body[50] == 0xFF
+        assert message._body[50] == V6_DEFAULT_SWING_ANGLE_CODE
 
     def test_protocol_v6_power_command_uses_v6_body(self) -> None:
         """Test v6 power commands do not fall back to the legacy body."""

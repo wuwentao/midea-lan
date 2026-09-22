@@ -5,6 +5,8 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.fa.message import (
     FA_MESSAGE_PROTOCOL_V6,
+    V6_DEFAULT_SWING_ANGLE,
+    V6_DEFAULT_SWING_ANGLE_CODE,
     FAGeneralMessageBody,
     MessageFABase,
     MessageFAResponse,
@@ -312,6 +314,9 @@ class TestMessageNewSet:
         assert _value_to_code(4, {}) == 4
         assert _value_to_code("unknown", {1: "known"}) is None
         assert _new_angle_to_code("Off") == 0
+        assert _new_angle_to_code(V6_DEFAULT_SWING_ANGLE) == (
+            V6_DEFAULT_SWING_ANGLE_CODE
+        )
         assert _new_angle_to_code("invalid") is None
         assert _new_angle_to_code("60") == 12
         assert _new_angle_to_code(1280) is None
@@ -360,6 +365,16 @@ class TestMessageV6Set:
 
         assert msg._body[34] == 0x02
         assert msg._body[50] == 0xFF
+
+    def test_body_oscillation_default_matches_lua_layout(self) -> None:
+        """Test the v6 default horizontal oscillation command."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.oscillate = True
+        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_angle = V6_DEFAULT_SWING_ANGLE
+
+        assert msg._body[34] == 0x02
+        assert msg._body[50] == V6_DEFAULT_SWING_ANGLE_CODE
 
     def test_body_oscillation_off_matches_lua_layout(self) -> None:
         """Test the v6 horizontal oscillation disable command."""

@@ -22,6 +22,8 @@ FA_MESSAGE_PROTOCOL = 5
 FA_MESSAGE_PROTOCOL_V6 = 6
 FA_MESSAGE_PROTOCOLS = frozenset({FA_MESSAGE_PROTOCOL, FA_MESSAGE_PROTOCOL_V6})
 MAX_SWING_ANGLE = 1275
+V6_DEFAULT_SWING_ANGLE = "default"
+V6_DEFAULT_SWING_ANGLE_CODE = 0xFE
 LEGACY_HUMIDIFY_ON_VALUE = 2
 
 LEGACY_TILTING_ANGLE_GET_BYTE = 25
@@ -477,6 +479,8 @@ def _new_angle_to_code(
     if isinstance(value, str):
         if value == "Off":
             return 0
+        if value == V6_DEFAULT_SWING_ANGLE:
+            return V6_DEFAULT_SWING_ANGLE_CODE
         try:
             value = float(value)
         except ValueError:

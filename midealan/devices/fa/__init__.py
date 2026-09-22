@@ -16,6 +16,7 @@ from .message import (
     SCENE_CODES,
     SWING_DIRECTION_CODES,
     TILTING_ANGLE_CODES,
+    V6_DEFAULT_SWING_ANGLE,
     FAValue,
     MessageFAResponse,
     MessageNewSet,
@@ -408,7 +409,11 @@ class MideaFADevice(MideaDevice):
         if attr == DeviceAttributes.oscillate:
             message.oscillate = bool(value)
             if value:
-                message.oscillation_angle = DEFAULT_NEW_SWING_ANGLE
+                message.oscillation_angle = (
+                    V6_DEFAULT_SWING_ANGLE
+                    if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                    else DEFAULT_NEW_SWING_ANGLE
+                )
                 message.oscillation_mode = "Oscillation"
             else:
                 message.oscillation_angle = 0
@@ -425,7 +430,11 @@ class MideaFADevice(MideaDevice):
                 message.oscillation_angle = (
                     current_angle
                     if isinstance(current_angle, (int, float)) and current_angle > 0
-                    else DEFAULT_NEW_SWING_ANGLE
+                    else (
+                        V6_DEFAULT_SWING_ANGLE
+                        if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                        else DEFAULT_NEW_SWING_ANGLE
+                    )
                 )
             else:
                 valid = False

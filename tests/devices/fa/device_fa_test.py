@@ -462,6 +462,20 @@ class TestMideaFADevice:
         assert len(message.body) == 63
         assert message._body[22] == 6
 
+    def test_protocol_v6_default_swing_response_stays_enabled(self) -> None:
+        """Test the Lua default swing response remains enabled in HA."""
+        body = bytearray(63)
+        body[23] = 6
+        body[51] = 0xFE
+
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert status[DeviceAttributes.oscillate.value] is True
+        assert status[DeviceAttributes.oscillation_mode.value] == "Oscillation"
+        assert status[DeviceAttributes.oscillation_angle.value] == "default"
+
     def test_set_attribute_oscillation_mode(self) -> None:
         """Test set attribute oscillation mode."""
         with patch.object(self.device, "build_send") as mock_build_send:

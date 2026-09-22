@@ -24,6 +24,7 @@ FA_MESSAGE_PROTOCOLS = frozenset({FA_MESSAGE_PROTOCOL, FA_MESSAGE_PROTOCOL_V6})
 MAX_SWING_ANGLE = 1275
 V6_DEFAULT_SWING_ANGLE = "default"
 V6_DEFAULT_SWING_ANGLE_CODE = 0xFE
+V6_INVALID_SWING_ANGLE_CODE = 0xFF
 LEGACY_HUMIDIFY_ON_VALUE = 2
 
 LEGACY_TILTING_ANGLE_GET_BYTE = 25
@@ -456,15 +457,29 @@ TILTING_ANGLE_CODES = {
 }
 
 
-def _v6_swing_mode(lr_type: int, ud_type: int) -> int:
-    """Map v6 horizontal and vertical swing types to the FA mode codes."""
+def _v6_swing_axis_active(swing_type: int, angle: int) -> bool:
+    """Return whether one v6 swing axis is active."""
+    if swing_type == V6_SWING_TYPE_DIY:
+        return True
+    return angle not in {0, V6_INVALID_SWING_ANGLE_CODE}
+
+
+def _v6_swing_mode(
+    lr_type: int,
+    ud_type: int,
+    lr_angle: int,
+    ud_angle: int,
+) -> int:
+    """Map v6 horizontal and vertical swing states to the FA mode codes."""
     if V6_SWING_TYPE_DIY in (lr_type, ud_type):
         return SWING_MODE_CUSTOM
-    if lr_type == V6_SWING_TYPE_NORMAL and ud_type == V6_SWING_TYPE_NORMAL:
+    lr_active = _v6_swing_axis_active(lr_type, lr_angle)
+    ud_active = _v6_swing_axis_active(ud_type, ud_angle)
+    if lr_active and ud_active:
         return SWING_MODE_BOTH
-    if lr_type == V6_SWING_TYPE_NORMAL:
+    if lr_active:
         return SWING_MODE_OSCILLATION
-    if ud_type == V6_SWING_TYPE_NORMAL:
+    if ud_active:
         return SWING_MODE_TILTING
     return SWING_MODE_OFF
 
@@ -545,10 +560,16 @@ class FAGeneralMessageBody(MessageBody):
             if self.is_v6_protocol:
                 lr_type = _get_bits(body, swing_byte, 0, 1)
                 ud_type = _get_bits(body, swing_byte, 2, 3)
-                self.oscillation_mode = _v6_swing_mode(lr_type, ud_type)
-                self.oscillate = (lr_type != 0 and self.oscillation_angle != 0) or (
-                    ud_type != 0 and self.tilting_angle != 0
+                self.oscillation_mode = _v6_swing_mode(
+                    lr_type,
+                    ud_type,
+                    self.oscillation_angle,
+                    self.tilting_angle,
                 )
+                self.oscillate = _v6_swing_axis_active(
+                    lr_type,
+                    self.oscillation_angle,
+                ) or _v6_swing_axis_active(ud_type, self.tilting_angle)
             else:
                 self.oscillation_mode = _get_bits(
                     body,

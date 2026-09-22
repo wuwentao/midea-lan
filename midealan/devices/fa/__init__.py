@@ -17,6 +17,7 @@ from .message import (
     SWING_DIRECTION_CODES,
     TILTING_ANGLE_CODES,
     V6_DEFAULT_SWING_ANGLE,
+    V6_DEFAULT_SWING_ANGLE_CODE,
     FAValue,
     MessageFAResponse,
     MessageNewSet,
@@ -196,12 +197,24 @@ class MideaFADevice(MideaDevice):
         result = value
         if attr == DeviceAttributes.oscillation_angle:
             if self.fa_protocol in FA_MESSAGE_PROTOCOLS:
-                result = _status_code(value) * 5
+                code = _status_code(value)
+                result = (
+                    V6_DEFAULT_SWING_ANGLE
+                    if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                    and code == V6_DEFAULT_SWING_ANGLE_CODE
+                    else code * 5
+                )
             else:
                 result = self._oscillation_angles.get(_status_code(value))
         elif attr == DeviceAttributes.tilting_angle:
             if self.fa_protocol in FA_MESSAGE_PROTOCOLS:
-                result = _status_code(value) * 5
+                code = _status_code(value)
+                result = (
+                    V6_DEFAULT_SWING_ANGLE
+                    if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                    and code == V6_DEFAULT_SWING_ANGLE_CODE
+                    else code * 5
+                )
             else:
                 result = self._tilting_angles.get(_status_code(value))
         elif attr == DeviceAttributes.oscillation_mode:

@@ -460,8 +460,8 @@ class TestFAGeneralMessageBody:
         assert parsed.protocol_version == FA_MESSAGE_PROTOCOL_V6
         assert parsed.is_new_protocol is True
         assert parsed.is_v6_protocol is True
-        assert parsed.oscillate is True
-        assert parsed.oscillation_mode == 1
+        assert parsed.oscillate is False
+        assert parsed.oscillation_mode == 0
         assert parsed.oscillation_angle == 0xFF
         assert parsed.tilting_angle == 0xFF
 
@@ -474,8 +474,20 @@ class TestFAGeneralMessageBody:
         parsed = FAGeneralMessageBody(body)
 
         assert parsed.oscillate is False
-        assert parsed.oscillation_mode == 1
+        assert parsed.oscillation_mode == 0
         assert parsed.oscillation_angle == 0
+
+    def test_protocol_v6_default_swing_is_active(self) -> None:
+        """Test Lua's default swing angle is decoded as active."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[51] = 0xFE
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.oscillate is True
+        assert parsed.oscillation_mode == 1
+        assert parsed.oscillation_angle == 0xFE
 
 
 class TestMessageFAResponse:
@@ -546,3 +558,17 @@ class TestMessageFAResponse:
         assert getattr(msg, "is_v6_protocol", False) is True
         assert getattr(msg, "oscillate", None) is True
         assert getattr(msg, "oscillation_angle", None) == 0x0C
+
+    def test_protocol_v6_default_swing_response(self) -> None:
+        """Test the real v6 default swing response shape."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[51] = 0xFE
+
+        msg = MessageFAResponse(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert getattr(msg, "oscillate", None) is True
+        assert getattr(msg, "oscillation_mode", None) == 1
+        assert getattr(msg, "oscillation_angle", None) == 0xFE

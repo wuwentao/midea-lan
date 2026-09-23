@@ -41,6 +41,7 @@ MODE_NEW_PROTOCOL_MODELS = {
     "56011CEC": FA_MESSAGE_PROTOCOL_V6,
 }
 MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
+MODE_OFFICIAL_V6_MODELS = {"56011CEC"}
 
 
 def _status_code(value: FAValue) -> int:
@@ -125,6 +126,11 @@ class MideaFADevice(MideaDevice):
         **_new_modes,
         0x15: "ecology",
     }
+    _official_v6_modes: ClassVar[dict[int, str]] = {
+        0x14: "self_selection",
+        0x12: "sleeping_wind",
+        0x15: "ecology",
+    }
     _voice: ClassVar[dict[int, str]] = {
         0x00: "invalid",
         0x01: "open_gps",
@@ -202,7 +208,9 @@ class MideaFADevice(MideaDevice):
     def preset_modes(self) -> list[str]:
         """Return a list of preset modes."""
         return [
-            mode for code, mode in self._mode_codes.items() if code != INVALID_MODE_CODE
+            mode
+            for code, mode in self._preset_mode_codes.items()
+            if code != INVALID_MODE_CODE
         ]
 
     @property
@@ -218,6 +226,16 @@ class MideaFADevice(MideaDevice):
         return self._legacy_modes
 
     @property
+    def _preset_mode_codes(self) -> dict[int, str]:
+        """Return the selectable mode map for the detected FA protocol and model."""
+        if (
+            self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            and self.model in MODE_OFFICIAL_V6_MODELS
+        ):
+            return self._official_v6_modes
+        return self._mode_codes
+
+    @property
     def _effective_fa_protocol(self) -> int:
         """Return the response protocol or a model-derived protocol hint."""
         return (
@@ -228,7 +246,7 @@ class MideaFADevice(MideaDevice):
 
     def _mode_code(self, value: str) -> int | None:
         """Return the protocol mode code for a public mode value."""
-        for key, item in self._mode_codes.items():
+        for key, item in self._preset_mode_codes.items():
             if key != INVALID_MODE_CODE and item == value:
                 return key
         return None
@@ -635,6 +653,7 @@ class MideaFADevice(MideaDevice):
                     else self._legacy_message()
                 )
                 message.mode = mode
+                message.power = True
         elif attr == DeviceAttributes.fan_speed and int(value) == 0:
             message = None
         else:

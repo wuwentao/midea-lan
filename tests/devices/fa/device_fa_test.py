@@ -146,7 +146,11 @@ class TestMideaFADevice:
         ]
 
         v6_device = _make_device("56011CEC")
-        assert v6_device.preset_modes == v5_ecology_device.preset_modes
+        assert v6_device.preset_modes == [
+            "self_selection",
+            "sleeping_wind",
+            "ecology",
+        ]
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -907,7 +911,10 @@ class TestMideaFADevice:
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.mode.value, "sleep")
             mock_build_send.assert_called_once()
-            assert mock_build_send.call_args[0][0].mode == 3
+            message = mock_build_send.call_args[0][0]
+            assert message.mode == 3
+            assert message.power is True
+            assert message._body[3] == 0x07
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "ionic")
@@ -928,6 +935,8 @@ class TestMideaFADevice:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageNewSet)
             assert message.mode == 14
+            assert message.power is True
+            assert message._body[3] == 0x1D
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "ecology")
@@ -940,6 +949,8 @@ class TestMideaFADevice:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageCB4Set)
             assert message.mode == 21
+            assert message.power is True
+            assert message._body[3] == 0x2B
             assert len(message.body) == 54
             assert message._body[37] == 0xFF
             assert message._body[44] == 0xFF
@@ -953,6 +964,12 @@ class TestMideaFADevice:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageV6Set)
             assert message.mode == 21
+            assert message.power is True
+            assert message._body[3] == 0x2B
+            mock_build_send.reset_mock()
+
+            self.device.set_attribute(DeviceAttributes.mode.value, "natural")
+            mock_build_send.assert_not_called()
 
     def test_protocol_specific_mode_status(self) -> None:
         """Test mode 21 maps only for Lua protocols that expose Ecology."""
@@ -971,6 +988,12 @@ class TestMideaFADevice:
             _build_message(ProtocolVersion.V1, MessageType.query, body),
         )
         assert status[DeviceAttributes.mode.value] == "ecology"
+
+        body[4] = 0x05
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        assert status[DeviceAttributes.mode.value] == "natural"
 
         body = bytearray(63)
         body[4] = 0x2B

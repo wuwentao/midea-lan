@@ -11,6 +11,7 @@ from midealan.message import (
 )
 
 MAX_FAN_SPEED = 26
+MAX_V6_FAN_SPEED = 100
 MIN_VALUE = 1
 MAX_HUMIDITY = 100
 MIN_TEMPERATURE = -40
@@ -220,6 +221,7 @@ class MessageNewSet(MessageFABase):
     _swing_angle_byte = NEW_PROTOCOL_SWING_ANGLE_BYTE
     _invalid_body_bytes: tuple[int, ...] = ()
     _max_swing_angle = MAX_SWING_ANGLE
+    _max_fan_speed = MAX_FAN_SPEED
 
     def __init__(self, protocol_version: int, subtype: int) -> None:
         """Initialize a protocol v5 set message."""
@@ -272,7 +274,10 @@ class MessageNewSet(MessageFABase):
         if self.mode is not None:
             MessageBit.set_bits(body, 3, 1, 5, self.mode)
             MessageBit.set_bit(body, 3, 7, 0)
-        if self.fan_speed is not None and MIN_VALUE <= self.fan_speed <= MAX_FAN_SPEED:
+        if (
+            self.fan_speed is not None
+            and MIN_VALUE <= self.fan_speed <= self._max_fan_speed
+        ):
             body[4] = self.fan_speed
         if self.target_temperature is not None:
             temperature = int(self.target_temperature)
@@ -382,6 +387,7 @@ class MessageV6Set(MessageNewSet):
     _swing_angle_byte = V6_PROTOCOL_SWING_ANGLE_BYTE
     _invalid_body_bytes = V6_PROTOCOL_INVALID_BODY_BYTES
     _max_swing_angle = V6_MAX_NORMAL_SWING_ANGLE
+    _max_fan_speed = MAX_V6_FAN_SPEED
 
 
 class MessageCB4Set(MessageNewSet):
@@ -570,7 +576,7 @@ class FAGeneralMessageBody(MessageBody):
             _parse_range(
                 _read_byte(body, 5),
                 MIN_VALUE,
-                MAX_FAN_SPEED,
+                MAX_V6_FAN_SPEED if self.is_v6_protocol else MAX_FAN_SPEED,
             )
             or 0
         )

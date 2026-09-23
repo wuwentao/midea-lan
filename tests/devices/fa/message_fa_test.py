@@ -5,6 +5,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.fa.message import (
     FA_MESSAGE_PROTOCOL_V6,
+    MAX_V6_FAN_SPEED,
     V6_DEFAULT_SWING_ANGLE,
     V6_DEFAULT_SWING_ANGLE_CODE,
     V6_MAX_NORMAL_SWING_ANGLE,
@@ -354,6 +355,16 @@ class TestMessageNewSet:
 class TestMessageV6Set:
     """Test the FA protocol v6 set message."""
 
+    def test_body_fan_speed_supports_lua_range(self) -> None:
+        """Test v6 accepts the Lua-defined 1..100 fan speed range."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.fan_speed = MAX_V6_FAN_SPEED
+
+        assert msg._body[4] == MAX_V6_FAN_SPEED
+
+        msg.fan_speed = MAX_V6_FAN_SPEED + 1
+        assert msg._body[4] == 0
+
     def test_body_defaults_match_lua_layout(self) -> None:
         """Test the v6 body length, marker, and invalid defaults."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
@@ -491,6 +502,7 @@ class TestFAGeneralMessageBody:
         """Test v6 swing fields use the model-specific Lua offsets."""
         body = bytearray(63)
         body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[5] = MAX_V6_FAN_SPEED
         body[25] = 0xFF
         body[35] = 0x02
         body[51] = 0xFF
@@ -500,6 +512,7 @@ class TestFAGeneralMessageBody:
         assert parsed.protocol_version == FA_MESSAGE_PROTOCOL_V6
         assert parsed.is_new_protocol is True
         assert parsed.is_v6_protocol is True
+        assert parsed.fan_speed == MAX_V6_FAN_SPEED
         assert parsed.oscillate is False
         assert parsed.oscillation_mode == 0
         assert parsed.oscillation_angle == 0xFF

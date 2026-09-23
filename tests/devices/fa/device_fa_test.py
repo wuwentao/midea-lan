@@ -1053,6 +1053,16 @@ class TestMideaFADevice:
         self.device.set_customize('{"speed_count": 5}')
         assert self.device.speed_count == 5
 
+        v6_device = _make_device("56011CEC")
+        v6_device.set_customize('{"speed_count": 100}')
+        assert v6_device.speed_count == 100
+        v6_device.set_customize('{"speed_count": 101}')
+        assert v6_device.speed_count == 3
+
+        v5_device = _make_device("560000F3")
+        v5_device.set_customize('{"speed_count": 50}')
+        assert v5_device.speed_count == 3
+
     def test_set_customize_empty_params(self) -> None:
         """Test set customize with an empty JSON object."""
         self.device.set_customize("{}")

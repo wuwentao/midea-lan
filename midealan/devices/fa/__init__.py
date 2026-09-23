@@ -14,6 +14,8 @@ from .message import (
     FA_MESSAGE_PROTOCOL_V6,
     FA_MESSAGE_PROTOCOLS,
     HUMIDIFY_CODES,
+    MAX_FAN_SPEED,
+    MAX_V6_FAN_SPEED,
     SCENE_CODES,
     SWING_DIRECTION_CODES,
     TILTING_ANGLE_CODES,
@@ -188,6 +190,15 @@ class MideaFADevice(MideaDevice):
     def speed_count(self) -> int:
         """Return the device speed count."""
         return self._speed_count
+
+    @property
+    def max_speed_count(self) -> int:
+        """Return the maximum fan speed supported by the active FA protocol."""
+        return (
+            MAX_V6_FAN_SPEED
+            if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            else MAX_FAN_SPEED
+        )
 
     @property
     def oscillation_angles(self) -> list[str]:
@@ -687,8 +698,13 @@ class MideaFADevice(MideaDevice):
         if customize:
             try:
                 params = json.loads(customize)
-                if params and "speed_count" in params:
-                    self._speed_count = params["speed_count"]
+                speed_count = params.get("speed_count") if params else None
+                if (
+                    isinstance(speed_count, int)
+                    and not isinstance(speed_count, bool)
+                    and 1 <= speed_count <= self.max_speed_count
+                ):
+                    self._speed_count = speed_count
             except Exception:
                 _LOGGER.exception("[%s] Set customize error", self.device_id)
         self.update_all({"speed_count": self._speed_count})

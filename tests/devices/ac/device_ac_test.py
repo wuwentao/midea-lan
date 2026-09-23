@@ -1046,7 +1046,7 @@ class TestMideaACDevice:
         self.device._capability_query_retry_at = 100.0
         self.device._capability_addition_query_retry_at = 100.0
         self.device.reset_init_query()
-        rearmed = (
+        rearmed: tuple[bool, bool, bool, bool, float | None, float | None] = (
             self.device._capability_query,
             self.device._capability_addition_query,
             self.device._support_capability,
@@ -1088,7 +1088,7 @@ class TestMideaACDevice:
         # Basic frame: records support, clears the basic probe, arms additional.
         self.device._capability_query_retry_at = 100.0
         self.device.process_message(bytes(basic))
-        after_basic = (
+        after_basic: tuple[bool, bool, bool, float | None] = (
             self.device._support_capability,
             self.device._capability_query,
             self.device._capability_addition_query,
@@ -1102,7 +1102,7 @@ class TestMideaACDevice:
         # Additional frame: records support and clears the additional probe.
         self.device._capability_addition_query_retry_at = 100.0
         self.device.process_message(bytes(additional))
-        after_additional = (
+        after_additional: tuple[bool, bool, float | None] = (
             self.device._support_capability_addition,
             self.device._capability_addition_query,
             self.device._capability_addition_query_retry_at,

@@ -207,6 +207,12 @@ class MideaB8Device(MideaDevice):
     _attribute_fallbacks: ClassVar[dict[str, int]] = {
         "_mop": 0x02,
     }
+    _set_control_attributes: ClassVar[dict[DeviceAttributes, tuple[str, str]]] = {
+        DeviceAttributes.clean_mode: ("_clean_mode", "clean_mode"),
+        DeviceAttributes.fan_level: ("_fan_level", "fan_level"),
+        DeviceAttributes.water_level: ("_water_level", "water_level"),
+        DeviceAttributes.speak_level: ("_speak_level", "speak_level"),
+    }
 
     def __init__(
         self,
@@ -319,25 +325,13 @@ class MideaB8Device(MideaDevice):
                 new_status[str(status)] = self._attributes[status]
         return new_status
 
-    def _get_dict_value(self, dict_name: str, key: int) -> str:
-        target_dict: dict[int, str] = getattr(self, dict_name)
-        fallback = self._attribute_fallbacks.get(dict_name, 0x00)
-        return target_dict.get(key, target_dict[fallback])
-
-    @classmethod
-    def _get_dict_key(cls, dict_name: str, value: object) -> int:
-        key = cls.get_dict_key_by_value(dict_name, str(value))
-        if not isinstance(key, int):
-            raise KeyError(value)
-        return key
-
     def _get_error_desc(self, error_type: int, error_desc: int) -> str:
         default_error_desc = self._error_can_fix_desc[0x00]
-        if error_type == self._get_dict_key("_error_type", "can_fix"):
+        if error_type == self.get_dict_key_by_value("_error_type", "can_fix"):
             return self._error_can_fix_desc.get(error_desc, default_error_desc)
-        if error_type == self._get_dict_key("_error_type", "reboot"):
+        if error_type == self.get_dict_key_by_value("_error_type", "reboot"):
             return self._error_reboot_desc.get(error_desc, default_error_desc)
-        if error_type == self._get_dict_key("_error_type", "warning"):
+        if error_type == self.get_dict_key_by_value("_error_type", "warning"):
             return self._error_warning_desc.get(
                 error_desc,
                 default_error_desc,
@@ -353,26 +347,29 @@ class MideaB8Device(MideaDevice):
         if status == DeviceAttributes.error_desc:
             return self._get_error_desc(getattr(message, "error_type", 0x00), value)
         if status in self._attribute_dicts:
-            return self._get_dict_value(self._attribute_dicts[status], value)
+            dict_name = self._attribute_dicts[status]
+            target_dict: dict[int, str] = getattr(self, dict_name)
+            fallback = self._attribute_fallbacks.get(dict_name, 0x00)
+            return target_dict.get(value, target_dict[fallback])
         return value
 
     def _gen_set_msg_default_values(self) -> MessageSet:
         msg = MessageSet(self._message_protocol_version)
         if not self._has_reported_status:
             return msg
-        msg.clean_mode = self._get_dict_key(
+        msg.clean_mode = self.get_dict_key_by_value(
             "_clean_mode",
             self.attributes[DeviceAttributes.clean_mode],
         )
-        msg.fan_level = self._get_dict_key(
+        msg.fan_level = self.get_dict_key_by_value(
             "_fan_level",
             self.attributes[DeviceAttributes.fan_level],
         )
-        msg.water_level = self._get_dict_key(
+        msg.water_level = self.get_dict_key_by_value(
             "_water_level",
             self.attributes[DeviceAttributes.water_level],
         )
-        msg.speak_level = self._get_dict_key(
+        msg.speak_level = self.get_dict_key_by_value(
             "_speak_level",
             self.attributes[DeviceAttributes.speak_level],
         )
@@ -381,7 +378,7 @@ class MideaB8Device(MideaDevice):
 
     def set_work_mode(self, work_mode: int) -> None:
         """Midea B8 device set work mode."""
-        if work_mode == self._get_dict_key("_work_mode", "work"):
+        if work_mode == self.get_dict_key_by_value("_work_mode", "work"):
             if not self._has_reported_status:
                 self.build_send(self._gen_set_msg_default_values())
                 return
@@ -397,33 +394,40 @@ class MideaB8Device(MideaDevice):
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea B8 device set attribute."""
         if attr == DeviceAttributes.work_status:
-            try:
-                self.set_work_mode(self._get_dict_key("_work_mode", value))
-            except KeyError:
-                _LOGGER.exception("Wrong value for attribute %s: %s", attr, value)
+            work_mode = self.get_dict_key_by_value("_work_mode", str(value))
+            if work_mode is None:
+                _LOGGER.error("Wrong value for attribute %s: %s", attr, value)
+                return
+            self.set_work_mode(work_mode)
             return
 
         msg: MessageSet | MessageSetMovement | MessageSetVoiceVolume | None = None
         try:
-            if attr == DeviceAttributes.clean_mode:
+            if attr in self._set_control_attributes:
+                dict_name, msg_attr = self._set_control_attributes[
+                    DeviceAttributes(attr)
+                ]
                 msg = self._gen_set_msg_default_values()
-                msg.clean_mode = self._get_dict_key("_clean_mode", value)
-            elif attr == DeviceAttributes.fan_level:
-                msg = self._gen_set_msg_default_values()
-                msg.fan_level = self._get_dict_key("_fan_level", value)
-            elif attr == DeviceAttributes.water_level:
-                msg = self._gen_set_msg_default_values()
-                msg.water_level = self._get_dict_key("_water_level", value)
-            elif attr == DeviceAttributes.speak_level:
-                msg = self._gen_set_msg_default_values()
-                msg.speak_level = self._get_dict_key("_speak_level", value)
+                control_value = self.get_dict_key_by_value(dict_name, str(value))
+                if control_value is None:
+                    _LOGGER.error("Wrong value for attribute %s: %s", attr, value)
+                    msg = None
+                else:
+                    setattr(msg, msg_attr, control_value)
             elif attr == DeviceAttributes.zone_id:
                 msg = self._gen_set_msg_default_values()
                 msg.zone_id = int(value)
             elif attr == DeviceAttributes.move_direction:
+                move_direction = self.get_dict_key_by_value(
+                    "_move_direction",
+                    str(value),
+                )
+                if move_direction is None:
+                    _LOGGER.error("Wrong value for attribute %s: %s", attr, value)
+                    return
                 msg = MessageSetMovement(
                     self._message_protocol_version,
-                    self._get_dict_key("_move_direction", value),
+                    move_direction,
                 )
             elif attr == DeviceAttributes.voice_volume:
                 msg = MessageSetVoiceVolume(self._message_protocol_version, int(value))

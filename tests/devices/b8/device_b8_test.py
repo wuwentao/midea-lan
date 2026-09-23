@@ -163,6 +163,8 @@ class TestMideaB8Device:
 
             self.device.set_attribute(DeviceAttributes.water_level.value, "invalid")
             mock_build_send.assert_not_called()
+            self.device.set_attribute(DeviceAttributes.move_direction.value, "invalid")
+            mock_build_send.assert_not_called()
 
     def test_set_attribute_unknown_does_not_send(self) -> None:
         """Test an unknown attribute does not send a default command."""

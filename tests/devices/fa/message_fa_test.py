@@ -105,7 +105,7 @@ class TestMessageSet:
         ("mode", "expected"),
         [
             (3, 0x07),  # Sleep
-            (20, 0x29),  # Self_Selection
+            (11, 0x17),  # Customize
         ],
     )
     def test_body_mode(self, mode: int, expected: int) -> None:
@@ -376,6 +376,20 @@ class TestMessageV6Set:
         assert msg._body[34] == 0x02
         assert msg._body[50] == V6_DEFAULT_SWING_ANGLE_CODE
 
+    def test_body_angle_sets_default_v6_direction(self) -> None:
+        """Test v6 angle-only commands set their axis direction."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.oscillation_angle = 60
+
+        assert msg._body[34] == 0x02
+        assert msg._body[50] == 12
+
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.tilting_angle = 60
+
+        assert msg._body[34] == 0x08
+        assert msg._body[24] == 12
+
     def test_body_oscillation_off_matches_lua_layout(self) -> None:
         """Test the v6 horizontal oscillation disable command."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
@@ -401,6 +415,15 @@ class TestFAGeneralMessageBody:
         assert body.humidify is False
         assert body.waterions is False
         assert body.display_on_off is False
+
+    def test_legacy_mode_uses_bits_one_through_four(self) -> None:
+        """Test legacy mode does not consume the protocol v5 bit."""
+        body = bytearray(36)
+        body[4] = 0x23  # power on, bit 5 set, legacy mode remains 1
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.mode == 1
 
     def test_protocol_v5_body(self) -> None:
         """Test fields and offsets from the model-specific Lua protocol."""
@@ -489,6 +512,33 @@ class TestFAGeneralMessageBody:
         assert parsed.oscillation_mode == 1
         assert parsed.oscillation_angle == 0xFE
 
+    @pytest.mark.parametrize(
+        ("swing_byte", "swing_angle", "tilting_angle", "expected_mode"),
+        [
+            (0x01, 0xFF, 0xFF, 7),
+            (0x0A, 12, 12, 6),
+            (0x08, 0, 12, 2),
+        ],
+    )
+    def test_protocol_v6_swing_mode_branches(
+        self,
+        swing_byte: int,
+        swing_angle: int,
+        tilting_angle: int,
+        expected_mode: int,
+    ) -> None:
+        """Test v6 DIY, both-axis, and vertical-only swing modes."""
+        body = bytearray(63)
+        body[23] = FA_MESSAGE_PROTOCOL_V6
+        body[25] = tilting_angle
+        body[35] = swing_byte
+        body[51] = swing_angle
+
+        parsed = FAGeneralMessageBody(body)
+
+        assert parsed.oscillate is True
+        assert parsed.oscillation_mode == expected_mode
+
 
 class TestMessageFAResponse:
     """Test FA message response."""
@@ -506,17 +556,6 @@ class TestMessageFAResponse:
         assert getattr(msg, "child_lock", None) is True
         assert getattr(msg, "mode", None) == 1
         assert getattr(msg, "fan_speed", None) == 3
-
-    def test_query_response_extended_mode(self) -> None:
-        """Test parsing an extended FA mode."""
-        body = bytearray(36)
-        body[4] = 0x29  # Self_Selection
-
-        msg = MessageFAResponse(
-            _build_message(ProtocolVersion.V1, MessageType.query, body),
-        )
-
-        assert getattr(msg, "mode", None) == 20
 
     def test_notify2_response_ignored(self) -> None:
         """Test notify2 response is not parsed."""

@@ -25,6 +25,8 @@ MAX_SWING_ANGLE = 1275
 V6_DEFAULT_SWING_ANGLE = "default"
 V6_DEFAULT_SWING_ANGLE_CODE = 0xFE
 V6_INVALID_SWING_ANGLE_CODE = 0xFF
+LEGACY_MODE_END_BIT = 4
+NEW_PROTOCOL_MODE_END_BIT = 5
 LEGACY_HUMIDIFY_ON_VALUE = 2
 
 LEGACY_TILTING_ANGLE_GET_BYTE = 25
@@ -44,6 +46,8 @@ NEW_PROTOCOL_DISPLAY_BYTE = 19
 NEW_PROTOCOL_AUTO_POWER_OFF_BYTE = 24
 NEW_PROTOCOL_WATERIONS_BYTE = 34
 NEW_PROTOCOL_SWING_ANGLE_BYTE = 51
+CB4_PROTOCOL_BODY_LENGTH = 54
+CB4_PROTOCOL_INVALID_BODY_BYTES = (38, 45, 52, 53)
 
 V6_PROTOCOL_BODY_LENGTH = 63
 V6_PROTOCOL_SWING_BYTE = 35
@@ -361,6 +365,13 @@ class MessageV6Set(MessageNewSet):
     _invalid_body_bytes = V6_PROTOCOL_INVALID_BODY_BYTES
 
 
+class MessageCB4Set(MessageNewSet):
+    """FA protocol v5 set message from T_0000_FA_56011CB4_2023081801.lua."""
+
+    _body_length = CB4_PROTOCOL_BODY_LENGTH
+    _invalid_body_bytes = CB4_PROTOCOL_INVALID_BODY_BYTES
+
+
 class MessageSet(MessageFABase):
     """FA legacy set message from T_0000_FA_17.lua."""
 
@@ -409,7 +420,7 @@ class MessageSet(MessageFABase):
         if self.child_lock is not None:
             body[2] = 1 if self.child_lock else 2
         if self.mode is not None:
-            body[3] = 1 | ((self.mode << 1) & 0x3E)
+            body[3] = 1 | ((self.mode << 1) & 0x1E)
         if self.fan_speed is not None and MIN_VALUE <= self.fan_speed <= MAX_FAN_SPEED:
             body[4] = self.fan_speed
         if self.oscillate is not None:
@@ -525,7 +536,12 @@ class FAGeneralMessageBody(MessageBody):
         self.auto_power_off_flag = _get_bit(body, 3, 3)
         self.child_lock = (_read_byte(body, 3) & 0x03) == 0x01
         self.power = (_read_byte(body, 4) & 0x01) == 0x01
-        self.mode = _get_bits(body, 4, 1, 5)
+        self.mode = _get_bits(
+            body,
+            4,
+            1,
+            NEW_PROTOCOL_MODE_END_BIT if self.is_new_protocol else LEGACY_MODE_END_BIT,
+        )
         self.fan_speed = (
             _parse_range(
                 _read_byte(body, 5),

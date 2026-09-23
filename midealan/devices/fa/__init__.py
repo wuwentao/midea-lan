@@ -10,6 +10,7 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import MessageType
 
 from .message import (
+    FA_MESSAGE_PROTOCOL,
     FA_MESSAGE_PROTOCOL_V6,
     FA_MESSAGE_PROTOCOLS,
     HUMIDIFY_CODES,
@@ -19,6 +20,7 @@ from .message import (
     V6_DEFAULT_SWING_ANGLE,
     V6_DEFAULT_SWING_ANGLE_CODE,
     FAValue,
+    MessageCB4Set,
     MessageFAResponse,
     MessageNewSet,
     MessageQuery,
@@ -29,6 +31,12 @@ from .message import (
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_NEW_SWING_ANGLE = 1275
 MAX_LEGACY_SWING_MODE = 6
+MODE_NEW_PROTOCOL_MODELS = {
+    "560000F3": FA_MESSAGE_PROTOCOL,
+    "56011CB4": FA_MESSAGE_PROTOCOL,
+    "56011CEC": FA_MESSAGE_PROTOCOL_V6,
+}
+MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
 
 
 def _status_code(value: FAValue) -> int:
@@ -83,7 +91,7 @@ class MideaFADevice(MideaDevice):
         if key <= MAX_LEGACY_SWING_MODE
     }
     _new_oscillation_modes: ClassVar[dict[int, str]] = SWING_DIRECTION_CODES
-    _modes: ClassVar[dict[int, str]] = {
+    _legacy_modes: ClassVar[dict[int, str]] = {
         0x00: "Invalid",
         0x01: "Normal",
         0x02: "Natural",
@@ -96,6 +104,9 @@ class MideaFADevice(MideaDevice):
         0x09: "Strong",
         0x0A: "Soft",
         0x0B: "Customize",
+    }
+    _new_modes: ClassVar[dict[int, str]] = {
+        **_legacy_modes,
         0x0C: "Warm",
         0x0D: "Smart",
         0x0E: "Ionic",
@@ -105,6 +116,10 @@ class MideaFADevice(MideaDevice):
         0x12: "Sleeping_Wind",
         0x13: "Purify_Only",
         0x14: "Self_Selection",
+    }
+    _ecology_modes: ClassVar[dict[int, str]] = {
+        **_new_modes,
+        0x15: "Ecology",
     }
     _voice: ClassVar[dict[int, str]] = {
         0x00: "invalid",
@@ -182,7 +197,35 @@ class MideaFADevice(MideaDevice):
     @property
     def preset_modes(self) -> list[str]:
         """Return a list of preset modes."""
-        return list(self._modes.values())
+        return list(self._mode_codes.values())
+
+    @property
+    def _mode_codes(self) -> dict[int, str]:
+        """Return the mode map for the detected FA protocol and model."""
+        if (
+            self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            or self.model in MODE_ECOLOGY_MODELS
+        ):
+            return self._ecology_modes
+        if self._effective_fa_protocol in FA_MESSAGE_PROTOCOLS:
+            return self._new_modes
+        return self._legacy_modes
+
+    @property
+    def _effective_fa_protocol(self) -> int:
+        """Return the response protocol or a model-derived protocol hint."""
+        return (
+            self.fa_protocol
+            if self.fa_protocol in FA_MESSAGE_PROTOCOLS
+            else MODE_NEW_PROTOCOL_MODELS.get(self.model, 0)
+        )
+
+    def _mode_code(self, value: str) -> int | None:
+        """Return the protocol mode code for a public mode value."""
+        for key, item in self._mode_codes.items():
+            if item == value:
+                return key
+        return None
 
     def build_query(self) -> list[MessageQuery]:
         """Build the FA query."""
@@ -225,7 +268,7 @@ class MideaFADevice(MideaDevice):
             )
             result = modes.get(_status_code(value))
         elif attr == DeviceAttributes.mode:
-            result = self._modes.get(_status_code(value))
+            result = self._mode_codes.get(_status_code(value))
         elif attr == DeviceAttributes.voice:
             result = (
                 value
@@ -424,7 +467,7 @@ class MideaFADevice(MideaDevice):
             if value:
                 message.oscillation_angle = (
                     V6_DEFAULT_SWING_ANGLE
-                    if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                    if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
                     else DEFAULT_NEW_SWING_ANGLE
                 )
                 message.oscillation_mode = "Oscillation"
@@ -445,7 +488,7 @@ class MideaFADevice(MideaDevice):
                     if isinstance(current_angle, (int, float)) and current_angle > 0
                     else (
                         V6_DEFAULT_SWING_ANGLE
-                        if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                        if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
                         else DEFAULT_NEW_SWING_ANGLE
                     )
                 )
@@ -468,11 +511,13 @@ class MideaFADevice(MideaDevice):
             valid = False
         return message if valid else None
 
-    def _new_message(self) -> MessageNewSet | MessageV6Set:
+    def _new_message(self) -> MessageNewSet | MessageCB4Set | MessageV6Set:
         """Create a protocol v5/v6 set message."""
         message_type = (
             MessageV6Set
-            if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            else MessageCB4Set
+            if self.model == "56011CB4"
             else MessageNewSet
         )
         return message_type(self._message_protocol_version, self.subtype)
@@ -491,7 +536,7 @@ class MideaFADevice(MideaDevice):
         }:
             message = (
                 self.set_new_oscillation(attr, value)
-                if self.fa_protocol in FA_MESSAGE_PROTOCOLS
+                if self._effective_fa_protocol in FA_MESSAGE_PROTOCOLS
                 else self.set_oscillation(attr, value)
             )
         elif (
@@ -500,22 +545,29 @@ class MideaFADevice(MideaDevice):
             and not self._attributes[DeviceAttributes.power]
         ):
             message = (
-                self._new_message() if self.fa_protocol else self._legacy_message()
+                self._new_message()
+                if self._effective_fa_protocol
+                else self._legacy_message()
             )
             message.fan_speed = int(value)
             message.power = True
         elif attr == DeviceAttributes.mode:
             message = None
-            if value in self._modes.values():
+            mode = self._mode_code(str(value))
+            if mode is not None:
                 message = (
-                    self._new_message() if self.fa_protocol else self._legacy_message()
+                    self._new_message()
+                    if self._effective_fa_protocol
+                    else self._legacy_message()
                 )
-                message.mode = self.get_dict_key_by_value("_modes", str(value))
+                message.mode = mode
         elif attr == DeviceAttributes.fan_speed and int(value) == 0:
             message = None
         else:
             message = (
-                self._new_message() if self.fa_protocol else self._legacy_message()
+                self._new_message()
+                if self._effective_fa_protocol
+                else self._legacy_message()
             )
             setattr(message, str(attr), value)
         if message is not None:
@@ -523,12 +575,17 @@ class MideaFADevice(MideaDevice):
 
     def turn_on(self, fan_speed: int | None = None, mode: str | None = None) -> None:
         """Turn on the device."""
-        message = self._new_message() if self.fa_protocol else self._legacy_message()
+        message = (
+            self._new_message()
+            if self._effective_fa_protocol
+            else self._legacy_message()
+        )
         message.power = True
         if fan_speed is not None:
             message.fan_speed = fan_speed
-        if mode in self._modes.values():
-            message.mode = self.get_dict_key_by_value("_modes", str(mode))
+        mode_code = self._mode_code(str(mode))
+        if mode_code is not None:
+            message.mode = mode_code
         self.build_send(message)
 
     def set_customize(self, customize: str) -> None:

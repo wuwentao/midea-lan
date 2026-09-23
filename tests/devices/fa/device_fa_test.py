@@ -9,6 +9,7 @@ from midealan.devices.fa import DeviceAttributes, MideaFADevice
 from midealan.devices.fa.message import (
     V6_DEFAULT_SWING_ANGLE,
     V6_DEFAULT_SWING_ANGLE_CODE,
+    MessageCB4Set,
     MessageNewSet,
     MessageQuery,
     MessageSet,
@@ -29,6 +30,22 @@ def _build_message(
     return bytes(header + body + bytearray([0x00]))
 
 
+def _make_device(model: str = "test_model") -> MideaFADevice:
+    """Build an FA test device."""
+    return MideaFADevice(
+        name="Test Device",
+        device_id=1,
+        ip_address="192.168.1.1",
+        port=12345,
+        token="AA",
+        key="BB",
+        device_protocol=ProtocolVersion.V1,
+        model=model,
+        subtype=1,
+        customize="",
+    )
+
+
 class TestMideaFADevice:
     """Test Midea FA Device."""
 
@@ -37,18 +54,7 @@ class TestMideaFADevice:
     @pytest.fixture(autouse=True)
     def _setup_device(self) -> None:
         """Midea FA Device setup."""
-        self.device = MideaFADevice(
-            name="Test Device",
-            device_id=1,
-            ip_address="192.168.1.1",
-            port=12345,
-            token="AA",
-            key="BB",
-            device_protocol=ProtocolVersion.V1,
-            model="test_model",
-            subtype=1,
-            customize="",
-        )
+        self.device = _make_device()
 
     def test_initial_attributes(self) -> None:
         """Test initial attributes."""
@@ -99,7 +105,26 @@ class TestMideaFADevice:
         ]
 
         assert self.device.preset_modes[0] == "Invalid"
-        assert len(self.device.preset_modes) == 21
+        assert self.device.preset_modes[-1] == "Customize"
+        assert len(self.device.preset_modes) == 12
+
+    def test_mode_capabilities_follow_lua_protocols(self) -> None:
+        """Test protocol-specific mode capabilities from Lua tables."""
+        assert "Warm" not in self.device.preset_modes
+        assert "Ecology" not in self.device.preset_modes
+
+        v5_device = _make_device("560000F3")
+        assert "Self_Selection" in v5_device.preset_modes
+        assert "Ecology" not in v5_device.preset_modes
+        assert len(v5_device.preset_modes) == 21
+
+        v5_ecology_device = _make_device("56011CB4")
+        assert v5_ecology_device.preset_modes[-1] == "Ecology"
+        assert len(v5_ecology_device.preset_modes) == 22
+
+        v6_device = _make_device("56011CEC")
+        assert v6_device.preset_modes[-1] == "Ecology"
+        assert len(v6_device.preset_modes) == 22
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -140,7 +165,7 @@ class TestMideaFADevice:
     def test_notify_response_out_of_range_values(self) -> None:
         """Test notify1 response with out-of-range values mapped to None."""
         body = bytearray(36)
-        body[4] = 0x2B  # power on, mode raw 21 -> out of range
+        body[4] = 0x19  # power on, legacy mode raw 12 -> out of range
         body[5] = 27  # fan speed out of range -> 0
         body[8] = 0x7F  # oscillate on, angle 7 and mode 7 out of range
         body[25] = 20  # tilting angle out of range
@@ -678,12 +703,71 @@ class TestMideaFADevice:
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "Ionic")
-            mock_build_send.assert_called_once()
-            assert mock_build_send.call_args[0][0].mode == 14
+            mock_build_send.assert_not_called()
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "invalid")
             mock_build_send.assert_not_called()
+
+        self.device = _make_device("560000F3")
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "Ionic")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageNewSet)
+            assert message.mode == 14
+            mock_build_send.reset_mock()
+
+            self.device.set_attribute(DeviceAttributes.mode.value, "Ecology")
+            mock_build_send.assert_not_called()
+
+        self.device = _make_device("56011CB4")
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "Ecology")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageCB4Set)
+            assert message.mode == 21
+            assert len(message.body) == 54
+            assert message._body[37] == 0xFF
+            assert message._body[44] == 0xFF
+            assert message._body[51] == 0xFF
+            assert message._body[52] == 0xFF
+
+        self.device = _make_device("56011CEC")
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "Ecology")
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageV6Set)
+            assert message.mode == 21
+
+    def test_protocol_specific_mode_status(self) -> None:
+        """Test mode 21 maps only for Lua protocols that expose Ecology."""
+        body = bytearray(52)
+        body[4] = 0x2B
+        body[23] = 5
+
+        self.device = _make_device("560000F3")
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        assert status[DeviceAttributes.mode.value] is None
+
+        self.device = _make_device("56011CB4")
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        assert status[DeviceAttributes.mode.value] == "Ecology"
+
+        body = bytearray(63)
+        body[4] = 0x2B
+        body[23] = 6
+        self.device = _make_device("56011CEC")
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        assert status[DeviceAttributes.mode.value] == "Ecology"
 
     def test_set_attribute_other(self) -> None:
         """Test set attribute for plain attributes."""

@@ -7,6 +7,7 @@ from midealan.devices.fa.message import (
     FA_MESSAGE_PROTOCOL_V6,
     V6_DEFAULT_SWING_ANGLE,
     V6_DEFAULT_SWING_ANGLE_CODE,
+    V6_MAX_NORMAL_SWING_ANGLE,
     FAGeneralMessageBody,
     MessageFABase,
     MessageFAResponse,
@@ -211,7 +212,7 @@ class TestMessageNewSet:
         msg.target_temperature = 25
         msg.humidity = 50
         msg.oscillate = True
-        msg.oscillation_mode = "Both"
+        msg.oscillation_mode = "both"
         msg.oscillation_angle = 60
         msg.tilting_angle = 60
         msg.humidify = True
@@ -240,6 +241,13 @@ class TestMessageNewSet:
         assert body[33] == 1
         assert body[50] == 12
 
+    def test_body_mode_only_clears_invalid_marker(self) -> None:
+        """Test a mode-only command marks the mode byte as valid."""
+        msg = MessageNewSet(ProtocolVersion.V1, 0)
+        msg.mode = 3
+
+        assert msg._body[3] == 0x06
+
     def test_body_invalid_controls_are_omitted(self) -> None:
         """Test invalid v5 controls do not write out-of-range values."""
         msg = MessageNewSet(ProtocolVersion.V1, 0)
@@ -264,8 +272,8 @@ class TestMessageNewSet:
         msg.voice = 1
         msg.target_temperature = 0x80
         msg.oscillation_mode = "invalid"
-        msg.oscillation_angle = "Off"
-        msg.tilting_angle = "Off"
+        msg.oscillation_angle = "off"
+        msg.tilting_angle = "off"
         msg.humidify = 4
 
         body = msg._body
@@ -289,7 +297,7 @@ class TestMessageNewSet:
         """Test the v5 oscillation enable command."""
         msg = MessageNewSet(ProtocolVersion.V1, 0)
         msg.oscillate = True
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = 1275
 
         assert msg._body[7] == 0x02
@@ -299,7 +307,7 @@ class TestMessageNewSet:
         """Test the v5 oscillation disable command."""
         msg = MessageNewSet(ProtocolVersion.V1, 0)
         msg.oscillate = False
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = 0
 
         assert msg._body[7] == 0x02
@@ -313,19 +321,21 @@ class TestMessageNewSet:
         assert _value_to_code(True, {}) == 1
         assert _value_to_code(4, {}) == 4
         assert _value_to_code("unknown", {1: "known"}) is None
-        assert _new_angle_to_code("Off") == 0
+        assert _new_angle_to_code("off") == 0
         assert _new_angle_to_code(V6_DEFAULT_SWING_ANGLE) == (
             V6_DEFAULT_SWING_ANGLE_CODE
         )
         assert _new_angle_to_code("invalid") is None
         assert _new_angle_to_code("60") == 12
         assert _new_angle_to_code(1280) is None
+        assert _new_angle_to_code(1270, max_angle=V6_MAX_NORMAL_SWING_ANGLE) is None
+        assert _new_angle_to_code(1269, max_angle=V6_MAX_NORMAL_SWING_ANGLE) == 253
         assert _new_angle_to_code("60", {1: "60"}) == 1
 
     def test_body_horizontal_angle_sets_default_direction(self) -> None:
         """Test a horizontal angle uses the Lua lr direction."""
         msg = MessageNewSet(ProtocolVersion.V1, 0)
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = 60
 
         assert msg._body[7] == 0x02
@@ -334,7 +344,7 @@ class TestMessageNewSet:
     def test_body_vertical_angle_sets_default_direction(self) -> None:
         """Test a vertical angle uses the Lua ud direction."""
         msg = MessageNewSet(ProtocolVersion.V1, 0)
-        msg.oscillation_mode = "Tilting"
+        msg.oscillation_mode = "tilting"
         msg.tilting_angle = 60
 
         assert msg._body[7] == 0x04
@@ -360,7 +370,7 @@ class TestMessageV6Set:
         """Test the v6 horizontal oscillation enable command."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
         msg.oscillate = True
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = 1275
 
         assert msg._body[34] == 0x02
@@ -370,7 +380,7 @@ class TestMessageV6Set:
         """Test the v6 default horizontal oscillation command."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
         msg.oscillate = True
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = V6_DEFAULT_SWING_ANGLE
 
         assert msg._body[34] == 0x02
@@ -394,11 +404,18 @@ class TestMessageV6Set:
         """Test the v6 horizontal oscillation disable command."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
         msg.oscillate = False
-        msg.oscillation_mode = "Oscillation"
+        msg.oscillation_mode = "oscillation"
         msg.oscillation_angle = 0
 
         assert msg._body[34] == 0x02
         assert msg._body[50] == 0
+
+    def test_body_unsupported_v6_mode_is_omitted(self) -> None:
+        """Test unsupported v6 swing modes do not encode as swing off."""
+        msg = MessageV6Set(ProtocolVersion.V1, 0)
+        msg.oscillation_mode = "curve-w"
+
+        assert msg._body[34] == 0
 
 
 class TestFAGeneralMessageBody:

@@ -25,6 +25,7 @@ MAX_SWING_ANGLE = 1275
 V6_DEFAULT_SWING_ANGLE = "default"
 V6_DEFAULT_SWING_ANGLE_CODE = 0xFE
 V6_INVALID_SWING_ANGLE_CODE = 0xFF
+V6_MAX_NORMAL_SWING_ANGLE = V6_DEFAULT_SWING_ANGLE_CODE * 5 - 1
 LEGACY_MODE_END_BIT = 4
 NEW_PROTOCOL_MODE_END_BIT = 5
 LEGACY_HUMIDIFY_ON_VALUE = 2
@@ -77,6 +78,12 @@ V6_PROTOCOL_INVALID_BODY_BYTES = (
 )
 V6_SWING_TYPE_DIY = 1
 V6_SWING_TYPE_NORMAL = 2
+V6_SWING_MODE_CODES = {
+    1: 2,
+    2: 2 << 2,
+    6: (2 << 2) | 2,
+    7: 1,
+}
 SWING_MODE_OFF = 0
 SWING_MODE_OSCILLATION = 1
 SWING_MODE_TILTING = 2
@@ -212,6 +219,7 @@ class MessageNewSet(MessageFABase):
     _tilting_angle_byte = NEW_PROTOCOL_TILTING_ANGLE_BYTE
     _swing_angle_byte = NEW_PROTOCOL_SWING_ANGLE_BYTE
     _invalid_body_bytes: tuple[int, ...] = ()
+    _max_swing_angle = MAX_SWING_ANGLE
 
     def __init__(self, protocol_version: int, subtype: int) -> None:
         """Initialize a protocol v5 set message."""
@@ -263,6 +271,7 @@ class MessageNewSet(MessageFABase):
             MessageBit.set_bits(body, 2, 0, 1, 1 if self.child_lock else 2)
         if self.mode is not None:
             MessageBit.set_bits(body, 3, 1, 5, self.mode)
+            MessageBit.set_bit(body, 3, 7, 0)
         if self.fan_speed is not None and MIN_VALUE <= self.fan_speed <= MAX_FAN_SPEED:
             body[4] = self.fan_speed
         if self.target_temperature is not None:
@@ -283,18 +292,24 @@ class MessageNewSet(MessageFABase):
             mode = _value_to_code(self.oscillation_mode, SWING_DIRECTION_CODES)
             if mode is not None:
                 if self._protocol == FA_MESSAGE_PROTOCOL_V6:
-                    mode = {
-                        1: 2,
-                        2: 2 << 2,
-                        6: (2 << 2) | 2,
-                        7: 1,
-                    }.get(mode, 0)
-                    MessageBit.set_bits(body, self._swing_byte - 1, 0, 3, mode)
+                    v6_mode = V6_SWING_MODE_CODES.get(mode)
+                    if v6_mode is not None:
+                        MessageBit.set_bits(
+                            body,
+                            self._swing_byte - 1,
+                            0,
+                            3,
+                            v6_mode,
+                        )
+                        MessageBit.set_bit(body, self._swing_byte - 1, 7, 0)
                 else:
                     MessageBit.set_bits(body, self._swing_byte - 1, 1, 3, mode)
-                MessageBit.set_bit(body, self._swing_byte - 1, 7, 0)
+                    MessageBit.set_bit(body, self._swing_byte - 1, 7, 0)
         if self.oscillation_angle is not None:
-            angle = _new_angle_to_code(self.oscillation_angle)
+            angle = _new_angle_to_code(
+                self.oscillation_angle,
+                max_angle=self._max_swing_angle,
+            )
             if angle is not None:
                 body[self._swing_angle_byte - 1] = angle
                 if self._protocol == FA_MESSAGE_PROTOCOL_V6 and (
@@ -303,7 +318,10 @@ class MessageNewSet(MessageFABase):
                     MessageBit.set_bits(body, self._swing_byte - 1, 0, 1, 2)
                 MessageBit.set_bit(body, self._swing_byte - 1, 7, 0)
         if self.tilting_angle is not None:
-            angle = _new_angle_to_code(self.tilting_angle)
+            angle = _new_angle_to_code(
+                self.tilting_angle,
+                max_angle=self._max_swing_angle,
+            )
             if angle is not None:
                 body[self._tilting_angle_byte - 1] = angle
                 if self._protocol == FA_MESSAGE_PROTOCOL_V6 and (
@@ -363,6 +381,7 @@ class MessageV6Set(MessageNewSet):
     _tilting_angle_byte = V6_PROTOCOL_TILTING_ANGLE_BYTE
     _swing_angle_byte = V6_PROTOCOL_SWING_ANGLE_BYTE
     _invalid_body_bytes = V6_PROTOCOL_INVALID_BODY_BYTES
+    _max_swing_angle = V6_MAX_NORMAL_SWING_ANGLE
 
 
 class MessageCB4Set(MessageNewSet):
@@ -445,17 +464,17 @@ class MessageSet(MessageFABase):
 
 
 SWING_DIRECTION_CODES = {
-    0x00: "Off",
-    0x01: "Oscillation",
-    0x02: "Tilting",
-    0x03: "Curve-W",
-    0x04: "Curve-8",
-    0x05: "Reserved",
-    0x06: "Both",
+    0x00: "off",
+    0x01: "oscillation",
+    0x02: "tilting",
+    0x03: "curve-w",
+    0x04: "curve-8",
+    0x05: "reserved",
+    0x06: "both",
     0x07: "custom",
 }
 TILTING_ANGLE_CODES = {
-    0x00: "Off",
+    0x00: "off",
     0x01: "30",
     0x02: "60",
     0x03: "90",
@@ -472,7 +491,11 @@ def _v6_swing_axis_active(swing_type: int, angle: int) -> bool:
     """Return whether one v6 swing axis is active."""
     if swing_type == V6_SWING_TYPE_DIY:
         return True
-    return angle not in {0, V6_INVALID_SWING_ANGLE_CODE}
+    if angle in {0, V6_INVALID_SWING_ANGLE_CODE}:
+        return False
+    if angle == V6_DEFAULT_SWING_ANGLE_CODE:
+        return True
+    return swing_type == V6_SWING_TYPE_NORMAL
 
 
 def _v6_swing_mode(
@@ -498,12 +521,13 @@ def _v6_swing_mode(
 def _new_angle_to_code(
     value: float | str,
     values: dict[int, str] | None = None,
+    max_angle: int = MAX_SWING_ANGLE,
 ) -> int | None:
     """Convert a public angle to the v5 wire code."""
     if values is not None:
         return _value_to_code(value, values)
     if isinstance(value, str):
-        if value == "Off":
+        if value == "off":
             return 0
         if value == V6_DEFAULT_SWING_ANGLE:
             return V6_DEFAULT_SWING_ANGLE_CODE
@@ -511,7 +535,7 @@ def _new_angle_to_code(
             value = float(value)
         except ValueError:
             return None
-    if isinstance(value, (int, float)) and 0 <= value <= MAX_SWING_ANGLE:
+    if isinstance(value, (int, float)) and 0 <= value <= max_angle:
         return int(value // 5)
     return None
 

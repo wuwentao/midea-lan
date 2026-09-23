@@ -33,6 +33,7 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 DEFAULT_NEW_SWING_ANGLE = 1275
+INVALID_MODE_CODE = 0
 MAX_LEGACY_SWING_MODE = 6
 MODE_NEW_PROTOCOL_MODELS = {
     "560000F3": FA_MESSAGE_PROTOCOL,
@@ -200,7 +201,9 @@ class MideaFADevice(MideaDevice):
     @property
     def preset_modes(self) -> list[str]:
         """Return a list of preset modes."""
-        return list(self._mode_codes.values())
+        return [
+            mode for code, mode in self._mode_codes.items() if code != INVALID_MODE_CODE
+        ]
 
     @property
     def _mode_codes(self) -> dict[int, str]:
@@ -226,7 +229,7 @@ class MideaFADevice(MideaDevice):
     def _mode_code(self, value: str) -> int | None:
         """Return the protocol mode code for a public mode value."""
         for key, item in self._mode_codes.items():
-            if item == value:
+            if key != INVALID_MODE_CODE and item == value:
                 return key
         return None
 
@@ -277,7 +280,8 @@ class MideaFADevice(MideaDevice):
             )
             result = modes.get(_status_code(value))
         elif attr == DeviceAttributes.mode:
-            result = self._mode_codes.get(_status_code(value))
+            code = _status_code(value)
+            result = None if code == INVALID_MODE_CODE else self._mode_codes.get(code)
         elif attr == DeviceAttributes.voice:
             result = (
                 value

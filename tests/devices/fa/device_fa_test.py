@@ -105,14 +105,13 @@ class TestMideaFADevice:
             "both",
         ]
 
-        assert self.device.preset_modes[0] == "invalid"
+        assert self.device.preset_modes[0] == "normal"
         assert self.device.preset_modes[-1] == "customize"
-        assert len(self.device.preset_modes) == 12
+        assert len(self.device.preset_modes) == 11
 
     def test_mode_capabilities_follow_lua_protocols(self) -> None:
         """Test protocol-specific mode capabilities from Lua tables."""
         assert self.device.preset_modes == [
-            "invalid",
             "normal",
             "natural",
             "sleep",
@@ -221,7 +220,7 @@ class TestMideaFADevice:
         assert self.device.attributes[DeviceAttributes.humidify] is False
         assert self.device.attributes[DeviceAttributes.waterions] is False
         assert self.device.attributes[DeviceAttributes.display_on_off] is False
-        assert new_status[DeviceAttributes.mode.value] == "invalid"
+        assert new_status[DeviceAttributes.mode.value] is None
 
     def test_unexpected_response(self) -> None:
         """Test notify2 response is not parsed."""
@@ -916,6 +915,10 @@ class TestMideaFADevice:
             mock_build_send.reset_mock()
 
             self.device.set_attribute(DeviceAttributes.mode.value, "not_a_mode")
+            mock_build_send.assert_not_called()
+            mock_build_send.reset_mock()
+
+            self.device.set_attribute(DeviceAttributes.mode.value, "invalid")
             mock_build_send.assert_not_called()
 
         self.device = _make_device("560000F3")

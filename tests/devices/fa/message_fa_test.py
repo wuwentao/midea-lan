@@ -128,6 +128,53 @@ class TestMessageSet:
         msg.fan_speed = 27
         assert msg._body[4] == 0
 
+    def test_body_legacy_controls_match_lua_layout(self) -> None:
+        """Test legacy controls use the T_0000_FA_17.lua offsets."""
+        msg = MessageSet(ProtocolVersion.V1, 0)
+        msg.voice = "open_buzzer"
+        msg.target_temperature = 25
+        msg.humidity = 50
+        msg.anophelifuge = True
+        msg.anion = True
+        msg.body_feeling_scan = True
+        msg.scene = "sleep"
+
+        body = msg._body
+        assert body[1] == 4
+        assert body[5] == 66
+        assert body[6] == 50
+        assert body[8] == 0x05
+        assert body[14] == 1
+        assert body[15] == 4
+
+    def test_body_legacy_controls_support_off_values(self) -> None:
+        """Test legacy boolean controls encode their Lua off values."""
+        msg = MessageSet(ProtocolVersion.V1, 0)
+        msg.anophelifuge = False
+        msg.anion = False
+        msg.body_feeling_scan = False
+
+        body = msg._body
+        assert body[8] == 0x0A
+        assert body[14] == 2
+
+    def test_body_legacy_controls_ignore_invalid_enum_and_temperature(self) -> None:
+        """Test legacy controls omit values rejected by the Lua protocol."""
+        msg = MessageSet(ProtocolVersion.V1, 0)
+        msg.voice = "unknown"
+        msg.target_temperature = 51
+        msg.humidity = 0
+        msg.scene = "unknown"
+
+        body = msg._body
+        assert body[1] == 0
+        assert body[5] == 0
+        assert body[6] == 0
+        assert body[15] == 0
+
+        msg.target_temperature = -41
+        assert msg._body[5] == 0
+
     @pytest.mark.parametrize(
         ("oscillate", "expected"),
         [(True, 1), (False, 0)],

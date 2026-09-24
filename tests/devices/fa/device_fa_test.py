@@ -192,11 +192,16 @@ class TestMideaFADevice:
     def test_query_response_full_body(self) -> None:
         """Test query response with a full-length body and valid values."""
         body = bytearray(36)
+        body[2] = 0x04  # voice open_buzzer
         body[3] = 0x01  # child lock on
         body[4] = 0x03  # power on, mode raw 1 -> Normal
         body[5] = 0x03  # fan speed 3
+        body[6] = 66  # target temperature 25
+        body[7] = 50  # humidity
         body[8] = 0x33  # oscillate on, angle 3 -> 90, mode 1 -> Oscillation
-        body[9] = 0x20  # humidify on
+        body[9] = 0x25  # humidify mode 1, anophelifuge and anion on
+        body[15] = 1  # body feeling scan on
+        body[16] = 4  # scene sleep
         body[19] = 0x40  # display on
         body[25] = 0x02  # tilting angle 2 -> 60
         body[34] = 0x01  # waterions on
@@ -205,8 +210,11 @@ class TestMideaFADevice:
         )
         assert self.device.attributes[DeviceAttributes.power] is True
         assert self.device.attributes[DeviceAttributes.child_lock] is True
+        assert self.device.attributes[DeviceAttributes.voice] == "open_buzzer"
         assert self.device.attributes[DeviceAttributes.mode] == "normal"
         assert self.device.attributes[DeviceAttributes.fan_speed] == 3
+        assert self.device.attributes[DeviceAttributes.target_temperature] == 25.0
+        assert self.device.attributes[DeviceAttributes.humidity] == 50
         assert self.device.attributes[DeviceAttributes.oscillate] is True
         assert self.device.attributes[DeviceAttributes.oscillation_angle] == "90"
         assert self.device.attributes[DeviceAttributes.tilting_angle] == "60"
@@ -214,6 +222,11 @@ class TestMideaFADevice:
             self.device.attributes[DeviceAttributes.oscillation_mode] == "oscillation"
         )
         assert self.device.attributes[DeviceAttributes.humidify] is True
+        assert self.device.attributes[DeviceAttributes.humidify_mode] == "1"
+        assert self.device.attributes[DeviceAttributes.anophelifuge] is True
+        assert self.device.attributes[DeviceAttributes.anion] is True
+        assert self.device.attributes[DeviceAttributes.body_feeling_scan] is True
+        assert self.device.attributes[DeviceAttributes.scene] == "sleep"
         assert self.device.attributes[DeviceAttributes.waterions] is True
         assert self.device.attributes[DeviceAttributes.display_on_off] is True
         assert new_status[DeviceAttributes.mode.value] == "normal"
@@ -1088,6 +1101,32 @@ class TestMideaFADevice:
 
             self.device.set_attribute(DeviceAttributes.mode.value, "natural")
             mock_build_send.assert_not_called()
+
+    def test_legacy_model_mode_override(self) -> None:
+        """Test the 56000211 legacy mode byte required by the device."""
+        device = _make_device("56000211")
+        body = bytearray(36)
+        body[4] = 0x29
+        status = device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        assert status[DeviceAttributes.mode.value] == "comfort"
+        assert status[DeviceAttributes.auto_power_off.value] is None
+
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.mode.value, "comfort")
+
+        message = mock_build_send.call_args[0][0]
+        assert message.mode == 4
+        assert message._body[3] == 0x29
+
+        mock_build_send.reset_mock()
+        with patch.object(device, "build_send") as mock_build_send:
+            device.turn_on(mode="comfort")
+
+        message = mock_build_send.call_args[0][0]
+        assert message.mode == 4
+        assert message._body[3] == 0x29
 
     def test_protocol_specific_mode_status(self) -> None:
         """Test mode 21 maps only for Lua protocols that expose Ecology."""

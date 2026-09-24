@@ -29,10 +29,17 @@ V6_INVALID_SWING_ANGLE_CODE = 0xFF
 V6_MAX_NORMAL_SWING_ANGLE = V6_DEFAULT_SWING_ANGLE_CODE * 5 - 1
 LEGACY_MODE_END_BIT = 4
 NEW_PROTOCOL_MODE_END_BIT = 5
-LEGACY_HUMIDIFY_ON_VALUE = 2
 
 LEGACY_TILTING_ANGLE_GET_BYTE = 25
 LEGACY_TILTING_ANGLE_SET_BYTE = 24
+LEGACY_VOICE_SET_INDEX = 1
+LEGACY_TEMPERATURE_SET_INDEX = 5
+LEGACY_HUMIDITY_SET_INDEX = 6
+LEGACY_HUMIDIFY_SET_INDEX = 8
+LEGACY_BODY_FEELING_SCAN_SET_INDEX = 14
+LEGACY_SCENE_SET_INDEX = 15
+BODY_FEELING_SCAN_GET_BYTE = 15
+SCENE_GET_BYTE = 16
 LEGACY_HUMIDIFY_GET_BYTE = 9
 LEGACY_DISPLAY_GET_BYTE = 19
 LEGACY_DISPLAY_SET_BYTE = 18
@@ -105,6 +112,12 @@ HUMIDIFY_CODES = {
     0x01: "off",
     0x02: "no_change",
     0x03: "1",
+    0x04: "2",
+    0x05: "3",
+}
+LEGACY_HUMIDIFY_CODES = {
+    0x01: "off",
+    0x02: "1",
     0x04: "2",
     0x05: "3",
 }
@@ -409,13 +422,21 @@ class MessageSet(MessageFABase):
         self._subtype = subtype
         self.power: bool | None = None
         self.child_lock: bool | None = None
+        self.voice: int | str | None = None
         self.mode: int | None = None
+        self.mode_set_overrides: dict[int, int] = {}
         self.fan_speed: int | None = None
+        self.target_temperature: float | int | None = None
+        self.humidity: int | None = None
         self.oscillate: bool | None = None
         self.oscillation_angle: int | None = None
         self.oscillation_mode: int | None = None
         self.tilting_angle: int | None = None
         self.humidify: bool | None = None
+        self.anophelifuge: bool | None = None
+        self.anion: bool | None = None
+        self.body_feeling_scan: bool | None = None
+        self.scene: int | str | None = None
         self.waterions: bool | None = None
         self.display_on_off: bool | None = None
 
@@ -429,7 +450,7 @@ class MessageSet(MessageFABase):
         self.child_lock = value
 
     @property
-    def _body(self) -> bytearray:
+    def _body(self) -> bytearray:  # noqa: C901
         """Build the legacy FA payload after the body-type byte."""
         if 1 <= self._subtype <= ListTypes.X0A or self._subtype == ListTypes.A1:
             body = bytearray(18)
@@ -444,10 +465,25 @@ class MessageSet(MessageFABase):
             body[3] = 1 if self.power else 0
         if self.child_lock is not None:
             body[2] = 1 if self.child_lock else 2
+        if self.voice is not None:
+            voice = _value_to_code(self.voice, VOICE_CODES)
+            if voice is not None:
+                body[LEGACY_VOICE_SET_INDEX] = voice
         if self.mode is not None:
-            body[3] = 1 | ((self.mode << 1) & 0x1E)
+            mode_override = self.mode_set_overrides.get(self.mode)
+            body[3] = (
+                mode_override
+                if mode_override is not None
+                else 1 | ((self.mode << 1) & 0x1E)
+            )
         if self.fan_speed is not None and MIN_VALUE <= self.fan_speed <= MAX_FAN_SPEED:
             body[4] = self.fan_speed
+        if self.target_temperature is not None:
+            temperature = int(self.target_temperature)
+            if MIN_TEMPERATURE <= temperature <= MAX_TEMPERATURE:
+                body[LEGACY_TEMPERATURE_SET_INDEX] = temperature + TEMPERATURE_OFFSET
+        if self.humidity is not None and MIN_VALUE <= self.humidity <= MAX_HUMIDITY:
+            body[LEGACY_HUMIDITY_SET_INDEX] = self.humidity
         if self.oscillate is not None:
             body[7] = 1 if self.oscillate else 0
         if self.oscillation_angle is not None:
@@ -458,6 +494,22 @@ class MessageSet(MessageFABase):
             body[LEGACY_TILTING_ANGLE_SET_BYTE] = self.tilting_angle
         if self.humidify is not None:
             body[8] = (body[8] & 0x0F) | (0x20 if self.humidify else 0x10)
+        if self.anophelifuge is not None:
+            body[LEGACY_HUMIDIFY_SET_INDEX] = (
+                body[LEGACY_HUMIDIFY_SET_INDEX] & 0xF3
+            ) | ((1 if self.anophelifuge else 2) << 2)
+        if self.anion is not None:
+            body[LEGACY_HUMIDIFY_SET_INDEX] = (
+                body[LEGACY_HUMIDIFY_SET_INDEX] & 0xFC
+            ) | (1 if self.anion else 2)
+        if self.body_feeling_scan is not None:
+            body[LEGACY_BODY_FEELING_SCAN_SET_INDEX] = (
+                1 if self.body_feeling_scan else 2
+            )
+        if self.scene is not None:
+            scene = _value_to_code(self.scene, SCENE_CODES)
+            if scene is not None:
+                body[LEGACY_SCENE_SET_INDEX] = scene
         if self.waterions is not None and len(body) > LEGACY_WATERIONS_SET_BYTE:
             body[LEGACY_WATERIONS_SET_BYTE] = (
                 body[LEGACY_WATERIONS_SET_BYTE] & 0xFC
@@ -564,6 +616,9 @@ class FAGeneralMessageBody(MessageBody):
         self.error_code = _read_byte(body, 1)
         self.voice = _read_byte(body, 2)
         self.auto_power_off_flag = _get_bit(body, 3, 3)
+        self.auto_power_off: bool | None = None
+        self.body_feeling_scan: bool | None = None
+        self.scene: str | None = None
         self.child_lock = (_read_byte(body, 3) & 0x03) == 0x01
         self.power = (_read_byte(body, 4) & 0x01) == 0x01
         self.mode = _get_bits(
@@ -649,13 +704,14 @@ class FAGeneralMessageBody(MessageBody):
                 else 0
             )
             self.humidify = (
-                _get_bits(body, LEGACY_HUMIDIFY_GET_BYTE, 4, 7)
-                == LEGACY_HUMIDIFY_ON_VALUE
+                _get_bits(body, LEGACY_HUMIDIFY_GET_BYTE, 4, 7) in {2, 4, 5}
                 if len(body) > LEGACY_HUMIDIFY_GET_BYTE
                 else False
             )
-            self.humidify_mode = None
-            self.auto_power_off = bool(self.auto_power_off_flag)
+            self.humidify_mode = LEGACY_HUMIDIFY_CODES.get(
+                _get_bits(body, LEGACY_HUMIDIFY_GET_BYTE, 4, 7),
+            )
+            self.auto_power_off = None
             self.display_on_off = (
                 _get_bits(body, LEGACY_DISPLAY_GET_BYTE, 6, 7) == 1
                 if len(body) > LEGACY_DISPLAY_GET_BYTE
@@ -686,10 +742,14 @@ class FAGeneralMessageBody(MessageBody):
             _parse_temperature(_read_byte(body, 13)) if self.is_new_protocol else None
         )
         self.body_feeling_scan = (
-            _read_byte(body, 15) == 1 if self.is_new_protocol else None
+            _read_byte(body, BODY_FEELING_SCAN_GET_BYTE) == 1
+            if len(body) > BODY_FEELING_SCAN_GET_BYTE
+            else None
         )
         self.scene = (
-            SCENE_CODES.get(_read_byte(body, 16)) if self.is_new_protocol else None
+            SCENE_CODES.get(_read_byte(body, SCENE_GET_BYTE))
+            if len(body) > SCENE_GET_BYTE
+            else None
         )
 
 

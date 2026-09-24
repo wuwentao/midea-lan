@@ -44,6 +44,10 @@ MODE_NEW_PROTOCOL_MODELS = {
 }
 MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
 MODE_OFFICIAL_V6_MODELS = {"56011CEC"}
+# Model 56000211 reports raw mode 4 with the additional power-mode bit set.
+MODE_LEGACY_SET_OVERRIDES = {
+    "56000211": {0x04: 0x29},
+}
 NEW_SWING_ANGLE_STEP = 5
 
 
@@ -665,7 +669,9 @@ class MideaFADevice(MideaDevice):
 
     def _legacy_message(self) -> MessageSet:
         """Create a legacy set message."""
-        return MessageSet(self._message_protocol_version, self.subtype)
+        message = MessageSet(self._message_protocol_version, self.subtype)
+        message.mode_set_overrides = MODE_LEGACY_SET_OVERRIDES.get(self.model, {})
+        return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Set an FA device attribute."""

@@ -41,9 +41,9 @@ class TestMideaE1Device:
     def test_modes(self) -> None:
         """Test work modes are exposed without allowing mutation."""
         modes = self.device.modes
-        assert modes[0x04] == "eco wash"
+        assert modes[0x04] == "eco_wash"
         modes[0x04] = "Changed"
-        assert self.device.modes[0x04] == "eco wash"
+        assert self.device.modes[0x04] == "eco_wash"
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -67,7 +67,7 @@ class TestMideaE1Device:
 
     def test_start_work(self) -> None:
         """Test starting the currently selected work mode."""
-        self.device._attributes[DeviceAttributes.mode] = "eco wash"
+        self.device._attributes[DeviceAttributes.mode] = "eco_wash"
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.start_work()
 
@@ -75,7 +75,7 @@ class TestMideaE1Device:
         assert isinstance(message, MessageWork)
         assert message.mode == 0x04
 
-    @pytest.mark.parametrize("mode", [None, 0, "neutral gear"])
+    @pytest.mark.parametrize("mode", [None, 0, "neutral_gear"])
     def test_start_work_requires_selected_mode(self, mode: str | int | None) -> None:
         """Test starting requires a non-neutral selected mode."""
         self.device._attributes[DeviceAttributes.mode] = mode
@@ -106,7 +106,7 @@ class TestMideaE1Device:
             self._message(MessageType.query, body),
         )
         assert self.device.attributes[DeviceAttributes.status] == "running"
-        assert self.device.attributes[DeviceAttributes.mode] == "eco wash"
+        assert self.device.attributes[DeviceAttributes.mode] == "eco_wash"
         assert self.device.attributes[DeviceAttributes.progress] == "rinse"
         assert new_status[DeviceAttributes.status.value] == "running"
 

@@ -64,8 +64,8 @@ class TestMideaFDDevice:
             "manual",
             "auto",
             "continuous",
-            "living-room",
-            "bed-room",
+            "living_room",
+            "bed_room",
             "kitchen",
             "sleep",
         ]

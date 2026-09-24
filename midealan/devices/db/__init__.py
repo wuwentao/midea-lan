@@ -187,10 +187,10 @@ class MideaDBDevice(MideaDevice):
         "spin",
         "rinse",
         "wash",
-        "pre-wash",
+        "pre_wash",
         "dry",
         "weight",
-        "hi-speed spin",
+        "hi_speed_spin",
         "unknown",
     ]
 

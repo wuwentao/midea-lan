@@ -53,7 +53,7 @@ class MideaFCDevice(MideaDevice):
         80: "high",
     }
     _screen_displays: ClassVar[dict[int, str]] = {0: "bright", 6: "dim", 7: "off"}
-    _detect_modes: ClassVar[list[str]] = ["off", "pm 2.5", "methanal"]
+    _detect_modes: ClassVar[list[str]] = ["off", "pm_2.5", "methanal"]
 
     def __init__(
         self,

@@ -8,7 +8,11 @@ from unittest.mock import patch
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.devices.ac import DeviceAttributes, MideaACDevice
+from midealan.devices.ac import (
+    CAPABILITY_QUERY_RETRY_INTERVAL,
+    DeviceAttributes,
+    MideaACDevice,
+)
 from midealan.devices.ac.message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
@@ -377,6 +381,84 @@ class TestMideaACDevice:
             isinstance(q, CapabilitiesQuery | CapabilitiesAdditionalQuery)
             for q in queries
         )
+
+    def test_build_query_fallback_uses_bb_family(self) -> None:
+        """A silent B5 family is followed by the BB subprotocol family."""
+        self.device._message_protocol_version = 8
+        assert [type(q) for q in self.device.build_query_fallback()] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+        self.device._used_subprotocol = True
+        assert self.device.build_query_fallback() == []
+        assert [type(q) for q in self.device.build_query()] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+    def test_query_probe_hooks_validate_bb_and_defer_b5(self) -> None:
+        """BB replies are validated and timed-out B5 probes get a cooldown."""
+        self.device._message_protocol_version = 8
+        bb_query = SubProtocolQuery10(8)
+        assert self.device._is_query_response_valid(bb_query) is False
+        self.device._used_subprotocol = True
+        assert self.device._is_query_response_valid(bb_query) is True
+        assert self.device._is_query_response_valid(CapabilitiesQuery(8)) is True
+        assert self.device._should_defer_query(CapabilitiesQuery(8)) is True
+        assert self.device._should_defer_query(bb_query) is False
+
+        self.device._used_subprotocol = False
+        with patch("midealan.devices.ac.time.monotonic", return_value=100.0):
+            self.device._defer_query(CapabilitiesQuery(8))
+            assert self.device.build_init_query() == []
+        with patch(
+            "midealan.devices.ac.time.monotonic",
+            return_value=100.0 + CAPABILITY_QUERY_RETRY_INTERVAL,
+        ):
+            assert [type(q) for q in self.device.build_init_query()] == [
+                CapabilitiesQuery,
+            ]
+            retry_at = self.device._capability_query_retry_at
+            assert retry_at == 100.0 + 2 * CAPABILITY_QUERY_RETRY_INTERVAL
+            assert self.device.build_init_query() == []
+
+        self.device._capability_query = False
+        self.device._capability_addition_query = True
+        with patch("midealan.devices.ac.time.monotonic", return_value=200.0):
+            self.device._defer_query(CapabilitiesAdditionalQuery(8))
+            assert self.device.build_init_query() == []
+        with patch(
+            "midealan.devices.ac.time.monotonic",
+            return_value=200.0 + CAPABILITY_QUERY_RETRY_INTERVAL,
+        ):
+            assert [type(q) for q in self.device.build_init_query()] == [
+                CapabilitiesAdditionalQuery,
+            ]
+            assert self.device.build_init_query() == []
+
+        self.device._defer_query(object())
+
+    def test_bb_fallback_replies_select_and_parse_bb_family(self) -> None:
+        """Captured BB-only replies select the fallback family and parse status."""
+        device = self._make_device("223J6397", 1)
+        device._message_protocol_version = 8
+
+        indoor = device.process_message(bytes.fromhex(_BB_QUERY_10_REPLY))
+        basic = device.process_message(bytes.fromhex(_BB_QUERY_11_REPLY))
+        outdoor = device.process_message(bytes.fromhex(_BB_QUERY_30_REPLY))
+
+        assert indoor[DeviceAttributes.indoor_temperature] == 29.5
+        assert indoor[DeviceAttributes.indoor_humidity] == 53
+        assert basic[DeviceAttributes.mode] == 1
+        assert basic[DeviceAttributes.target_temperature] == 25.5
+        assert basic[DeviceAttributes.fan_speed] == 102
+        assert not basic[DeviceAttributes.power]
+        assert outdoor[DeviceAttributes.outdoor_temperature] == 25.5
+        assert device._used_subprotocol is True
+        assert device.build_query_fallback() == []
 
     def test_build_init_query_capability_lifecycle(self) -> None:
         """Test build_init_query arms/clears the one-shot B5 capability probes."""
@@ -933,14 +1015,18 @@ class TestMideaACDevice:
 
         # A socket close re-arms the basic probe (additional stays disarmed until
         # a fresh basic frame advertises it again).
+        self.device._capability_query_retry_at = 100.0
+        self.device._capability_addition_query_retry_at = 100.0
         self.device.reset_init_query()
-        rearmed = (
+        rearmed: tuple[bool, bool, bool, bool, float | None, float | None] = (
             self.device._capability_query,
             self.device._capability_addition_query,
             self.device._support_capability,
             self.device._support_capability_addition,
+            self.device._capability_query_retry_at,
+            self.device._capability_addition_query_retry_at,
         )
-        assert rearmed == (True, False, False, False)
+        assert rearmed == (True, False, False, False, None, None)
         assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
 
     def test_capability_query_lifecycle_stops_after_both_frames(self) -> None:
@@ -972,24 +1058,28 @@ class TestMideaACDevice:
         assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
 
         # Basic frame: records support, clears the basic probe, arms additional.
+        self.device._capability_query_retry_at = 100.0
         self.device.process_message(bytes(basic))
-        after_basic = (
+        after_basic: tuple[bool, bool, bool, float | None] = (
             self.device._support_capability,
             self.device._capability_query,
             self.device._capability_addition_query,
+            self.device._capability_query_retry_at,
         )
-        assert after_basic == (True, False, True)
+        assert after_basic == (True, False, True, None)
         assert [type(q) for q in self.device.build_init_query()] == [
             CapabilitiesAdditionalQuery,
         ]
 
         # Additional frame: records support and clears the additional probe.
+        self.device._capability_addition_query_retry_at = 100.0
         self.device.process_message(bytes(additional))
-        after_additional = (
+        after_additional: tuple[bool, bool, float | None] = (
             self.device._support_capability_addition,
             self.device._capability_addition_query,
+            self.device._capability_addition_query_retry_at,
         )
-        assert after_additional == (True, False)
+        assert after_additional == (True, False, None)
         assert self.device.build_init_query() == []
 
         # Both frames merged into a single capability dict. rate_select carries
@@ -2073,3 +2163,23 @@ class TestHASupportProperties:
             if record.levelno == logging.WARNING
         ]
         assert any("exceed" in msg.lower() for msg in warning_messages)
+
+
+# Frames captured from a BB-only 0xAC appliance (model 223J6397, subtype 1)
+# that answers the subprotocol queries and no B5/0x41 query.
+_BB_QUERY_10_REPLY = (
+    "aa82ac00000000000803bb7800ffff10d4f7d4f7050000860b92099209007d00000000"
+    "8000008000000000000000355164020eb5860b0000000000000001000000003cf60000"
+    "000092090000000000000c0000000000000000000000ff280a00363030303030010430"
+    "3004000000000000000000000000000045000100000000007c44"
+)
+_BB_QUERY_11_REPLY = (
+    "aa5aac00000000000803bb5000ffff1100800000000251663200000000320001010001"
+    "630c513266000400000000000000000000000000000000000000000000000000400000"
+    "01e000004000030028280030000000000000a51c"
+)
+_BB_QUERY_30_REPLY = (
+    "aa6aac00000000000803bb6000ffff3000ff050c03f609f609210000c00001a1000099"
+    "000000000001000000f000a63e00f00000686700050000640080100000000000000000"
+    "0000000000000000000000000000000000001700000000ff450000000000002d75"
+)

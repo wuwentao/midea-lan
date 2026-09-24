@@ -43,11 +43,11 @@ class TestMideaFBDevice:
             "auto",
             "eco",
             "sleep",
-            "anti-freezing",
+            "anti_freezing",
             "comfort",
-            "constant-temperature",
+            "constant_temperature",
             "normal",
-            "fast-heating",
+            "fast_heating",
             "standby",
         ]
 

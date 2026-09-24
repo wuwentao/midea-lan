@@ -30,11 +30,11 @@ class MideaFBDevice(MideaDevice):
         0x01: "auto",
         0x02: "eco",
         0x03: "sleep",
-        0x04: "anti-freezing",
+        0x04: "anti_freezing",
         0x05: "comfort",
-        0x06: "constant-temperature",
+        0x06: "constant_temperature",
         0x07: "normal",
-        0x08: "fast-heating",
+        0x08: "fast_heating",
         0x10: "standby",
     }
 

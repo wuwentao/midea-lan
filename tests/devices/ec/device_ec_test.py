@@ -87,9 +87,9 @@ class TestMideaECDevice:
         assert self.device.attributes[DeviceAttributes.keep_warm_time] == 45
         assert self.device.attributes[DeviceAttributes.top_temperature] == 50
         assert self.device.attributes[DeviceAttributes.bottom_temperature] == 60
-        assert self.device.attributes[DeviceAttributes.progress] == "keep-warm"
+        assert self.device.attributes[DeviceAttributes.progress] == "keep_warm"
         assert self.device.attributes[DeviceAttributes.with_pressure] is True
-        assert result[DeviceAttributes.progress.value] == "keep-warm"
+        assert result[DeviceAttributes.progress.value] == "keep_warm"
 
     def test_general_response_unknown_mode_and_progress(self) -> None:
         """Test general response with cloud mode and unknown progress."""

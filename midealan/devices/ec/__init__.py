@@ -134,14 +134,14 @@ class MideaECDevice(MideaDevice):
         "idle",
         "cooking",
         "delay",
-        "keep-warm",
-        "lid-open",
+        "keep_warm",
+        "lid_open",
         "relieving",
-        "keep-pressure",
+        "keep_pressure",
         "relieving",
         "cooking",
         "relieving",
-        "lid-open",
+        "lid_open",
     ]
 
     def __init__(

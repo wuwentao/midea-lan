@@ -121,7 +121,7 @@ class MideaE1Device(MideaDevice):
             0x04: "error",
             0x05: "soft_gear",
         }
-        self._progress = ["idle", "pre-wash", "wash", "rinse", "dry", "complete"]
+        self._progress = ["idle", "pre_wash", "wash", "rinse", "dry", "complete"]
 
     @property
     def modes(self) -> dict[int, str]:

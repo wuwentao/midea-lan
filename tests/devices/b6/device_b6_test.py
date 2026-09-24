@@ -53,7 +53,7 @@ class TestMideaB6Device:
         assert self.device.attributes[DeviceAttributes.oilcup_full] is False
         assert self.device.attributes[DeviceAttributes.cleaning_reminder] is False
         assert self.device.speed_count == 2
-        assert self.device.preset_modes == ["off", "level 1", "level 2"]
+        assert self.device.preset_modes == ["off", "level_1", "level_2"]
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -69,12 +69,12 @@ class TestMideaB6Device:
         )
         assert self.device.attributes[DeviceAttributes.power] is True
         assert self.device.attributes[DeviceAttributes.light] is True
-        assert self.device.attributes[DeviceAttributes.mode] == "level 2"
+        assert self.device.attributes[DeviceAttributes.mode] == "level_2"
         assert self.device.attributes[DeviceAttributes.fan_level] == 2
         assert self.device.attributes[DeviceAttributes.fan_speed] == 2
         assert self.device.attributes[DeviceAttributes.oilcup_full] is True
         assert self.device.attributes[DeviceAttributes.cleaning_reminder] is True
-        assert new_status[DeviceAttributes.mode.value] == "level 2"
+        assert new_status[DeviceAttributes.mode.value] == "level_2"
         assert new_status[DeviceAttributes.fan_speed.value] == 2
 
     def test_process_message_unknown_fan_level(self) -> None:
@@ -101,7 +101,7 @@ class TestMideaB6Device:
         assert self.device._message_protocol_version == 0x02
         assert self.device.attributes[DeviceAttributes.power] is True
         assert self.device.attributes[DeviceAttributes.light] is True
-        assert self.device.attributes[DeviceAttributes.mode] == "level 1"
+        assert self.device.attributes[DeviceAttributes.mode] == "level_1"
         assert self.device.attributes[DeviceAttributes.fan_speed] == 1
         assert self.device.attributes[DeviceAttributes.oilcup_full] is True
         assert self.device.attributes[DeviceAttributes.cleaning_reminder] is False
@@ -124,7 +124,7 @@ class TestMideaB6Device:
             self.device.set_attribute(DeviceAttributes.fan_speed.value, 5)
             mock_build_send.assert_not_called()
 
-            self.device.set_attribute(DeviceAttributes.mode.value, "level 1")
+            self.device.set_attribute(DeviceAttributes.mode.value, "level_1")
             mock_build_send.assert_called_once()
             mock_build_send.reset_mock()
 
@@ -163,7 +163,7 @@ class TestMideaB6Device:
     def test_turn_on_with_mode(self) -> None:
         """Test turn on with a mode name applies the matching fan level."""
         with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.turn_on(mode="level 1")
+            self.device.turn_on(mode="level_1")
             mock_build_send.assert_called_once()
             assert mock_build_send.call_args[0][0].fan_level == 1
             mock_build_send.reset_mock()
@@ -185,13 +185,13 @@ class TestMideaB6Device:
     def test_set_customize_empty_params(self) -> None:
         """Test set customize with an empty JSON object."""
         self.device.set_customize("{}")
-        assert self.device.preset_modes == ["off", "level 1", "level 2"]
+        assert self.device.preset_modes == ["off", "level_1", "level_2"]
         assert self.device._power_speed == 2
 
     def test_set_customize_default_speed_only(self) -> None:
         """Test set customize with only the default speed."""
         self.device.set_customize('{"default_speed": 1}')
-        assert self.device.preset_modes == ["off", "level 1", "level 2"]
+        assert self.device.preset_modes == ["off", "level_1", "level_2"]
         assert self.device._power_speed == 1
 
     def test_set_customize_partial_and_empty(self) -> None:
@@ -201,11 +201,11 @@ class TestMideaB6Device:
         assert self.device._power_speed == 2
 
         self.device.set_customize("")
-        assert self.device.preset_modes == ["off", "level 1", "level 2"]
+        assert self.device.preset_modes == ["off", "level_1", "level_2"]
         assert self.device._power_speed == 2
 
     def test_set_customize_invalid(self) -> None:
         """Test set customize with invalid JSON keeps defaults."""
         self.device.set_customize("{")
-        assert self.device.preset_modes == ["off", "level 1", "level 2"]
+        assert self.device.preset_modes == ["off", "level_1", "level_2"]
         assert self.device._power_speed == 2

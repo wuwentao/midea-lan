@@ -103,13 +103,13 @@ class TestMideaB0Device:
         body[6] = 0  # hours
         body[7] = 1  # minutes
         body[8] = 0  # seconds
-        body[9] = 0xA1  # mode "time unfreeze"
-        body[14] = 0x03  # fire power "medium low"
+        body[9] = 0xA1  # mode "time_unfreeze"
+        body[14] = 0x03  # fire power "medium_low"
         self.device.process_message(_build_message(MessageType.query, body))
         assert self.device.attributes[DeviceAttributes.status] == "working"
         assert self.device.attributes[DeviceAttributes.time_remaining] == 60
-        assert self.device.attributes[DeviceAttributes.mode] == "time unfreeze"
-        assert self.device.attributes[DeviceAttributes.fire_power] == "medium low"
+        assert self.device.attributes[DeviceAttributes.mode] == "time_unfreeze"
+        assert self.device.attributes[DeviceAttributes.fire_power] == "medium_low"
 
     def test_process_message_41(self) -> None:
         """Test process message with a 41 body variant."""

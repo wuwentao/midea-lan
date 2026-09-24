@@ -104,7 +104,7 @@ class TestMideaFDDevice:
 
     def test_detect_modes(self) -> None:
         """Test detect modes property."""
-        assert self.device.detect_modes == ["off", "pm 2.5", "methanal"]
+        assert self.device.detect_modes == ["off", "pm_2.5", "methanal"]
 
     def test_build_query(self) -> None:
         """Test build query."""

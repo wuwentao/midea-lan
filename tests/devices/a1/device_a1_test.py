@@ -42,8 +42,8 @@ class TestMideaA1Device:
             "manual",
             "continuous",
             "auto",
-            "clothes-dry",
-            "shoes-dry",
+            "clothes_dry",
+            "shoes_dry",
         ]
 
     def test_fan_speeds(self) -> None:

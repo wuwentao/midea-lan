@@ -39,7 +39,7 @@ class DeviceAttributes(StrEnum):
 class MideaCEDevice(MideaDevice):
     """Midea CE device."""
 
-    _modes: ClassVar[list[str]] = ["normal", "sleep mode", "eco mode"]
+    _modes: ClassVar[list[str]] = ["normal", "sleep_mode", "eco_mode"]
 
     def __init__(
         self,
@@ -101,9 +101,9 @@ class MideaCEDevice(MideaDevice):
                 self._attributes[status] = value
                 new_status[str(status)] = self._attributes[status]
         if self._attributes[DeviceAttributes.sleep_mode]:
-            self._attributes[DeviceAttributes.mode] = "sleep mode"
+            self._attributes[DeviceAttributes.mode] = "sleep_mode"
         elif self._attributes[DeviceAttributes.eco_mode]:
-            self._attributes[DeviceAttributes.mode] = "eco mode"
+            self._attributes[DeviceAttributes.mode] = "eco_mode"
         else:
             self._attributes[DeviceAttributes.mode] = "none"
         new_status[DeviceAttributes.mode.value] = self._attributes[
@@ -131,9 +131,9 @@ class MideaCEDevice(MideaDevice):
         if attr == DeviceAttributes.mode:
             message.sleep_mode = False
             message.eco_mode = False
-            if value == "sleep mode":
+            if value == "sleep_mode":
                 message.sleep_mode = True
-            elif value == "eco mode":
+            elif value == "eco_mode":
                 message.eco_mode = True
         else:
             setattr(message, str(attr), value)

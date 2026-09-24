@@ -33,7 +33,7 @@ class MideaE8Device(MideaDevice):
         0x01: "delay",
         0x02: "working",
         0x03: "paused",
-        0x04: "keep-warming",
+        0x04: "keep_warming",
         0xFF: "error",
     }
 

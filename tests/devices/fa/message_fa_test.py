@@ -471,7 +471,7 @@ class TestMessageV6Set:
     def test_body_unsupported_v6_mode_is_omitted(self) -> None:
         """Test unsupported v6 swing modes do not encode as swing off."""
         msg = MessageV6Set(ProtocolVersion.V1, 0)
-        msg.oscillation_mode = "curve-w"
+        msg.oscillation_mode = "curve_w"
 
         assert msg._body[34] == 0
 

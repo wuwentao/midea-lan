@@ -12,6 +12,8 @@ from .message import MessageA1Response, MessageQuery, MessageSet
 
 _LOGGER = logging.getLogger(__name__)
 
+INITIAL_FAN_SPEED = 60
+
 
 class DeviceAttributes(StrEnum):
     """Device A1 attributes."""
@@ -37,19 +39,19 @@ class MideaA1Device(MideaDevice):
     """Midea A1 Device."""
 
     _default_modes: ClassVar[dict[int, str]] = {
-        1: "Manual",
-        2: "Continuous",
-        3: "Auto",
-        4: "Clothes-Dry",
-        5: "Shoes-Dry",
+        1: "manual",
+        2: "continuous",
+        3: "auto",
+        4: "clothes-dry",
+        5: "shoes-dry",
     }
     _default_speeds: ClassVar[dict[int, str]] = {
-        1: "Lowest",
-        40: "Low",
-        60: "Medium",
-        80: "High",
-        102: "Auto",
-        127: "Off",
+        1: "lowest",
+        40: "low",
+        INITIAL_FAN_SPEED: "medium",
+        80: "high",
+        102: "auto",
+        127: "off",
     }
     _water_level_sets: ClassVar[list[str]] = ["25", "50", "75", "100"]
 
@@ -68,7 +70,7 @@ class MideaA1Device(MideaDevice):
                 DeviceAttributes.prompt_tone: True,
                 DeviceAttributes.child_lock: False,
                 DeviceAttributes.mode: None,
-                DeviceAttributes.fan_speed: "Medium",
+                DeviceAttributes.fan_speed: "medium",
                 DeviceAttributes.swing: False,
                 DeviceAttributes.target_humidity: 35,
                 DeviceAttributes.anion: False,
@@ -236,6 +238,14 @@ class MideaA1Device(MideaDevice):
                         to_update[DeviceAttributes.prompt_tone.value] = prompt_tone
                     if to_update:
                         self.update_all(to_update)
+                if (
+                    self._attributes[DeviceAttributes.fan_speed]
+                    == self._default_speeds[INITIAL_FAN_SPEED]
+                    and INITIAL_FAN_SPEED in self._speeds
+                ):
+                    self._attributes[DeviceAttributes.fan_speed] = self._speeds[
+                        INITIAL_FAN_SPEED
+                    ]
             except Exception:
                 _LOGGER.exception(
                     "[%s] Set customize error - %s",

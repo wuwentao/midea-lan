@@ -44,13 +44,13 @@ class MideaCCDevice(MideaDevice):
     """Midea CC device."""
 
     _fan_speeds_7level: ClassVar[dict[int, str]] = {
-        0x01: "level 1",
-        0x02: "level 2",
-        0x04: "level 3",
-        0x08: "level 4",
-        0x10: "level 5",
-        0x20: "level 6",
-        0x40: "level 7",
+        0x01: "level_1",
+        0x02: "level_2",
+        0x04: "level_3",
+        0x08: "level_4",
+        0x10: "level_5",
+        0x20: "level_6",
+        0x40: "level_7",
         0x80: "auto",
     }
     _fan_speeds_3level: ClassVar[dict[int, str]] = {
@@ -61,13 +61,13 @@ class MideaCCDevice(MideaDevice):
     }
     # 0xFE VRF panels report fan speed as 1-7 (+8=auto), not as a bitmask
     _fan_speeds_fe: ClassVar[dict[int, str]] = {
-        0x01: "level 1",
-        0x02: "level 2",
-        0x03: "level 3",
-        0x04: "level 4",
-        0x05: "level 5",
-        0x06: "level 6",
-        0x07: "level 7",
+        0x01: "level_1",
+        0x02: "level_2",
+        0x03: "level_3",
+        0x04: "level_4",
+        0x05: "level_5",
+        0x06: "level_6",
+        0x07: "level_7",
         0x08: "auto",
     }
 

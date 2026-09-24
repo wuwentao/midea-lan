@@ -847,7 +847,7 @@ class TestMideaCDExtendedDevice:
         assert self.device.preset_modes == [
             "economy",
             "hybrid",
-            "e-heater",
+            "e_heater",
             "smart",
         ]
         queries = self.device.build_query()
@@ -872,9 +872,9 @@ class TestMideaCDExtendedDevice:
         assert self.device.preset_modes == [
             "economy",
             "hybrid",
-            "e-heater",
+            "e_heater",
             "smart",
-            "heat-pump",
+            "heat_pump",
             "boost",
             "silent",
         ]

@@ -549,7 +549,7 @@ class MideaFADevice(MideaDevice):
                 message.oscillation_angle = 0
                 message.oscillation_mode = "oscillation"
             elif value in self._new_oscillation_modes.values() and (
-                not is_v6 or value not in {"curve-w", "curve-8", "reserved"}
+                not is_v6 or value not in {"curve_w", "curve_8", "reserved"}
             ):
                 message.oscillation_mode = str(value)
                 message.oscillate = True

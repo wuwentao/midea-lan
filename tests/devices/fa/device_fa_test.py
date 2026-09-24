@@ -99,8 +99,8 @@ class TestMideaFADevice:
             "off",
             "oscillation",
             "tilting",
-            "curve-w",
-            "curve-8",
+            "curve_w",
+            "curve_8",
             "reserved",
             "both",
         ]
@@ -116,8 +116,8 @@ class TestMideaFADevice:
             "off",
             "oscillation",
             "tilting",
-            "curve-w",
-            "curve-8",
+            "curve_w",
+            "curve_8",
             "reserved",
             "both",
             "custom",
@@ -135,7 +135,7 @@ class TestMideaFADevice:
             "both",
             "custom",
         ]
-        assert "curve-w" not in v6_device.oscillation_modes
+        assert "curve_w" not in v6_device.oscillation_modes
         assert v6_device.oscillation_angles[0] == "off"
         assert v6_device.oscillation_angles[-2:] == ["1265", "default"]
         assert v6_device.tilting_angles == v6_device.oscillation_angles
@@ -669,8 +669,8 @@ class TestMideaFADevice:
 
         with patch.object(self.device, "build_send") as mock_build_send:
             for attr, value in (
-                (DeviceAttributes.oscillation_mode.value, "curve-w"),
-                (DeviceAttributes.oscillation_mode.value, "curve-8"),
+                (DeviceAttributes.oscillation_mode.value, "curve_w"),
+                (DeviceAttributes.oscillation_mode.value, "curve_8"),
                 (DeviceAttributes.oscillation_mode.value, "reserved"),
                 (DeviceAttributes.oscillation_angle.value, "invalid"),
                 (DeviceAttributes.oscillation_angle.value, 1270),

@@ -135,7 +135,7 @@ class MideaCDDevice(MideaDevice):
 
     _modes: ClassVar[dict[int, str]] = {
         0x00: "none",
-        0x01: "energy-save",
+        0x01: "energy_save",
         0x02: "standard",
         0x03: "dual",
         0x04: "smart",
@@ -146,9 +146,9 @@ class MideaCDDevice(MideaDevice):
         0x00: "none",
         0x01: "economy",
         0x02: "hybrid",
-        0x03: "e-heater",
+        0x03: "e_heater",
         0x04: "smart",
-        0x05: "heat-pump",
+        0x05: "heat_pump",
         0x09: "boost",
         0x0A: "silent",
     }
@@ -327,11 +327,11 @@ class MideaCDDevice(MideaDevice):
         modes = self._mode_map()
         selectable = ["economy", "hybrid"]
         if self._attributes.get(DeviceAttributes.support_electric_mode) is not False:
-            selectable.append("e-heater")
+            selectable.append("e_heater")
         if self._attributes.get(DeviceAttributes.support_smart_mode) is not False:
             selectable.append("smart")
         if self._attributes.get(DeviceAttributes.support_heat_pump_mode):
-            selectable.append("heat-pump")
+            selectable.append("heat_pump")
         if self._attributes.get(DeviceAttributes.support_boost_mode):
             selectable.append("boost")
         if self._attributes.get(DeviceAttributes.support_silent_mode):

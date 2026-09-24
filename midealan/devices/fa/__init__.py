@@ -44,6 +44,7 @@ MODE_NEW_PROTOCOL_MODELS = {
 }
 MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
 MODE_OFFICIAL_V6_MODELS = {"56011CEC"}
+NEW_SWING_ANGLE_STEP = 5
 
 
 def _status_code(value: FAValue) -> int:
@@ -202,17 +203,25 @@ class MideaFADevice(MideaDevice):
 
     @property
     def oscillation_angles(self) -> list[str]:
-        """Return the list of legacy oscillation angles."""
+        """Return the list of supported horizontal swing angles."""
+        if self._effective_fa_protocol in FA_MESSAGE_PROTOCOLS:
+            return self._new_angle_options()
         return list(self._oscillation_angles.values())
 
     @property
     def tilting_angles(self) -> list[str]:
-        """Return the list of tilting angles."""
+        """Return the list of supported vertical swing angles."""
+        if self._effective_fa_protocol in FA_MESSAGE_PROTOCOLS:
+            return self._new_angle_options()
         return list(self._tilting_angles.values())
 
     @property
     def oscillation_modes(self) -> list[str]:
         """Return the list of supported oscillation modes."""
+        if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6:
+            return ["off", "oscillation", "tilting", "both", "custom"]
+        if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL:
+            return list(self._new_oscillation_modes.values())
         return list(self._oscillation_modes.values())
 
     @property
@@ -255,6 +264,39 @@ class MideaFADevice(MideaDevice):
             else MODE_NEW_PROTOCOL_MODELS.get(self.model, 0)
         )
 
+    def _new_angle_options(self) -> list[str]:
+        """Return angle options for protocol v5/v6 select entities."""
+        max_angle = (
+            V6_MAX_NORMAL_SWING_ANGLE
+            if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+            else DEFAULT_NEW_SWING_ANGLE
+        )
+        options = [
+            "off",
+            *(
+                str(angle)
+                for angle in range(
+                    NEW_SWING_ANGLE_STEP,
+                    max_angle + 1,
+                    NEW_SWING_ANGLE_STEP,
+                )
+            ),
+        ]
+        if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6:
+            options.append(V6_DEFAULT_SWING_ANGLE)
+        return options
+
+    def _new_status_angle_value(self, code: int) -> str | None:
+        """Convert a protocol v5/v6 angle code to a public option value."""
+        if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6:
+            if code == V6_DEFAULT_SWING_ANGLE_CODE:
+                return V6_DEFAULT_SWING_ANGLE
+            if code == V6_INVALID_SWING_ANGLE_CODE:
+                return None
+        if code == 0:
+            return "off"
+        return str(code * NEW_SWING_ANGLE_STEP)
+
     def _mode_code(self, value: str) -> int | None:
         """Return the protocol mode code for a public mode value."""
         for key, item in self._preset_mode_codes.items():
@@ -275,30 +317,12 @@ class MideaFADevice(MideaDevice):
         result = value
         if attr == DeviceAttributes.oscillation_angle:
             if self.fa_protocol in FA_MESSAGE_PROTOCOLS:
-                code = _status_code(value)
-                if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6:
-                    if code == V6_DEFAULT_SWING_ANGLE_CODE:
-                        result = V6_DEFAULT_SWING_ANGLE
-                    elif code == V6_INVALID_SWING_ANGLE_CODE:
-                        result = None
-                    else:
-                        result = code * 5
-                else:
-                    result = code * 5
+                result = self._new_status_angle_value(_status_code(value))
             else:
                 result = self._oscillation_angles.get(_status_code(value))
         elif attr == DeviceAttributes.tilting_angle:
             if self.fa_protocol in FA_MESSAGE_PROTOCOLS:
-                code = _status_code(value)
-                if self.fa_protocol == FA_MESSAGE_PROTOCOL_V6:
-                    if code == V6_DEFAULT_SWING_ANGLE_CODE:
-                        result = V6_DEFAULT_SWING_ANGLE
-                    elif code == V6_INVALID_SWING_ANGLE_CODE:
-                        result = None
-                    else:
-                        result = code * 5
-                else:
-                    result = code * 5
+                result = self._new_status_angle_value(_status_code(value))
             else:
                 result = self._tilting_angles.get(_status_code(value))
         elif attr == DeviceAttributes.oscillation_mode:
@@ -525,16 +549,23 @@ class MideaFADevice(MideaDevice):
             ):
                 message.oscillation_mode = str(value)
                 message.oscillate = True
-                current_angle = self._attributes[DeviceAttributes.oscillation_angle]
-                message.oscillation_angle = (
-                    current_angle
-                    if self._is_active_angle(current_angle)
-                    else (V6_DEFAULT_SWING_ANGLE if is_v6 else DEFAULT_NEW_SWING_ANGLE)
+                default_angle = (
+                    V6_DEFAULT_SWING_ANGLE if is_v6 else DEFAULT_NEW_SWING_ANGLE
                 )
-                if value == "both":
-                    current_tilting = self._attributes[DeviceAttributes.tilting_angle]
-                    if self._is_active_angle(current_tilting):
-                        message.tilting_angle = current_tilting
+                current_angle = self._attributes[DeviceAttributes.oscillation_angle]
+                current_tilting = self._attributes[DeviceAttributes.tilting_angle]
+                if value != "tilting":
+                    message.oscillation_angle = (
+                        current_angle
+                        if self._is_active_angle(current_angle)
+                        else default_angle
+                    )
+                if value in {"tilting", "both"}:
+                    message.tilting_angle = (
+                        current_tilting
+                        if self._is_active_angle(current_tilting)
+                        else default_angle
+                    )
             else:
                 valid = False
         elif attr == DeviceAttributes.oscillation_angle:
@@ -608,9 +639,16 @@ class MideaFADevice(MideaDevice):
     @staticmethod
     def _is_active_angle(value: FAValue) -> bool:
         """Return whether a public swing angle represents an active axis."""
+        if isinstance(value, str):
+            if value == V6_DEFAULT_SWING_ANGLE:
+                return True
+            try:
+                return float(value) > 0
+            except ValueError:
+                return False
         return (
-            value == V6_DEFAULT_SWING_ANGLE
-            or isinstance(value, (int, float))
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
             and value > 0
         )
 

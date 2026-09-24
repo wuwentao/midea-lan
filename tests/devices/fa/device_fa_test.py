@@ -109,6 +109,37 @@ class TestMideaFADevice:
         assert self.device.preset_modes[-1] == "customize"
         assert len(self.device.preset_modes) == 11
 
+    def test_new_protocol_swing_properties(self) -> None:
+        """Test protocol-specific swing option lists match public state values."""
+        v5_device = _make_device("560000F3")
+        assert v5_device.oscillation_modes == [
+            "off",
+            "oscillation",
+            "tilting",
+            "curve-w",
+            "curve-8",
+            "reserved",
+            "both",
+            "custom",
+        ]
+        assert v5_device.oscillation_angles[0] == "off"
+        assert v5_device.oscillation_angles[1:4] == ["5", "10", "15"]
+        assert v5_device.oscillation_angles[-1] == "1275"
+        assert v5_device.tilting_angles == v5_device.oscillation_angles
+
+        v6_device = _make_device("56011CEC")
+        assert v6_device.oscillation_modes == [
+            "off",
+            "oscillation",
+            "tilting",
+            "both",
+            "custom",
+        ]
+        assert "curve-w" not in v6_device.oscillation_modes
+        assert v6_device.oscillation_angles[0] == "off"
+        assert v6_device.oscillation_angles[-2:] == ["1265", "default"]
+        assert v6_device.tilting_angles == v6_device.oscillation_angles
+
     def test_mode_capabilities_follow_lua_protocols(self) -> None:
         """Test protocol-specific mode capabilities from Lua tables."""
         assert self.device.preset_modes == [
@@ -308,7 +339,10 @@ class TestMideaFADevice:
             )
         message = mock_build_send.call_args[0][0]
         assert message.oscillation_mode == "tilting"
-        assert message.oscillation_angle == 60
+        assert message.oscillation_angle is None
+        assert message.tilting_angle == 1275
+        assert message._body[7] == 0x04
+        assert message._body[24] == 0xFF
         mock_build_send.reset_mock()
 
         with patch.object(self.device, "build_send") as mock_build_send:
@@ -398,6 +432,8 @@ class TestMideaFADevice:
         assert status[DeviceAttributes.scene.value] == "sleep"
         assert status[DeviceAttributes.humidify_feedback.value] == 55
         assert status[DeviceAttributes.temperature_feedback.value] == 25.0
+        assert status[DeviceAttributes.oscillation_angle.value] == "60"
+        assert status[DeviceAttributes.tilting_angle.value] == "off"
 
     def test_legacy_long_body_does_not_select_protocol_v5(self) -> None:
         """Test a legacy long body is not detected as protocol v5."""
@@ -592,6 +628,24 @@ class TestMideaFADevice:
         assert status[DeviceAttributes.oscillation_mode.value] == "tilting"
         assert status[DeviceAttributes.tilting_angle.value] == "default"
 
+    def test_protocol_v6_normal_angle_response_is_string_option(self) -> None:
+        """Test v6 normal angles decode to values present in options."""
+        body = bytearray(63)
+        body[23] = 6
+        body[25] = 12
+        body[35] = 0x08
+
+        status = self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        assert status[DeviceAttributes.oscillate.value] is True
+        assert status[DeviceAttributes.oscillation_mode.value] == "tilting"
+        assert status[DeviceAttributes.tilting_angle.value] == "60"
+        assert (
+            status[DeviceAttributes.tilting_angle.value] in self.device.tilting_angles
+        )
+
     def test_protocol_v6_rejects_unsupported_swing_commands(self) -> None:
         """Test v6 refuses unsupported modes and unencodable angles."""
         body = bytearray(63)
@@ -647,7 +701,7 @@ class TestMideaFADevice:
         assert message.oscillation_angle is None
 
     def test_protocol_v5_mode_both_includes_active_tilting_axis(self) -> None:
-        """Test v5 both mode carries the current active vertical angle."""
+        """Test v5 both mode carries or defaults active vertical angle."""
         body = bytearray(52)
         body[23] = 5
         self.device.process_message(
@@ -662,6 +716,9 @@ class TestMideaFADevice:
         assert message.oscillation_mode == "both"
         assert message.oscillation_angle == 1275
         assert message.tilting_angle == 30
+        assert message._body[7] == 0x0C
+        assert message._body[24] == 6
+        assert message._body[50] == 0xFF
 
         self.device._attributes[DeviceAttributes.tilting_angle] = None
         with patch.object(self.device, "build_send") as mock_build_send:
@@ -669,7 +726,68 @@ class TestMideaFADevice:
 
         message = mock_build_send.call_args[0][0]
         assert message.oscillation_mode == "both"
+        assert message.oscillation_angle == 1275
+        assert message.tilting_angle == 1275
+        assert message._body[24] == 0xFF
+        assert message._body[50] == 0xFF
+
+    def test_protocol_v5_mode_oscillation_omits_vertical_axis(self) -> None:
+        """Test v5 horizontal mode does not carry a vertical angle."""
+        body = bytearray(52)
+        body[23] = 5
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+        self.device._attributes[DeviceAttributes.tilting_angle] = "60"
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_mode.value,
+                "oscillation",
+            )
+
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "oscillation"
+        assert message.oscillation_angle == 1275
         assert message.tilting_angle is None
+        assert message._body[7] == 0x02
+        assert message._body[24] == 0
+        assert message._body[50] == 0xFF
+
+    def test_protocol_v6_mode_commands_set_active_axis_angles(self) -> None:
+        """Test v6 mode commands write defaults for every active swing axis."""
+        body = bytearray(63)
+        body[23] = 6
+        self.device.process_message(
+            _build_message(ProtocolVersion.V1, MessageType.query, body),
+        )
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.oscillation_mode.value,
+                "tilting",
+            )
+
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "tilting"
+        assert message.oscillation_angle is None
+        assert message.tilting_angle == V6_DEFAULT_SWING_ANGLE
+        assert message._body[34] == 0x08
+        assert message._body[24] == V6_DEFAULT_SWING_ANGLE_CODE
+        assert message._body[50] == V6_INVALID_SWING_ANGLE_CODE
+
+        self.device._attributes[DeviceAttributes.oscillation_angle] = "60"
+        self.device._attributes[DeviceAttributes.tilting_angle] = None
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.oscillation_mode.value, "both")
+
+        message = mock_build_send.call_args[0][0]
+        assert message.oscillation_mode == "both"
+        assert message.oscillation_angle == "60"
+        assert message.tilting_angle == V6_DEFAULT_SWING_ANGLE
+        assert message._body[34] == 0x0A
+        assert message._body[24] == V6_DEFAULT_SWING_ANGLE_CODE
+        assert message._body[50] == 12
 
     def test_protocol_v5_tilting_off_without_horizontal_axis_disables_swing(
         self,

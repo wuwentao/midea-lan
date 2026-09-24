@@ -89,11 +89,11 @@ class MideaDADevice(MideaDevice):
             "embathe",
             "memory",
             "child",
-            "down jacket",
+            "down_jacket",
             "stir",
             "mute",
-            "bucket self clean",
-            "air dry",
+            "bucket_self_clean",
+            "air_dry",
         ]
         speed = ["-", "low", "medium", "high"]
         strength = ["-", "week", "medium", "strong"]

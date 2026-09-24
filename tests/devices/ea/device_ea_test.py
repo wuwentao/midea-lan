@@ -104,7 +104,7 @@ class TestMideaEADevice:
         assert self.device.attributes[DeviceAttributes.keep_warm_time] == 65
         assert self.device.attributes[DeviceAttributes.top_temperature] == 70
         assert self.device.attributes[DeviceAttributes.bottom_temperature] == 60
-        assert self.device.attributes[DeviceAttributes.progress] == "keep-warm"
+        assert self.device.attributes[DeviceAttributes.progress] == "keep_warm"
 
     def test_process_message_body1_query(self) -> None:
         """Test process message with a V0 query message parses EABody1."""

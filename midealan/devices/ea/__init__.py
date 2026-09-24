@@ -130,7 +130,7 @@ class MideaEADevice(MideaDevice):
         + ["unknown"] * 5
         + ["keep_warm"]
     )
-    _progress: ClassVar[list[str]] = ["idle", "delay", "cooking", "keep-warm"]
+    _progress: ClassVar[list[str]] = ["idle", "delay", "cooking", "keep_warm"]
 
     def __init__(
         self,

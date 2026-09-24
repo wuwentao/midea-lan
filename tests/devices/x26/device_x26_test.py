@@ -76,8 +76,8 @@ class TestMidea26Device:
         """Test preset modes property."""
         assert self.device.preset_modes == [
             "off",
-            "heat(high)",
-            "heat(low)",
+            "heat_high",
+            "heat_low",
             "bath",
             "blow",
             "ventilation",
@@ -135,8 +135,8 @@ class TestMidea26Device:
     @pytest.mark.parametrize(
         ("values", "expected_mode", "expected_direction"),
         [
-            ({9: 1, 10: 55, 12: 90}, "heat(high)", "90"),
-            ({9: 1, 10: 30, 12: 60}, "heat(low)", "60"),
+            ({9: 1, 10: 55, 12: 90}, "heat_high", "90"),
+            ({9: 1, 10: 30, 12: 60}, "heat_low", "60"),
             ({13: 1, 17: 0xFD}, "bath", "oscillate"),
             ({26: 1, 28: 120}, "blow", "120"),
             ({18: 1, 20: 100}, "ventilation", "100"),

@@ -33,8 +33,8 @@ class Midea26Device(MideaDevice):
 
     _modes: ClassVar[list[str]] = [
         "off",
-        "heat(high)",
-        "heat(low)",
+        "heat_high",
+        "heat_low",
         "bath",
         "blow",
         "ventilation",

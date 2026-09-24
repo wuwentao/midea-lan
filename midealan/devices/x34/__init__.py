@@ -113,7 +113,7 @@ class Midea34Device(MideaDevice):
             0x19: "cloud_wash",  # BYTE_MODE_CLOUD_WASH
         }
         self._status = ["off", "idle", "delay", "running", "error"]
-        self._progress = ["idle", "pre-wash", "wash", "rinse", "dry", "complete"]
+        self._progress = ["idle", "pre_wash", "wash", "rinse", "dry", "complete"]
 
     def build_query(self) -> list[MessageQuery]:
         """Midea x34 device build query."""

@@ -72,7 +72,7 @@ class TestMideaFCDevice:
         ]
         assert self.device.fan_speeds == ["auto", "standby", "low", "medium", "high"]
         assert self.device.screen_displays == ["bright", "dim", "off"]
-        assert self.device.detect_modes == ["off", "pm_2.5", "methanal"]
+        assert self.device.detect_modes == ["off", "pm_2_5", "methanal"]
 
     def test_build_query(self) -> None:
         """Test build query."""
@@ -106,7 +106,7 @@ class TestMideaFCDevice:
         assert self.device.attributes[DeviceAttributes.mode] == "auto"
         assert self.device.attributes[DeviceAttributes.fan_speed] == "low"
         assert self.device.attributes[DeviceAttributes.screen_display] == "dim"
-        assert self.device.attributes[DeviceAttributes.detect_mode] == "pm_2.5"
+        assert self.device.attributes[DeviceAttributes.detect_mode] == "pm_2_5"
         assert self.device.attributes[DeviceAttributes.pm25] == 16
         assert self.device.attributes[DeviceAttributes.tvoc] == 5
         assert self.device.attributes[DeviceAttributes.hcho] == 2
@@ -287,7 +287,7 @@ class TestMideaFCDevice:
         self.device._attributes[DeviceAttributes.mode] = "manual"
         self.device._attributes[DeviceAttributes.fan_speed] = "high"
         self.device._attributes[DeviceAttributes.screen_display] = "dim"
-        self.device._attributes[DeviceAttributes.detect_mode] = "pm_2.5"
+        self.device._attributes[DeviceAttributes.detect_mode] = "pm_2_5"
         self.device._attributes[DeviceAttributes.anion] = True
         self.device._attributes[DeviceAttributes.standby] = True
         self.device._attributes[DeviceAttributes.child_lock] = True

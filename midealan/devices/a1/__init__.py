@@ -12,6 +12,8 @@ from .message import MessageA1Response, MessageQuery, MessageSet
 
 _LOGGER = logging.getLogger(__name__)
 
+INITIAL_FAN_SPEED = 60
+
 
 class DeviceAttributes(StrEnum):
     """Device A1 attributes."""
@@ -46,7 +48,7 @@ class MideaA1Device(MideaDevice):
     _default_speeds: ClassVar[dict[int, str]] = {
         1: "lowest",
         40: "low",
-        60: "medium",
+        INITIAL_FAN_SPEED: "medium",
         80: "high",
         102: "auto",
         127: "off",
@@ -236,6 +238,14 @@ class MideaA1Device(MideaDevice):
                         to_update[DeviceAttributes.prompt_tone.value] = prompt_tone
                     if to_update:
                         self.update_all(to_update)
+                if (
+                    self._attributes[DeviceAttributes.fan_speed]
+                    == self._default_speeds[INITIAL_FAN_SPEED]
+                    and INITIAL_FAN_SPEED in self._speeds
+                ):
+                    self._attributes[DeviceAttributes.fan_speed] = self._speeds[
+                        INITIAL_FAN_SPEED
+                    ]
             except Exception:
                 _LOGGER.exception(
                     "[%s] Set customize error - %s",

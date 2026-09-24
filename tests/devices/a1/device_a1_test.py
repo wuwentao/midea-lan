@@ -259,6 +259,15 @@ class TestMideaA1Device:
                 },
             )
 
+    def test_set_customize_preserves_initial_fan_speed(self) -> None:
+        """Test custom initial fan speed is used before the first status."""
+        self.device.set_customize('{"speeds": {"60": "Medium"}}')
+
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power, True)
+
+        assert mock_build_send.call_args.args[0].fan_speed == 60
+
     def test_set_customize_prompt_tone(self) -> None:
         """Test set customize can override the prompt_tone default.
 

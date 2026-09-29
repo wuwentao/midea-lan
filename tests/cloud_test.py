@@ -19,6 +19,7 @@ from midealan.cloud import (
     MideaCloud,
     SmartHomeCloud,
     _mask_token,
+    _redact_data,
     get_default_cloud,
     get_midea_cloud,
     get_preset_account_cloud,
@@ -158,6 +159,31 @@ class CloudTest(IsolatedAsyncioTestCase):
         """Test _mask_token."""
         assert _mask_token("") == ""
         assert _mask_token("1234567890") == "12345*****"
+
+    def test_redact_data_masks_token_and_key(self) -> None:
+        """Test _redact_data masks token/key values in a getToken payload.
+
+        The raw getToken response reaches the debug log via ``str(raw)``; its
+        ``token`` and ``key`` values must be masked so LAN credentials never
+        appear in full.
+        """
+        raw = (
+            '{"code": 0, "data": {"tokenlist": [{"udpId": "u", '
+            '"token": "SECRET_TOKEN_VALUE", "key": "SECRET_KEY_VALUE"}]}}'
+        )
+        redacted = _redact_data(raw)
+        assert "SECRET_TOKEN_VALUE" not in redacted
+        assert "SECRET_KEY_VALUE" not in redacted
+        # First five characters stay visible, matching _mask_token.
+        assert "SECRE*****" in redacted
+        # Non-sensitive structure is preserved.
+        assert '"udpId": "u"' in redacted
+
+        # dict-repr shape (single quotes) is handled too.
+        repr_raw = "{'token': 'abcdefghij', 'key': 'zyxwvutsrq'}"
+        redacted_repr = _redact_data(repr_raw)
+        assert "abcdefghij" not in redacted_repr
+        assert "zyxwvutsrq" not in redacted_repr
 
     async def test_get_cloud_servers(self) -> None:
         """Test get cloud servers."""
@@ -851,6 +877,49 @@ class CloudTest(IsolatedAsyncioTestCase):
         ):
             assert not await cloud.login()
         assert "SmartHome Cloud login failed" in logs.output[0]
+
+    async def test_get_keys_debug_log_redacts_token_material(self) -> None:
+        """Test the inherited v1 get_cloud_keys never logs token/key material.
+
+        The debug line must report only the tokenlist entry count, not the
+        raw response, so a debug log cannot leak the LAN credentials.
+        """
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                self.responses["cloud_login_id.json"],
+                self.responses["msmartcloud_login.json"],
+                self.responses["meijucloud_get_keys1.json"],
+                self.responses["meijucloud_get_keys2.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.login()
+
+        with self.assertLogs("midealan.cloud", level="DEBUG") as logs:
+            keys = await cloud.get_cloud_keys(100)
+        # The keys are still returned so behaviour is unchanged.
+        assert keys[1]["token"] == "method1_return_token1"
+        assert keys[2]["key"] == "method2_return_key2"
+
+        output = "\n".join(logs.output)
+        # Sensitive material must never reach the log in full, on either the
+        # get_cloud_keys() line or the lower-level _api_request debug line.
+        assert "method1_return_token1" not in output
+        assert "method1_return_key1" not in output
+        assert "method2_return_token2" not in output
+        assert "method2_return_key2" not in output
+        # The get_cloud_keys() line reports only the entry count.
+        assert "returned 1 token entries" in output
 
     async def test_msmartcloud_list_home(self) -> None:
         """Test MSmartCloud list_home."""

@@ -137,6 +137,16 @@ def _mask_token(token: str) -> str:
 
 def _redact_data(data: str) -> str:
     """Redact sensitive data."""
+    # Mask the values of ``token`` and ``key`` fields first: these carry the
+    # LAN credentials, so a raw getToken response must never reach the log in
+    # full. Handles both JSON (``"token": "abc"``) and dict-repr (``'key': 'abc'``)
+    # shapes that reach this function via ``str(raw)`` / ``str(data)``.
+    data = re.sub(
+        r"(['\"](?:token|key)['\"]\s*:\s*['\"])([^'\"]+)(['\"])",
+        lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
+        data,
+        flags=re.IGNORECASE,
+    )
     patterns = [
         # Email
         r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
@@ -298,14 +308,17 @@ class MideaCloud:
                 endpoint="/v1/iot/secure/getToken",
                 data=data,
             )
+            # Log only the entry count: the payload carries token/key material.
+            tokens = (response or {}).get("tokenlist") or []
             _LOGGER.debug(
-                "Response from get_keys() for appliance_id %s with method %s: %s",
+                "get_cloud_keys() for appliance_id %s with method %s "
+                "returned %s token entries",
                 appliance_id,
                 method,
-                response,
+                len(tokens),
             )
-            if response and "tokenlist" in response:
-                for token in response["tokenlist"]:
+            if tokens:
+                for token in tokens:
                     if token["udpId"] == udp_id:
                         result[method] = {
                             "token": token["token"].lower(),

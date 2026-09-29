@@ -48,6 +48,14 @@ class TestCloudSecurity:
             == "00ddd4c28473e3982eba98c7817a115f28ff8b81f210a1afcdb225daa85b1694"
         )
 
+    def test_encrypt_password_non_ascii(self) -> None:
+        """Test encrypt_password handles a non-ASCII password via UTF-8."""
+        security = CloudSecurity("login_key", None, None)
+        assert (
+            security.encrypt_password("login_id", "pässwörd")
+            == "4f1f577a7398ebbca50c296d6ffce05b8581351a67c8e8029f3c2cf44b4c3da6"
+        )
+
     def test_get_deviceid(self) -> None:
         """Test get_deviceid derives a stable id from the username."""
         assert CloudSecurity.get_deviceid("user") == "aab054edd91d7082"
@@ -139,6 +147,14 @@ class TestMeijuCloudSecurity:
             == "696d29e0940a4957748fe3fc9efd22a3"
         )
 
+    def test_encrypt_iam_password_non_ascii(self) -> None:
+        """Test encrypt_iam_password handles a non-ASCII password via UTF-8."""
+        security = MeijuCloudSecurity("login_key", "iot_key", "hmac_key")
+        assert (
+            security.encrypt_iam_password("login_id", "pässwörd")
+            == "b90755aff3972e4e1d8ffb1e495a054e"
+        )
+
 
 class TestMSmartCloudSecurity:
     """Test MSmartCloudSecurity."""
@@ -149,6 +165,14 @@ class TestMSmartCloudSecurity:
         assert (
             security.encrypt_iam_password("login_id", "password")
             == "81d4397408a49d9c17345197932e141110671cbb27961a6d733c0f5843b50571"
+        )
+
+    def test_encrypt_iam_password_non_ascii(self) -> None:
+        """Test encrypt_iam_password handles a non-ASCII password via UTF-8."""
+        security = MSmartCloudSecurity("login_key", "iot_key", "hmac_key")
+        assert (
+            security.encrypt_iam_password("login_id", "pässwörd")
+            == "cc061e6c3d44e7a3b222c62221ac0ee88e922d0e872e1d1206e9edc9802d3521"
         )
 
     def test_set_aes_keys(self) -> None:

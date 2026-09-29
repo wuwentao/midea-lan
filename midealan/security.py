@@ -72,12 +72,18 @@ class CloudSecurity:
         return sign.hexdigest()
 
     def encrypt_password(self, login_id: str, data: str) -> str:
-        """Encrypt password."""
+        """Encrypt password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         m = sha256()
-        m.update(data.encode("ascii"))
+        m.update(data.encode("utf-8"))
         login_hash = login_id + m.hexdigest() + self._login_key
         m = sha256()
-        m.update(login_hash.encode("ascii"))
+        m.update(login_hash.encode("utf-8"))
         return m.hexdigest()
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:
@@ -184,11 +190,17 @@ class MeijuCloudSecurity(CloudSecurity):
         super().__init__(login_key, iot_key, hmac_key, 10864842703515613082)
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:  # noqa: ARG002
-        """Encrypt IAM password."""
+        """Encrypt IAM password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         md = md5()
-        md.update(data.encode("ascii"))
+        md.update(data.encode("utf-8"))
         md_second = md5()
-        md_second.update(md.hexdigest().encode("ascii"))
+        md_second.update(md.hexdigest().encode("utf-8"))
         return md_second.hexdigest()
 
 
@@ -206,14 +218,20 @@ class MSmartCloudSecurity(CloudSecurity):
         )
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:
-        """Encrypt IAM password."""
+        """Encrypt IAM password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         md = md5()
-        md.update(data.encode("ascii"))
+        md.update(data.encode("utf-8"))
         md_second = md5()
-        md_second.update(md.hexdigest().encode("ascii"))
+        md_second.update(md.hexdigest().encode("utf-8"))
         login_hash = login_id + md_second.hexdigest() + self._login_key
         sha = sha256()
-        sha.update(login_hash.encode("ascii"))
+        sha.update(login_hash.encode("utf-8"))
         return sha.hexdigest()
 
     def set_aes_keys(

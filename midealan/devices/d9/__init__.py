@@ -10,7 +10,7 @@ import logging
 from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
-from midealan.const import DeviceType
+from midealan.const import MAX_BYTE_VALUE, DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueWrongType
 from midealan.message import ListTypes
@@ -337,7 +337,12 @@ class MideaD9Device(MideaDevice):
             return None
         if isinstance(value, bool):
             return None
-        return int(value)
+        # Reject fractional or out-of-byte-range values so the appliance never
+        # receives a silently truncated/wrapped program code.
+        if not 0 <= value <= MAX_BYTE_VALUE:
+            return None
+        program = int(value)
+        return program if value == program else None
 
 
 class MideaAppliance(MideaD9Device):

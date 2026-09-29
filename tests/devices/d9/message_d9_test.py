@@ -193,6 +193,24 @@ class TestD9GeneralMessageBody:
         assert parsed.attributes["db_power"] == 1
         assert "db_program" not in parsed.attributes
 
+    def test_da_bucket_not_parsed_with_washer_map(self) -> None:
+        """Test a DA bucket body is not decoded with the DB washer map."""
+        body = bytearray(
+            [
+                ListTypes.DA,
+                0x01,
+                0x01,
+                0x01,  # would be db_power if wrongly parsed
+            ],
+        )
+        parsed = D9GeneralMessageBody(body)
+        assert parsed.attributes == {}
+
+    def test_empty_body_parses_nothing(self) -> None:
+        """Test an empty body yields no attributes."""
+        parsed = D9GeneralMessageBody(bytearray([]))
+        assert parsed.attributes == {}
+
     def test_unknown_data_type_ignored(self) -> None:
         """Test unknown data type is skipped without error."""
         body = bytearray(

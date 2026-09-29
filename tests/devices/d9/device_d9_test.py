@@ -232,6 +232,13 @@ class TestMideaD9Device:
             )
             mock_build_send.assert_not_called()
 
+    @pytest.mark.parametrize("value", [2.5, -1, 256])
+    def test_set_attribute_program_invalid_value(self, value: float) -> None:
+        """Test set program with fractional/out-of-range value does not send."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.db_program.value, value)
+            mock_build_send.assert_not_called()
+
     def test_set_attribute_not_supported(self) -> None:
         """Test set attribute with an unsupported attribute does not send."""
         with patch.object(self.device, "build_send") as mock_build_send:

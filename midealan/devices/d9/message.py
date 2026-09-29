@@ -257,9 +257,14 @@ class D9GeneralMessageBody(MessageBody):
         """Initialize D9 message general body."""
         super().__init__(body)
         bucket = body[0] if body else 0
-        report_map = DC_REPORT_MAP if bucket == BUCKET_DC else DB_REPORT_MAP
+        bucket_maps: dict[int, dict[int, str]] = {
+            BUCKET_DB: DB_REPORT_MAP,
+            BUCKET_DC: DC_REPORT_MAP,
+        }
+        report_map = bucket_maps.get(bucket)
         self.attributes: dict[str, int] = {}
-        self._parse_tlv(body, report_map)
+        if report_map is not None:
+            self._parse_tlv(body, report_map)
 
     def _parse_tlv(self, body: bytearray, report_map: dict[int, str]) -> None:
         """Parse the TLV records into ``attributes``."""

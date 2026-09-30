@@ -1,4 +1,4 @@
-"""Midea local discover."""
+"""Midea lan discover."""
 
 import logging
 import re

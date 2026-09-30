@@ -1,1 +1,1 @@
-"""Midea local 40 device tests."""
+"""Midea lan 40 device tests."""

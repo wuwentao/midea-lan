@@ -1,4 +1,4 @@
-"""Midea local DC device."""
+"""Midea lan DC device."""
 
 import logging
 from enum import StrEnum

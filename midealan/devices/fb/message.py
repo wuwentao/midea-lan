@@ -1,4 +1,4 @@
-"""Midea local FB message."""
+"""Midea lan FB message."""
 
 from midealan.const import DeviceType
 from midealan.message import (

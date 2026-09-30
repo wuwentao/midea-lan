@@ -1,4 +1,4 @@
-"""Midea local CF device."""
+"""Midea lan CF device."""
 
 import logging
 import math

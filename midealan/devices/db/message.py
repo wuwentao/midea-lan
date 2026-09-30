@@ -1,4 +1,4 @@
-"""Midea local DB message."""
+"""Midea lan DB message."""
 
 from midealan.const import DeviceType
 from midealan.message import (

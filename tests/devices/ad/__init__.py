@@ -1,1 +1,1 @@
-"""Midea local AD device tests."""
+"""Midea lan AD device tests."""

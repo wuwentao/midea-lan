@@ -1,4 +1,4 @@
-"""Midea local security."""
+"""Midea lan security."""
 
 import hmac
 from enum import IntEnum

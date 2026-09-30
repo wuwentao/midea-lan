@@ -1,4 +1,4 @@
-"""Midea local security test."""
+"""Midea lan security test."""
 
 from hashlib import md5, sha256
 

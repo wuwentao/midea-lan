@@ -1,4 +1,4 @@
-"""Midea local constants."""
+"""Midea lan constants."""
 
 from enum import IntEnum
 

@@ -1,4 +1,4 @@
-"""Midea local C1 message.
+"""Midea lan C1 message.
 
 Protocol layout follows Meiju Lua T_0000_C1_2760001Z (electric wall-hung boiler):
 - Query: type 0x03, body 0x01 0x01 (status)

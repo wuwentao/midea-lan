@@ -1,1 +1,1 @@
-"""Midea local E8 device tests."""
+"""Midea lan E8 device tests."""

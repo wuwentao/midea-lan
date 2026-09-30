@@ -1,4 +1,4 @@
-"""Midea local devices."""
+"""Midea lan devices."""
 
 from importlib import import_module
 from typing import cast

@@ -1,4 +1,4 @@
-"""Midea local CLI."""
+"""Midea lan CLI."""
 
 import asyncio
 import contextlib

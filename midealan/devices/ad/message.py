@@ -1,4 +1,4 @@
-"""Midea local AD message."""
+"""Midea lan AD message."""
 
 from midealan.const import DeviceType
 from midealan.crc8 import calculate

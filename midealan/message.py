@@ -1,4 +1,4 @@
-"""Midea local message."""
+"""Midea lan message."""
 
 import logging
 import warnings

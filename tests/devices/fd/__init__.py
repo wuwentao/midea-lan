@@ -1,1 +1,1 @@
-"""Midea local FD device tests."""
+"""Midea lan FD device tests."""

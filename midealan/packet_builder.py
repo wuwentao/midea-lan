@@ -1,4 +1,4 @@
-"""Midea local packet builder."""
+"""Midea lan packet builder."""
 
 from datetime import UTC, datetime
 

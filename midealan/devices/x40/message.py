@@ -1,4 +1,4 @@
-"""Midea local x40 message."""
+"""Midea lan x40 message."""
 
 from typing import Any
 

@@ -1,4 +1,4 @@
-"""Midea local FC message."""
+"""Midea lan FC message."""
 
 from midealan.const import MAX_BYTE_VALUE, DeviceType
 from midealan.crc8 import calculate

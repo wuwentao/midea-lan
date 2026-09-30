@@ -1,1 +1,1 @@
-"""Midea local ED device tests."""
+"""Midea lan ED device tests."""

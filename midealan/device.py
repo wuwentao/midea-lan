@@ -1,4 +1,4 @@
-"""Midea local device."""
+"""Midea lan device."""
 
 import logging
 import socket

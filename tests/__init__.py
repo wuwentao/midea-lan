@@ -1,1 +1,1 @@
-"""Midea local tests."""
+"""Midea lan tests."""

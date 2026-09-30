@@ -1,4 +1,4 @@
-"""Midea local CD device."""
+"""Midea lan CD device."""
 
 import json
 import logging

@@ -1,4 +1,4 @@
-"""Midea local discover test."""
+"""Midea lan discover test."""
 
 from unittest.mock import MagicMock, patch
 

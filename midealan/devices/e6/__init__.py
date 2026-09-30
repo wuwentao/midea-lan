@@ -1,4 +1,4 @@
-"""Midea local E6 device."""
+"""Midea lan E6 device."""
 
 import json
 import logging

@@ -1,1 +1,1 @@
-"""Midea local FC device tests."""
+"""Midea lan FC device tests."""

@@ -1,1 +1,1 @@
-"""Midea local CD device tests."""
+"""Midea lan CD device tests."""

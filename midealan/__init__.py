@@ -1,1 +1,1 @@
-"""Midea local lib."""
+"""Midea lan lib."""

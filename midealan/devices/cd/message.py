@@ -1,4 +1,4 @@
-"""Midea local CD message."""
+"""Midea lan CD message."""
 
 from typing import Any, NotRequired, TypedDict
 

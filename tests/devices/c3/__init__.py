@@ -1,1 +1,1 @@
-"""Midea local C3 device tests."""
+"""Midea lan C3 device tests."""

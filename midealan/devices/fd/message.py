@@ -196,11 +196,7 @@ class MessageFDResponse(MessageResponse):
                 self.set_body(FDA0MessageBody(super().body))
             elif self.body_type == ListTypes.C8:
                 self.set_body(FDC8MessageBody(super().body))
-        self.fan_speed: int
         self.set_attr()
-        if (
-            hasattr(self, "fan_speed")
-            and self.fan_speed is not None
-            and self.fan_speed < MAX_FAN_SPEED
-        ):
+        fan_speed = getattr(self, "fan_speed", None)
+        if fan_speed is not None and fan_speed < MAX_FAN_SPEED:
             self.fan_speed = 1

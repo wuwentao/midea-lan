@@ -174,11 +174,22 @@ class DeviceAttributes(StrEnum):
     # ... one member per exposed field
 ```
 
-Naming conventions:
+Naming conventions (both the attribute **name** and its **value** must follow
+these — they are consumed downstream, so consistency matters):
 
-- Use lowercase `snake_case`. The enum member name and its value are identical.
+- Use lowercase `snake_case` only: ASCII letters, digits, and underscores (`_`).
+  No spaces, camelCase, hyphens, or uppercase. The enum member name and its value
+  are identical (`db_power = "db_power"`).
+- Keep names stable and descriptive of the state, not the raw protocol field
+  (e.g. `remain_time`, not `t3` or `remainTime`).
 - If the device has independent sub-units (like D9's washer/dryer), prefix each
   group (`db_*`, `dc_*`) so a single flat namespace stays unambiguous.
+
+Why this matters: the Home Assistant integration (`midea_ac_lan`) uses each
+attribute name **verbatim** as the entity's `translation_key`, and translation
+keys must be lowercase `snake_case`. Picking a clean name here means the HA side
+can add the translation key directly with no renaming or mapping layer. See
+[Step 8](#9-step-8--home-assistant-side-midea_ac_lan).
 
 ### 4.2 The device class
 
@@ -334,6 +345,24 @@ VALUE_OFF = 0x00
 For a fixed-offset device, name each byte offset instead (see
 `devices/e2/message.py`, e.g. `HEATING_POWER_BYTE = 34`).
 
+Carry the original Lua field name in a comment next to each constant and each
+report-map entry. The attribute names we expose are deliberately cleaned up for
+Home Assistant, so the link back to the raw protocol is otherwise lost. Keeping
+the Lua name inline lets the next contributor re-check a field against the Lua
+without re-downloading it, and prevents accidentally re-mapping a field to the
+wrong offset — a common source of regressions.
+
+```python
+# TLV data-type byte -> (attribute name, decoder).  The comment records the
+# original Lua field name so the mapping can be re-verified against the protocol.
+DB_REPORT_MAP: dict[int, tuple[str, Callable[[bytes], int]]] = {
+    0x01: ("db_power", _u8),  # lua: "power"
+    0x02: ("db_running_status", _u8),  # lua: "runningStatus"
+    0x04: ("db_program", _u8),  # lua: "program"
+    0x0A: ("db_remain_time", _u16le),  # lua: "remainTime" (little-endian)
+}
+```
+
 ### 5.2 A base request + one class per message
 
 Give the device a small base that pins its `DeviceType`, then subclass it per
@@ -416,7 +445,7 @@ class MessageD9Response(MessageResponse):
         self.set_attr()
 ```
 
-Two things to copy:
+Three things to copy:
 
 - **Prefer a typed `attributes: dict[str, int]`** over dynamic `setattr`. The
   strict `mypy` config (which also checks `tests/`) flags attributes it cannot
@@ -424,9 +453,16 @@ Two things to copy:
 - **Only parse recognised body types.** D9 accepts `DB`/`DC` and guards against
   parsing an unrelated bucket with the wrong field map (a real review finding on
   PR #175: a `DA` body must not be decoded with the `DB` map).
+- **Comment each parsed field with its Lua origin.** When you assign a parsed
+  value to an attribute, note the Lua field name and any encoding quirk (scale
+  factor, byte order, bit mask) in a short comment. This is the record of _why_
+  an offset or map entry is what it is; without it, a future edit can silently
+  shift a field and introduce a regression that tests may not catch if the
+  sample payloads are incomplete.
 
 For a fixed-offset device, the body subclass instead reads named offsets
-(`self.power = (body[POWER_BYTE] & 0x01) > 0`) — see `devices/e2/message.py`.
+(`self.power = (body[POWER_BYTE] & 0x01) > 0  # lua: "power"`) — see
+`devices/e2/message.py`.
 
 ---
 

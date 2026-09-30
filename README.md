@@ -173,7 +173,12 @@ This creates a `.venv`, installs all dependencies, and sets up the prek hooks.
 Run tools with `uv run`, e.g. `uv run python -m pytest ./tests/`. See the contributing
 guide for the full workflow and per-OS uv install instructions.
 
-## Adding a new device
+## Contributing Guide
+
+[CONTRIBUTING](.github/CONTRIBUTING.md)
+[中文版CONTRIBUTING](.github/CONTRIBUTING.zh.md)
+
+### Adding a new device
 
 Want to add support for a new Midea appliance type? The end-to-end recipe —
 downloading the device Lua protocol, reading `dataToJson`/`jsonToData`, building
@@ -183,8 +188,3 @@ downloading the device Lua protocol, reading `dataToJson`/`jsonToData`, building
 
 - [Adding a New Device Type](docs/adding-a-new-device.md)
 - [新增设备类型支持指南（中文）](docs/adding-a-new-device.zh-Hans.md)
-
-## Contributing Guide
-
-[CONTRIBUTING](.github/CONTRIBUTING.md)
-[中文版CONTRIBUTING](.github/CONTRIBUTING.zh.md)

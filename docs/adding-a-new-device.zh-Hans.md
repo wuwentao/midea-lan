@@ -161,11 +161,20 @@ class DeviceAttributes(StrEnum):
     # ... 每个暴露字段一个成员
 ```
 
-命名约定：
+命名约定（属性**名**与其**值**都必须遵循 —— 它们会被下游直接消费，因此一致性
+很重要）：
 
-- 使用小写 `snake_case`。枚举成员名与其值完全一致。
+- 只使用小写 `snake_case`：ASCII 字母、数字与下划线（`_`）。不要有空格、
+  camelCase、连字符或大写。枚举成员名与其值完全一致（`db_power = "db_power"`）。
+- 名字保持稳定且描述状态本身，而非原始协议字段（如用 `remain_time`，而不是
+  `t3` 或 `remainTime`）。
 - 若设备有相互独立的子单元（如 D9 的洗衣机/干衣机），为每组加前缀
   （`db_*`、`dc_*`），使单一扁平命名空间保持无歧义。
+
+为什么重要：Home Assistant 集成（`midea_ac_lan`）会把每个属性名**原样**用作
+实体的 `translation_key`，而翻译键必须是小写 `snake_case`。在这里取好名字，HA
+侧就能直接添加翻译键，无需任何重命名或映射层。参见
+[步骤 8](#9-步骤-8--home-assistant-侧midea_ac_lan)。
 
 ### 4.2 设备类
 
@@ -315,6 +324,22 @@ VALUE_OFF = 0x00
 对固定偏移设备，则改为给每个字节偏移命名（参见 `devices/e2/message.py`，
 例如 `HEATING_POWER_BYTE = 34`）。
 
+请在每个常量和每条报文映射（report-map）条目旁用注释保留原始的 Lua 字段名。我们
+对外暴露的属性名是为 Home Assistant 特意清理过的，因此与原始协议的关联会就此丢失。
+把 Lua 名字写在旁边，能让下一位贡献者无需重新下载 Lua 就核对某字段，也能避免把
+字段误映射到错误的偏移 —— 这是常见的 regression 来源。
+
+```python
+# TLV 的 data-type 字节 -> (属性名, 解码器)。注释记录原始 Lua 字段名，
+# 便于对照协议重新核验映射关系。
+DB_REPORT_MAP: dict[int, tuple[str, Callable[[bytes], int]]] = {
+    0x01: ("db_power", _u8),  # lua: "power"
+    0x02: ("db_running_status", _u8),  # lua: "runningStatus"
+    0x04: ("db_program", _u8),  # lua: "program"
+    0x0A: ("db_remain_time", _u16le),  # lua: "remainTime"（小端序）
+}
+```
+
 ### 5.2 一个基类请求 + 每条消息一个类
 
 给设备一个小型基类，固定其 `DeviceType`，再按消息逐一子类化。每个子类设置
@@ -395,7 +420,7 @@ class MessageD9Response(MessageResponse):
         self.set_attr()
 ```
 
-两点务必照搬：
+三点务必照搬：
 
 - **优先使用带类型的 `attributes: dict[str, int]`**，而非动态 `setattr`。严格的
   `mypy` 配置（同样会检查 `tests/`）会标记它看不到的属性；用普通字典能让类型
@@ -403,9 +428,14 @@ class MessageD9Response(MessageResponse):
 - **只解析已识别的 body type。** D9 只接受 `DB`/`DC`，并防止用错误的字段映射去
   解析无关 bucket（这是 PR #175 上一条真实的评审意见：`DA` body 不得用 `DB`
   映射解码）。
+- **为每个解析出的字段标注其 Lua 来源。** 把解析值赋给属性时，用简短注释记录
+  Lua 字段名以及任何编码细节（缩放系数、字节序、位掩码）。这就是某个偏移或映射
+  条目“为何如此”的记录；缺了它，后续修改可能悄悄错位某个字段，若样例载荷不完整，
+  测试也未必能捕获，从而引入 regression。
 
 对固定偏移设备，body 子类改为读取命名偏移
-（`self.power = (body[POWER_BYTE] & 0x01) > 0`）—— 参见 `devices/e2/message.py`。
+（`self.power = (body[POWER_BYTE] & 0x01) > 0  # lua: "power"`）—— 参见
+`devices/e2/message.py`。
 
 ---
 

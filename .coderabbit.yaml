@@ -1,0 +1,100 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for the midea-lan protocol library.
+# Docs: https://docs.coderabbit.ai/reference/yaml-template
+language: en-US
+early_access: false
+enable_free_tier: true
+
+reviews:
+  # assertive surfaces more findings - appropriate for a byte-level protocol lib.
+  profile: assertive
+  # Do not gate merges on CodeRabbit; CI (ruff/mypy/pylint/pytest) is the gate.
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  collapse_walkthrough: true
+  changed_files_summary: true
+  sequence_diagrams: true
+  assess_linked_issues: true
+  related_issues: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Skip generated / vendored / large binary artifacts.
+  path_filters:
+    - "!uv.lock"
+    - "!CHANGELOG.md"
+    - "!**/*.min.*"
+    - "!coverage.xml"
+    - "!cov.xml"
+    - "!htmlcov/**"
+    - "!cov_annotate/**"
+    - "!dist/**"
+    - "!node_modules/**"
+    - "!.venv/**"
+    - "!brands/**"
+    - "!tests/responses/**"
+
+  path_instructions:
+    - path: "midealan/**/*.py"
+      instructions: >-
+        This is a LAN protocol library split across three layers: transport/framing
+        (device.py, packet_builder.py, security.py, crc8.py), generic messages
+        (message.py: MessageRequest/MessageResponse/MessageBody/NewProtocolMessageBody),
+        and per-device packages under devices/<hextype>/ (types < 0xA0 prefixed with x,
+        e.g. x13). Enforce these repo rules: no magic numbers - protocol offsets,
+        lengths, and flag values must be named module-level constants (ruff PLR2004).
+        New device classes extend MideaDevice, must be re-exported as MideaAppliance,
+        and implement build_query, process_message, make_message_set, set_attribute.
+        Device state is exposed only through the device.attributes dict via a
+        DeviceAttributes(StrEnum); never access state by raw key. Flag byte-order,
+        off-by-one offset, CRC, and encrypt/frame/CRC pipeline mistakes; these cause
+        silent decode failures on real hardware.
+    - path: "midealan/devices/**/message.py"
+      instructions: >-
+        Message encode/decode. Verify each parsed field's offset/length against the
+        constant block at the top of the file and that new fields are guarded by body
+        length checks. Watch for signed/unsigned and endianness errors.
+    - path: "tests/**/*.py"
+      instructions: >-
+        Tests mirror the source tree and are suffixed _test.py. Relaxed ruff/mypy
+        rules apply here (asserts and private access are fine). Prefer sample payloads
+        under tests/responses/ over hand-built byte strings when one exists.
+
+  tools:
+    ruff:
+      enabled: true
+    pylint:
+      enabled: true
+    yamllint:
+      enabled: true
+    actionlint:
+      enabled: true
+    gitleaks:
+      enabled: true
+    markdownlint:
+      enabled: true
+    shellcheck:
+      enabled: true
+    # Prose linter off - noisy on a protocol lib's docs/comments.
+    languagetool:
+      enabled: false
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
+    # Teach CodeRabbit the repo's own contributor rules.
+    filePatterns:
+      - "AGENTS.md"
+      - ".github/copilot-instructions.md"
+      - "pylintrc"
+      - "ruff.toml"

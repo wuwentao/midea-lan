@@ -53,20 +53,29 @@ class TestMideaX9CDevice:
         assert list(queries[0].body) == [0x01]
 
     def test_process_message(self) -> None:
-        """process_message copies known attributes into state."""
+        """process_message decodes a real query frame into state."""
+        # Whole-appliance (0xF0) TLV record: byte 1 (power) = 0x02 -> "on".
+        total_value = [0x00] * 22
+        total_value[0] = 0x02
+        body = [0x01, 0xF0, len(total_value), *total_value]
+        header = [0xAA, 0x00, 0x9C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x03]
+        frame = bytes([*header, *body, 0x00])
+        new_status = self.device.process_message(frame)
+        assert new_status["total_power"] == "on"
+        assert self.device.attributes["total_power"] == "on"
+
+    def test_process_message_ignores_unknown_keys(self) -> None:
+        """process_message drops attributes absent from the device state."""
         with patch("midealan.devices.x9c.MessageX9CResponse") as mock_response:
             mock = mock_response.return_value
             mock.attributes = {
                 "total_power": "on",
-                "b6_gear": 3,
                 "not_a_real_attribute": 1,  # ignored, unknown key
             }
             new_status = self.device.process_message(b"")
         assert new_status["total_power"] == "on"
-        assert new_status["b6_gear"] == 3
         assert "not_a_real_attribute" not in new_status
         assert self.device.attributes["total_power"] == "on"
-        assert self.device.attributes["b6_gear"] == 3
 
     def test_set_power(self) -> None:
         """total_power builds and sends a total message."""
@@ -89,12 +98,22 @@ class TestMideaX9CDevice:
         with pytest.raises(ValueWrongType):
             self.device.set_attribute(ATTR_TOTAL_LOCK, "yes")
 
+    def test_set_power_invalid_state(self) -> None:
+        """total_power only accepts the on/off string states."""
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(ATTR_TOTAL_POWER, "maybe")
+
     def test_set_microphone(self) -> None:
         """ai_voice_microphone forwards the string state."""
         with patch.object(self.device, "build_send") as mock_send:
             self.device.set_attribute(ATTR_AI_VOICE_MICROPHONE, "off")
         message = mock_send.call_args.args[0]
         assert message.ai_voice_microphone == "off"
+
+    def test_set_microphone_invalid_state(self) -> None:
+        """ai_voice_microphone only accepts the on/off string states."""
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(ATTR_AI_VOICE_MICROPHONE, "loud")
 
     def test_set_volume(self) -> None:
         """ai_voice_volume accepts a number."""
@@ -109,6 +128,15 @@ class TestMideaX9CDevice:
             self.device.set_attribute(ATTR_AI_VOICE_VOLUME, value=True)
         with pytest.raises(ValueWrongType):
             self.device.set_attribute(ATTR_AI_VOICE_VOLUME, "loud")
+
+    def test_set_volume_out_of_range(self) -> None:
+        """ai_voice_volume rejects values outside the single-byte range."""
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(ATTR_AI_VOICE_VOLUME, -1)
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(ATTR_AI_VOICE_VOLUME, 256)
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(ATTR_AI_VOICE_VOLUME, float("nan"))
 
     def test_set_unknown_attribute_noop(self) -> None:
         """An unsupported attribute produces no message."""

@@ -193,7 +193,10 @@ def _decode_mask(fld: Field, pkg: _Package) -> Decoded | None:
     value = pkg.get(fld.index)
     if value is None or (fld.guard_ff and value == UNCHANGED):
         return None
-    return (fld.name, value & fld.mask)
+    # Right-shift by the mask's lowest set bit so a high-nibble mask such as
+    # 0xF0 yields the nibble value (0x20 -> 2) rather than the raw masked byte.
+    shift = (fld.mask & -fld.mask).bit_length() - 1
+    return (fld.name, (value & fld.mask) >> shift)
 
 
 def _decode_boolbit(fld: Field, pkg: _Package) -> Decoded | None:
@@ -423,7 +426,9 @@ _BF_TIPS_MARK = {
 }
 _BF_WEIGHT_UNIT = {0x00: "g", 0x01: "kg", 0x02: "ounce", 0x03: "pound", 0x04: "other"}
 _B2_RECIPE_ON_LOW = {0x01: "local", 0x02: "app", 0x05: "order"}
-_B2_RECIPE_ON_HIGH = {
+# Byte 27 high nibble is the "off type" counterpart (like power/light off type on
+# bytes 25/26); the source lua mislabels it as another recipe_on_type.
+_B2_RECIPE_OFF_TYPE = {
     0x10: "local",
     0x20: "app",
     0x30: "wifi",
@@ -539,7 +544,7 @@ _B2_FIELDS: tuple[Field, ...] = (
     Field("light_on_type", 26, KIND_MASKENUM, mask=0x0F, enum=_TYPE_LOCAL_APP_LOW),
     Field("light_off_type", 26, KIND_MASKENUM, mask=0xF0, enum=_TYPE_LOCAL_APP_HIGH),
     Field("recipe_on_type", 27, KIND_MASKENUM, mask=0x0F, enum=_B2_RECIPE_ON_LOW),
-    Field("recipe_on_type", 27, KIND_MASKENUM, mask=0xF0, enum=_B2_RECIPE_ON_HIGH),
+    Field("recipe_off_type", 27, KIND_MASKENUM, mask=0xF0, enum=_B2_RECIPE_OFF_TYPE),
 )
 
 _E7_FIELDS: tuple[Field, ...] = (
@@ -623,11 +628,11 @@ _BF_FIELDS: tuple[Field, ...] = (
     Field("bf_recipe_code", 2, KIND_U24BE, absolute=True),
     Field("bf_step_total", 5, KIND_MASK, mask=0x0F, absolute=True),
     Field("bf_step_current", 5, KIND_MASK, mask=0xF0, absolute=True),
-    Field("bf_preheat", 6, KIND_BOOLBIT, bit=0, absolute=True),
+    Field("bf_preheat_set", 6, KIND_BOOLBIT, bit=0, absolute=True),
     Field("bf_probe", 6, KIND_BOOLBIT, bit=1, absolute=True),
     Field("bf_order", 6, KIND_BOOLBIT, bit=2, absolute=True),
     Field("bf_turntable", 6, KIND_BOOLBIT, bit=3, absolute=True),
-    Field("bf_hotwind", 6, KIND_BOOLBIT, bit=4, absolute=True),
+    Field("bf_hotwind_set", 6, KIND_BOOLBIT, bit=4, absolute=True),
     Field("bf_cavity", 6, KIND_MASKENUM, mask=0x80, enum=_BF_CAVITY, absolute=True),
     Field("bf_mode", 7, KIND_U16BE, absolute=True),
     Field("bf_working_time", 9, KIND_U24BE, absolute=True),
@@ -888,38 +893,67 @@ _B6_INVERTER_FIELDS: tuple[Field, ...] = (
 
 
 # ---------------------------------------------------------------------------
+# Special-case parser offsets (1-based package positions) and bit positions.
+# The declarative field tables name every regular offset through ``Field``;
+# these constants name the ones consumed directly by the parsers below.
+# ---------------------------------------------------------------------------
+_TOTAL_SENSOR_INDEX = 4
+_TOTAL_IR_BIT = 0
+_TOTAL_SPEAK_BIT = 1
+_TOTAL_GESTURE_BIT = 2
+_TOTAL_WATER_SHORTAGE_BIT = 3
+_TOTAL_ERROR_TYPE_INDEX = 7
+_TOTAL_ERROR_CODE_INDEX = 8
+_TOTAL_TIPS_TYPE_INDEX = 9
+_TOTAL_TIPS_CODE_INDEX = 10
+_TOTAL_VERSION_HIGH_INDEX = 21
+_TOTAL_VERSION_LOW_INDEX = 22
+
+_B2_RECIPE_HIGH_INDEX = 20
+_B2_RECIPE_LOW_INDEX = 19
+_B2_PREHEAT_FLAGS_INDEX = 18
+_B2_PREHEAT_FINISH_BIT = 2
+_B2_PREHEAT_PROGRESS_BIT = 1
+
+_BF_WEIGHT_FLAGS_INDEX = 38
+_BF_WEIGHT_RAW_INDEX = 20
+_BF_WEIGHT_RAW_MOUNT_FLAG = 0x04  # byte-38 value selecting the raw mount value
+_BF_WEIGHT_TENTHS_FACTOR = 10  # decoded mount is raw * 10 * multiple
+
+
+# ---------------------------------------------------------------------------
 # Module parsers
 # ---------------------------------------------------------------------------
 def _parse_total(data: bytearray, result: dict[str, object]) -> None:
     """Decode the whole-appliance summary package (0xF0)."""
     pkg = _Package(data)
     _apply_fields(_TOTAL_FIELDS, pkg, "", result)
-    # Byte 4 carries several sensor flags with fixed defaults.
-    sensors = pkg.get(4)
+    # The sensor byte carries several flags with fixed defaults.
+    sensors = pkg.get(_TOTAL_SENSOR_INDEX)
     result.setdefault("total_speak", VALUE_OFF)
     result.setdefault("total_gesture", VALUE_OFF)
     result.setdefault("total_ir", VALUE_OFF)
     result.setdefault("total_water_shortage", "0")
     if sensors is not None and sensors != UNCHANGED:
-        if (sensors >> 0) & 1:
+        if (sensors >> _TOTAL_IR_BIT) & 1:
             result["total_ir"] = VALUE_ON
-        if (sensors >> 1) & 1:
+        if (sensors >> _TOTAL_SPEAK_BIT) & 1:
             result["total_speak"] = VALUE_ON
-        if (sensors >> 2) & 1:
+        if (sensors >> _TOTAL_GESTURE_BIT) & 1:
             result["total_gesture"] = VALUE_ON
-        result["total_water_shortage"] = str((sensors >> 3) & 1)
+        result["total_water_shortage"] = str((sensors >> _TOTAL_WATER_SHORTAGE_BIT) & 1)
     # Error/tips codes default to zero when the byte is 0xFF.
     for name, index in (
-        ("total_error_type", 7),
-        ("total_error_code", 8),
-        ("total_tips_type", 9),
-        ("total_tips_code", 10),
+        ("total_error_type", _TOTAL_ERROR_TYPE_INDEX),
+        ("total_error_code", _TOTAL_ERROR_CODE_INDEX),
+        ("total_tips_type", _TOTAL_TIPS_TYPE_INDEX),
+        ("total_tips_code", _TOTAL_TIPS_CODE_INDEX),
     ):
         value = pkg.get(index)
         result[name] = 0 if value is None or value == UNCHANGED else value
     _apply_fields(_TOTAL_B6_LINK_FIELDS, pkg, "", result)
-    high = pkg.get(21)
-    low = pkg.get(22)
+    high = pkg.get(_TOTAL_VERSION_HIGH_INDEX)
+    low = pkg.get(_TOTAL_VERSION_LOW_INDEX)
     if high is not None and low is not None and UNCHANGED not in (high, low):
         result["electronic_version"] = f"{high}.{low}"
 
@@ -964,17 +998,27 @@ def _parse_prefixed(
     prefixes: dict[int, str],
     data: bytearray,
     result: dict[str, object],
-) -> _Package:
-    """Decode a module that has per-instance prefixes; return its package."""
+) -> tuple[_Package, str] | None:
+    """Decode a module that has per-instance prefixes.
+
+    Returns the package and its resolved prefix, or ``None`` when the selector
+    is not one of the known instances. Skipping unknown selectors avoids writing
+    unprefixed keys (``status``, ``gear``, ...) that would collide across the
+    b7/b3/b2/e7/sp modules and are absent from ``ALL_ATTRIBUTES``.
+    """
     pkg = _Package(data)
-    prefix = prefixes.get(pkg.selector, "")
+    prefix = prefixes.get(pkg.selector)
+    if prefix is None:
+        return None
     _apply_fields(fields, pkg, prefix, result)
-    return pkg
+    return pkg, prefix
 
 
 def _parse_b7(data: bytearray, result: dict[str, object]) -> None:
-    pkg = _parse_prefixed(_B7_FIELDS, _B7_PREFIX, data, result)
-    prefix = _B7_PREFIX.get(pkg.selector, "")
+    parsed = _parse_prefixed(_B7_FIELDS, _B7_PREFIX, data, result)
+    if parsed is None:
+        return
+    _pkg, prefix = parsed
     remaining = result.get(prefix + "remaining_time")
     if isinstance(remaining, int) and remaining > 0:
         result[prefix + "status"] = "power_off_delay"
@@ -985,20 +1029,22 @@ def _parse_b3(data: bytearray, result: dict[str, object]) -> None:
 
 
 def _parse_b2(data: bytearray, result: dict[str, object]) -> None:
-    pkg = _parse_prefixed(_B2_FIELDS, _B2_PREFIX, data, result)
-    prefix = _B2_PREFIX.get(pkg.selector, "")
+    parsed = _parse_prefixed(_B2_FIELDS, _B2_PREFIX, data, result)
+    if parsed is None:
+        return
+    pkg, prefix = parsed
     # recipe_code defaults to -1 and is only set when the pair is present.
     result[prefix + "recipe_code"] = -1
-    high = pkg.get(20)
-    low = pkg.get(19)
+    high = pkg.get(_B2_RECIPE_HIGH_INDEX)
+    low = pkg.get(_B2_RECIPE_LOW_INDEX)
     if low is not None and high is not None and (low != UNCHANGED or high != UNCHANGED):
         result[prefix + "recipe_code"] = low + high * BYTE_BASE
-    # preheating is a tri-state across bits 1 and 2 of byte 18.
-    flags = pkg.get(18)
+    # preheating is a tri-state across the finish/progress bits of the flags byte.
+    flags = pkg.get(_B2_PREHEAT_FLAGS_INDEX)
     if flags is not None and flags != UNCHANGED:
-        if (flags >> 2) & 1:
+        if (flags >> _B2_PREHEAT_FINISH_BIT) & 1:
             result[prefix + "preheating"] = "finish"
-        elif (flags >> 1) & 1:
+        elif (flags >> _B2_PREHEAT_PROGRESS_BIT) & 1:
             result[prefix + "preheating"] = "preheating"
         else:
             result[prefix + "preheating"] = "none"
@@ -1024,7 +1070,7 @@ def _parse_bf(data: bytearray, result: dict[str, object]) -> None:
 
 def _parse_bf_weight(pkg: _Package, result: dict[str, object]) -> None:
     """Decode the oven weight multiple and derived mount value."""
-    flags = pkg.get(38)
+    flags = pkg.get(_BF_WEIGHT_FLAGS_INDEX)
     multiple = 1.0
     if flags is not None and flags != UNCHANGED:
         for bit_index, (label, factor) in _BF_WEIGHT_MULTIPLE.items():
@@ -1032,12 +1078,12 @@ def _parse_bf_weight(pkg: _Package, result: dict[str, object]) -> None:
                 result["bf_weight_multiple"] = label
                 multiple = factor
                 break
-    raw = pkg.get(20)
+    raw = pkg.get(_BF_WEIGHT_RAW_INDEX)
     if raw is not None and raw != UNCHANGED:
-        if flags == 0x04:  # noqa: PLR2004 - documented "other" weight code
+        if flags == _BF_WEIGHT_RAW_MOUNT_FLAG:
             result["bf_weight_mount"] = raw
         else:
-            result["bf_weight_mount"] = raw * 10 * multiple
+            result["bf_weight_mount"] = raw * _BF_WEIGHT_TENTHS_FACTOR * multiple
 
 
 _BF_WEIGHT_MULTIPLE = {
@@ -1251,7 +1297,7 @@ _B2_STATUS_SET = {
     "working": 0x02,
     "pause": 0x03,
     "order": 0x04,
-    "dry": 0x05,
+    "drying": 0x05,
     "auto": 0x06,
 }
 _E7_STATUS_SET = {"power_off": 0x01, "working": 0x02, "order": 0x03}

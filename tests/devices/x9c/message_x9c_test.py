@@ -888,6 +888,33 @@ class TestDecoderEdgeCases:
         frame = _frame(MessageType.query, [0x7E, 0x00])
         assert MessageX9CResponse(frame).attributes == {}
 
+    def test_b7_unknown_selector(self) -> None:
+        """A hob record with an unknown selector writes no b7 attributes."""
+        value = [0x00] * 15
+        value[0] = 9  # selector 9 is neither left (1) nor right (2)
+        value[1] = 0x02
+        frame = _frame(MessageType.query, _tlv((0x02, value)))
+        attrs = MessageX9CResponse(frame).attributes
+        assert not any(k.startswith("b7_") for k in attrs)
+
+    def test_b2_unknown_selector(self) -> None:
+        """A steam-bake record with an unknown selector writes no b2 attrs."""
+        value = [0x00] * 27
+        value[0] = 9  # selector 9 is neither upstair (1) nor downstair (2)
+        value[1] = 0x02
+        frame = _frame(MessageType.query, _tlv((0x04, value)))
+        attrs = MessageX9CResponse(frame).attributes
+        assert not any(k.startswith("b2_") for k in attrs)
+
+    def test_b3_unknown_selector(self) -> None:
+        """A steam-cabinet record with an unknown selector writes no b3 attrs."""
+        value = [0x00] * 15
+        value[0] = 9  # selector 9 is neither upstair (1) nor downstair (2)
+        value[1] = 0x02
+        frame = _frame(MessageType.query, _tlv((0x03, value)))
+        attrs = MessageX9CResponse(frame).attributes
+        assert not any(k.startswith("b3_") for k in attrs)
+
 
 class TestAllAttributes:
     """Sanity checks on the computed attribute list."""

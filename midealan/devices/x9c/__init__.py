@@ -15,6 +15,7 @@ drift from what the protocol actually reports.
 """
 
 import logging
+import math
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -24,10 +25,16 @@ from midealan.exceptions import ValueWrongType
 
 from .message import (
     ALL_ATTRIBUTES,
+    VALUE_OFF,
+    VALUE_ON,
     MessageQuery,
     MessageSetAc,
+    MessageSetB2,
+    MessageSetB3,
+    MessageSetB6,
     MessageSetB7,
     MessageSetE7,
+    MessageSetSp,
     MessageSetTotal,
     MessageX9CResponse,
 )
@@ -40,6 +47,11 @@ ATTR_TOTAL_POWER = "total_power"
 ATTR_TOTAL_LOCK = "total_lock"
 ATTR_AI_VOICE_MICROPHONE = "ai_voice_microphone"
 ATTR_AI_VOICE_VOLUME = "ai_voice_volume"
+
+# Accepted string states for the on/off style whole-appliance controls.
+_ON_OFF_STATES = (VALUE_ON, VALUE_OFF)
+# ai_voice_volume is encoded as a single byte.
+_MAX_BYTE_VALUE = 0xFF
 
 # 0x9C exposes ~370 attributes; build the StrEnum from the decoder's attribute
 # list via the functional API so the two stay in lock-step.
@@ -100,8 +112,12 @@ class MideaX9CDevice(MideaDevice):
     ) -> MessageSetTotal | None:
         """Build a whole-appliance control message for ``attr``, if supported."""
         if attr == ATTR_TOTAL_POWER:
+            if value not in _ON_OFF_STATES:
+                raise ValueWrongType(
+                    f"[x9c] total_power expects one of {_ON_OFF_STATES}",
+                )
             message = MessageSetTotal(self._message_protocol_version)
-            message.power = str(value)
+            message.power = value
             return message
         if attr == ATTR_TOTAL_LOCK:
             if not isinstance(value, bool):
@@ -110,12 +126,20 @@ class MideaX9CDevice(MideaDevice):
             message.lock = value
             return message
         if attr == ATTR_AI_VOICE_MICROPHONE:
+            if value not in _ON_OFF_STATES:
+                raise ValueWrongType(
+                    f"[x9c] ai_voice_microphone expects one of {_ON_OFF_STATES}",
+                )
             message = MessageSetTotal(self._message_protocol_version)
-            message.ai_voice_microphone = str(value)
+            message.ai_voice_microphone = value
             return message
         if attr == ATTR_AI_VOICE_VOLUME:
             if isinstance(value, bool) or not isinstance(value, int | float):
                 raise ValueWrongType("[x9c] ai_voice_volume expects a number")
+            if not math.isfinite(value) or not 0 <= value <= _MAX_BYTE_VALUE:
+                raise ValueWrongType(
+                    f"[x9c] ai_voice_volume must be within 0-{_MAX_BYTE_VALUE}",
+                )
             message = MessageSetTotal(self._message_protocol_version)
             message.ai_voice_volume = int(value)
             return message
@@ -124,10 +148,20 @@ class MideaX9CDevice(MideaDevice):
 
 # Re-exported control classes for callers that need structured module commands.
 __all__ = [
+    "ATTR_AI_VOICE_MICROPHONE",
+    "ATTR_AI_VOICE_VOLUME",
+    "ATTR_TOTAL_LOCK",
+    "ATTR_TOTAL_POWER",
     "DeviceAttributes",
+    "MessageQuery",
     "MessageSetAc",
+    "MessageSetB2",
+    "MessageSetB3",
+    "MessageSetB6",
     "MessageSetB7",
     "MessageSetE7",
+    "MessageSetSp",
+    "MessageSetTotal",
     "MideaAppliance",
     "MideaX9CDevice",
 ]

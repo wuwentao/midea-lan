@@ -166,6 +166,16 @@ cd midea-lan
 使用 `uv run` 运行工具，例如 `uv run python -m pytest ./tests/`。
 完整流程与各操作系统的 uv 安装说明请参见贡献指南。
 
+## 新增设备支持
+
+想为一款新的美的设备类型添加支持？从下载设备 Lua 协议、阅读
+`dataToJson`/`jsonToData`、编写 `__init__.py` 与 `message.py`、注册设备类型、
+测试，到提交 PR 的完整流程都有文档说明，并以 `0xD9` 洗烘一体机
+（[PR #175](https://github.com/wuwentao/midea-lan/pull/175)）作为贯穿示例：
+
+- [新增设备类型支持指南（中文）](docs/adding-a-new-device.zh-Hans.md)
+- [Adding a New Device Type（English）](docs/adding-a-new-device.md)
+
 ## 贡献指南
 
 [英文版 CONTRIBUTING](.github/CONTRIBUTING.md)

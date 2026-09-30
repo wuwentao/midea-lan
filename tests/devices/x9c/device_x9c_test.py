@@ -85,6 +85,11 @@ class TestMideaX9CDevice:
         message = mock_send.call_args.args[0]
         assert isinstance(message, MessageSetTotal)
         assert message.power == "on"
+        # Verify the serialized payload: sub-command, module id, power byte.
+        body = list(message.body)
+        assert body[0] == 0x01
+        assert body[1] == 0xF0
+        assert body[3] == 0x02  # power on
 
     def test_set_lock(self) -> None:
         """total_lock accepts a bool."""
@@ -106,9 +111,11 @@ class TestMideaX9CDevice:
     def test_set_microphone(self) -> None:
         """ai_voice_microphone forwards the string state."""
         with patch.object(self.device, "build_send") as mock_send:
-            self.device.set_attribute(ATTR_AI_VOICE_MICROPHONE, "off")
+            self.device.set_attribute(ATTR_AI_VOICE_MICROPHONE, "on")
         message = mock_send.call_args.args[0]
-        assert message.ai_voice_microphone == "off"
+        assert message.ai_voice_microphone == "on"
+        # The microphone encoding is inverted: "on" writes 0x00.
+        assert list(message.body)[7] == 0x00
 
     def test_set_microphone_invalid_state(self) -> None:
         """ai_voice_microphone only accepts the on/off string states."""
@@ -121,6 +128,7 @@ class TestMideaX9CDevice:
             self.device.set_attribute(ATTR_AI_VOICE_VOLUME, 6)
         message = mock_send.call_args.args[0]
         assert message.ai_voice_volume == 6
+        assert list(message.body)[8] == 6  # volume byte
 
     def test_set_volume_wrong_type(self) -> None:
         """ai_voice_volume rejects bool and non-numeric values."""

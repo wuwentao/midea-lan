@@ -670,6 +670,7 @@ class TestX9CResponseModules:
         attrs = MessageX9CResponse(frame).attributes
         assert attrs["bf_control_back"] == "success"
         assert attrs["bf_step_total"] == 1
+        assert attrs["bf_step_current"] == 2  # high nibble of 0x21
         assert attrs["bf_cavity"] == "down"
         assert attrs["bf_work_status"] == "working"
         assert attrs["bf_weight_multiple"] == "ten"

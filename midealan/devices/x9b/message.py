@@ -39,6 +39,9 @@ SUBCMD_SYSTIME = 0x04  # system time (query and set)
 # --- Generic framing constants ----------------------------------------------
 UNCHANGED = 0xFF  # a byte holding 0xFF means "not present / leave unchanged"
 BYTE_BASE = 256  # two-byte big-endian scale factor
+BYTE_MASK = 0xFF  # low-byte mask
+NIBBLE_MASK = 0x0F  # low-nibble mask
+NIBBLE_SHIFT = 4  # bits per nibble
 
 # --- Cooking command bit flags (body byte 5) --------------------------------
 COOK_FLAG_PREHEAT = 0x01
@@ -51,6 +54,10 @@ SINGLE_STEP_FLAG = 0x11  # body[4] value for a single-step recipe
 STEP_BLOCK_LEN = 16  # bytes per cooking step
 STEP_BASE = 5  # first step block starts at body[5]
 WEIGHT_SCALE = 10  # weight is reported/expected in multiples of 10 g
+
+# --- Response body length guards --------------------------------------------
+STATUS_MIN_LEN = 36  # last fixed-offset status byte read is body[35]
+SYSTIME_MIN_LEN = 10  # system-time body reads body[1] through body[9]
 
 VALUE_ON = "on"
 VALUE_OFF = "off"
@@ -313,7 +320,7 @@ def _u16be(high: int, low: int) -> int:
 
 def _split_u16(value: int) -> tuple[int, int]:
     """Split an unsigned integer into big-endian (high, low) bytes."""
-    return (value // BYTE_BASE) & UNCHANGED, value & UNCHANGED
+    return (value // BYTE_BASE) & BYTE_MASK, value & BYTE_MASK
 
 
 class MessageX9BBase(MessageRequest):
@@ -621,9 +628,9 @@ class MessageSetCooking(MessageX9BBase):
 
     @property
     def _body(self) -> bytearray:
-        menu_high = (self.cloudmenuid // (BYTE_BASE * BYTE_BASE)) & UNCHANGED
-        menu_mid = (self.cloudmenuid // BYTE_BASE) & UNCHANGED
-        menu_low = self.cloudmenuid & UNCHANGED
+        menu_high = (self.cloudmenuid // (BYTE_BASE * BYTE_BASE)) & BYTE_MASK
+        menu_mid = (self.cloudmenuid // BYTE_BASE) & BYTE_MASK
+        menu_low = self.cloudmenuid & BYTE_MASK
         total = len(self.steps)
         body = bytearray([SUBCMD_COOKING, menu_high, menu_mid, menu_low])
         if total <= 1:
@@ -632,7 +639,9 @@ class MessageSetCooking(MessageX9BBase):
             body.extend(step.encode())
             body.append(0x00)
         else:
-            body.append((total << 4) | (self.stepnum_start & 0x0F))
+            body.append(
+                (total << NIBBLE_SHIFT) | (self.stepnum_start & NIBBLE_MASK),
+            )
             for step in self.steps:
                 body.extend(step.encode())
             body.append(0x00)
@@ -708,6 +717,8 @@ class X9BStatusBody:
         return None
 
     def _decode(self) -> None:
+        if len(self._body) < STATUS_MIN_LEN:
+            return
         self._decode_header()
         self._decode_time_and_temp()
         self._decode_work_time()
@@ -725,8 +736,8 @@ class X9BStatusBody:
             + self._body[3] * BYTE_BASE
             + self._body[4]
         )
-        attrs["totalstep"] = self._body[5] >> 4
-        attrs["stepnum"] = self._body[5] & 0x0F
+        attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
+        attrs["stepnum"] = self._body[5] & NIBBLE_MASK
         attrs["probe"] = (self._body[6] >> 1) & 1
         attrs["turntable"] = VALUE_ON if (self._body[6] >> 3) & 1 else VALUE_OFF
         attrs["work_mode"] = WORK_MODE_MAP.get(
@@ -865,6 +876,8 @@ class X9BSystemTimeBody:
     def __init__(self, body: bytearray) -> None:
         """Decode the system-time body."""
         self.attributes: dict[str, int | str] = {}
+        if len(body) < SYSTIME_MIN_LEN:
+            return
         self.attributes["sys_time_src"] = SYS_TIME_SRC_MAP.get(body[1], VALUE_FF)
         for offset, name in enumerate(self._FIELDS, start=2):
             value = body[offset]

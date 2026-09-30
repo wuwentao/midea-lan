@@ -424,6 +424,16 @@ class TestX9BResponse:
         assert attrs["clean_sink_ponding"] == 0
         assert attrs["dissipate_heat"] == "off"
 
+    def test_status_body_too_short_skips_decode(self) -> None:
+        """A status body shorter than the fixed-offset span decodes to nothing."""
+        response = MessageX9BResponse(_frame(MessageType.query, [0x01, 0x00, 0x00]))
+        assert response.attributes == {}
+
+    def test_system_time_body_too_short_skips_decode(self) -> None:
+        """A truncated system-time body decodes to nothing rather than raising."""
+        response = MessageX9BResponse(_frame(MessageType.query, [0x04, 0x01, 30]))
+        assert response.attributes == {}
+
     def test_system_time_response(self) -> None:
         """A system-time response decodes each clock field."""
         body = [0x04, 0x01, 30, 45, 12, 3, 15, 6, 25, 8]

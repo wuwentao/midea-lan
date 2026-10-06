@@ -634,8 +634,8 @@ class MideaACDevice(MideaDevice):
             message,
             "power_off_timer",
         ):
-            # Timers reported in the 0x7e new-protocol payload: prefer this
-            # source over the C0 timer bytes.
+            # Timers reported in the 0x7e new-protocol payload: set them with
+            # PropertiesSet and prefer this source over the C0 timer bytes.
             self._timers_in_new_protocol = True
         is_stale_c0_timer = self._timers_in_new_protocol and body_type == ListTypes.C0
 
@@ -1276,6 +1276,55 @@ class MideaACDevice(MideaDevice):
             exhaust=exhaust,
         )
 
+    def make_timer_message_set(
+        self,
+        attr: str,
+        minutes: int,
+    ) -> PropertiesSet | StateSet | None:
+        """Midea AC device make countdown timer set (minutes, 0 = disarm)."""
+        message: PropertiesSet | StateSet
+        if self._timers_in_new_protocol:
+            message = PropertiesSet(self._message_protocol_version)
+        elif self._used_subprotocol:
+            _LOGGER.debug(
+                "[%s] Countdown timers are unsupported by the AC subprotocol",
+                self.device_id,
+            )
+            return None
+        else:
+            # A StateSet sets both slots: keep the other one as reported.
+            message = self.make_message_set()
+            message.power_on_timer = (
+                self._attributes[DeviceAttributes.power_on_timer] or 0
+            )
+            message.power_off_timer = (
+                self._attributes[DeviceAttributes.power_off_timer] or 0
+            )
+        if attr == DeviceAttributes.power_on_timer:
+            message.power_on_timer = minutes
+        else:
+            message.power_off_timer = minutes
+        return message
+
+    def set_countdown_timer(self, attr: str, value: bool | float | str) -> None:
+        """Midea AC device set a countdown timer (minutes, 0 = disarm)."""
+        if isinstance(value, bool):
+            _LOGGER.debug(
+                "[%s] Ignoring boolean value for %s, expected minutes",
+                self.device_id,
+                attr,
+            )
+            return
+        minutes = max(int(value), 0)
+        message = self.make_timer_message_set(attr, minutes)
+        if message is None:
+            return
+        self.build_send(message)
+        # Update the cache now: a StateSet sent before the next status reply
+        # would otherwise carry the old value and undo this set.
+        self._attributes[DeviceAttributes(attr)] = minutes
+        self.update_all({str(attr): minutes})
+
     def make_message_uniq_set(self) -> MessageSubProtocolSet | StateSet:
         """Midea AC device make message unique set."""
         message: MessageSubProtocolSet | StateSet
@@ -1319,8 +1368,6 @@ class MideaACDevice(MideaDevice):
             DeviceAttributes.water_pump_running,
             DeviceAttributes.defrosting,
             DeviceAttributes.compressor_power,
-            DeviceAttributes.power_on_timer,
-            DeviceAttributes.power_off_timer,
         ]:
             if attr == DeviceAttributes.prompt_tone:
                 self._attributes[DeviceAttributes.prompt_tone] = value
@@ -1366,6 +1413,8 @@ class MideaACDevice(MideaDevice):
                 message = self.make_newprotocol_message_set(attr=attr, value=value)
                 if attr == DeviceAttributes.self_clean:
                     optimistic_self_clean = bool(value)
+            elif attr in TIMER_ATTRIBUTES:
+                self.set_countdown_timer(attr, value)
             elif attr == DeviceAttributes.power_saving and self._used_subprotocol:
                 _LOGGER.debug(
                     "[%s] Power saving is unsupported by the AC subprotocol",

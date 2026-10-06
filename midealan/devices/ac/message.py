@@ -141,10 +141,22 @@ NEW_PROTOCOL_TIMER_POWER_ON_CORRECTION_SHIFT = 4
 # The C0 status body carries the same countdown slots as the 0x7e payload, at
 # body bytes 4 (power-on), 5 (power-off) and 6 (minute nibbles), per the vendor
 # fixed-header Lua (e.g. T_0000_AC_00000Q11_2024013001.lua). The
-# NEW_PROTOCOL_TIMER_* slot constants above apply to both.
+# NEW_PROTOCOL_TIMER_* slot constants above apply to both, and to the same
+# slots in the X40 (StateSet) body. The vendor app always sets
+# COUNTDOWN_TIMER_SET_FLAG in the X40 fan byte; 0x7F, or any slot byte without
+# bit 7 (e.g. the default 00), disarms that slot.
 C0_POWER_ON_TIMER_BYTE = 4
 C0_POWER_OFF_TIMER_BYTE = 5
 C0_TIMER_MINUTE_CORRECTION_BYTE = 6
+COUNTDOWN_TIMER_SET_FLAG = 0x80
+COUNTDOWN_TIMER_SLOT_DISARMED = 0x7F
+# Bit 7 of a slot byte is the armed flag, which leaves 5 hour bits (31 h),
+# 3 quarter-hours and up to 14 minutes from the nibble.
+COUNTDOWN_TIMER_MAX_MINUTES = 31 * 60 + 59
+# B0 (PropertiesSet) timer parameters: [switch, hours, minutes], per
+# T_0000_AC_22019053_2024012501.lua.
+PROPERTIES_TIMER_SWITCH_ON = 0x01
+PROPERTIES_TIMER_SWITCH_OFF = 0x00
 # Live self-clean state is carried by the same payload (byte 8 bit 2).
 NEW_PROTOCOL_SELF_CLEAN_BYTE = 8
 NEW_PROTOCOL_SELF_CLEAN_MASK = 0x04
@@ -219,6 +231,8 @@ class CapabilityTag(IntEnum):
 
     wind_ud_angle = 0x0009
     wind_lr_angle = 0x000A
+    power_on_timer = 0x000B
+    power_off_timer = 0x000C
     indoor_humidity = 0x0015  # queryType == "indoor_humidity"
     screen_display = 0x0017
     breezeless = 0x0018  # queryType == "fn_no_wind_sense"
@@ -1007,6 +1021,26 @@ class StateSet(MessageACBase):
         self.frost_protect = False
         self.comfort_mode = False
         self.anion = False
+        # Countdown timers in minutes (0 = disarm). When both stay None the
+        # timer bytes are sent as 00 00 00, which clears any armed timer.
+        # Unlike the vendor app, which always sends the timer flag, this keeps
+        # the bytes of devices that never use timers unchanged.
+        self.power_on_timer: int | None = None
+        self.power_off_timer: int | None = None
+
+    def _timer_bytes(self) -> tuple[int, int, int, int]:
+        """Return (fan flag, power-on slot, power-off slot, minute nibbles)."""
+        if self.power_on_timer is None and self.power_off_timer is None:
+            return 0x00, 0x00, 0x00, 0x00
+        on_slot, on_correction = encode_countdown_timer(self.power_on_timer or 0)
+        off_slot, off_correction = encode_countdown_timer(self.power_off_timer or 0)
+        return (
+            COUNTDOWN_TIMER_SET_FLAG,
+            on_slot,
+            off_slot,
+            (on_correction << NEW_PROTOCOL_TIMER_POWER_ON_CORRECTION_SHIFT)
+            | off_correction,
+        )
 
     @property
     def _body(self) -> bytearray:
@@ -1052,15 +1086,17 @@ class StateSet(MessageACBase):
         frost_protect = 0x80 if self.frost_protect else 0
         # Byte 22 comfort_mode
         comfort_mode = 0x01 if self.comfort_mode else 0
+        # Byte 3 timer flag, bytes 4-6 countdown timers
+        timer_flag, power_on_timer, power_off_timer, timer_minutes = self._timer_bytes()
 
         return bytearray(
             [
                 power | prompt_tone,
                 mode | target_temperature,
-                fan_speed,
-                0x00,
-                0x00,
-                0x00,
+                fan_speed | timer_flag,
+                power_on_timer,
+                power_off_timer,
+                timer_minutes,
                 swing_mode,
                 boost_mode | power_saving,
                 smart_eye | dry | aux_heating | eco_mode | anion,
@@ -1107,6 +1143,9 @@ class PropertiesSet(MessageACBase):
         self.light_sensitive: bool | None = None
         self.ieco: bool | None = None
         self.ieco_number: int = 1
+        # Countdown timers in minutes (0 = disarm).
+        self.power_on_timer: int | None = None
+        self.power_off_timer: int | None = None
 
     @property
     def _body(self) -> bytearray:
@@ -1260,6 +1299,22 @@ class PropertiesSet(MessageACBase):
                     + bytearray(IECO_SET_PADDING),
                 ),
             )
+        if self.power_on_timer is not None:
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=CapabilityTag.power_on_timer,
+                    value=encode_properties_timer(self.power_on_timer),
+                ),
+            )
+        if self.power_off_timer is not None:
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=CapabilityTag.power_off_timer,
+                    value=encode_properties_timer(self.power_off_timer),
+                ),
+            )
         payload[0] = pack_count
         return payload
 
@@ -1369,6 +1424,43 @@ def parse_countdown_timer(value: int, minute_correction: int) -> int:
         + NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX
         - minute_correction
     )
+
+
+def encode_countdown_timer(minutes: int) -> tuple[int, int]:
+    """Encode minutes into (slot byte, minute correction nibble); 0 = disarm.
+
+    Inverse of parse_countdown_timer. The slot byte holds the armed flag,
+    hours and quarter-hours; the nibble holds 15 minus the minutes past the
+    last quarter-hour.
+    """
+    if minutes <= 0:
+        return COUNTDOWN_TIMER_SLOT_DISARMED, NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX
+    if minutes > COUNTDOWN_TIMER_MAX_MINUTES:
+        _LOGGER.debug(
+            "Countdown timer %d min clamped to %d min",
+            minutes,
+            COUNTDOWN_TIMER_MAX_MINUTES,
+        )
+        minutes = COUNTDOWN_TIMER_MAX_MINUTES
+    hours, rest = divmod(minutes, NEW_PROTOCOL_TIMER_MINUTES_PER_HOUR)
+    quarter_hours, extra = divmod(rest, NEW_PROTOCOL_TIMER_MINUTES_PER_QUARTER)
+    return (
+        NEW_PROTOCOL_TIMER_ARMED_MASK
+        | (hours << NEW_PROTOCOL_TIMER_HOUR_SHIFT)
+        | quarter_hours,
+        NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX - extra,
+    )
+
+
+def encode_properties_timer(minutes: int) -> bytearray:
+    """Encode minutes into the B0 [switch, hours, minutes] value; 0 = disarm."""
+    if minutes <= 0:
+        return bytearray([PROPERTIES_TIMER_SWITCH_OFF, 0x00, 0x00])
+    hours, rest = divmod(minutes, NEW_PROTOCOL_TIMER_MINUTES_PER_HOUR)
+    if hours > MAX_BYTE_VALUE:
+        _LOGGER.debug("Countdown timer %d min clamped to 255 h", minutes)
+        hours, rest = MAX_BYTE_VALUE, 0
+    return bytearray([PROPERTIES_TIMER_SWITCH_ON, hours, rest])
 
 
 class PropertiesBody(NewProtocolMessageBody):

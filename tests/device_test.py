@@ -3,7 +3,7 @@
 import contextlib
 import threading
 from typing import Any, ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -1245,6 +1245,70 @@ class TestMideaDevice:
         assert self.device._buffer == b""
         assert self.device._unsupported_protocol == []
 
+    @pytest.mark.parametrize("close_error", [None, OSError(), ValueError()])
+    def test_close_socket_publishes_unavailable_before_reconnect(
+        self,
+        close_error: Exception | None,
+    ) -> None:
+        """Closing the active socket publishes its loss even if close raises."""
+        socket_mock: Any = MagicMock()
+        socket_mock.close.side_effect = close_error
+        update = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        self.device._available = True
+        self.device.register_update(update)
+
+        self.device.close_socket()
+
+        assert self.device._socket is None
+        assert self.device.available is False
+        update.assert_called_once_with({"available": False})
+        self.device.set_available(True)
+        assert update.call_args_list == [
+            call({"available": False}),
+            call({"available": True}),
+        ]
+
+    def test_close_socket_stopped_device_does_not_publish_unavailable(self) -> None:
+        """An explicit thread shutdown does not publish a connection loss."""
+        socket_mock: Any = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        update = MagicMock()
+        self.device.register_update(update)
+
+        self.device.close()
+
+        assert self.device._socket is None
+        update.assert_not_called()
+
+    def test_close_stale_socket_preserves_current_connection(self) -> None:
+        """Closing an old socket leaves the new connection and query state intact."""
+        old_socket = MagicMock()
+        current_socket = MagicMock()
+        update = MagicMock()
+        self.device._socket = current_socket
+        self.device._is_run = True
+        self.device._available = True
+        self.device._buffer = b"current"
+        self.device._unsupported_protocol = ["CurrentQuery"]
+        self.device._appliance_query = False
+        self.device.register_update(update)
+
+        with patch.object(self.device, "reset_init_query") as reset_init_query:
+            self.device.close_socket(old_socket)
+
+        old_socket.close.assert_called_once()
+        current_socket.close.assert_not_called()
+        assert self.device._socket is current_socket
+        assert self.device.available is True
+        assert self.device._buffer == b"current"
+        assert self.device._unsupported_protocol == ["CurrentQuery"]
+        assert self.device._appliance_query is False
+        reset_init_query.assert_not_called()
+        update.assert_not_called()
+
     def test_close_socket_close_value_error(self) -> None:
         """Test close_socket swallows ValueError raised by socket.close()."""
         socket_mock = MagicMock()
@@ -1258,16 +1322,22 @@ class TestMideaDevice:
         """Test close_socket only clears the same socket it captured."""
         old_socket = MagicMock()
         new_socket: Any = MagicMock()
+        update = MagicMock()
 
         def replace_socket() -> None:
             self.device._socket = new_socket
 
         old_socket.close.side_effect = replace_socket
         self.device._socket = old_socket
+        self.device._is_run = True
+        self.device._available = True
+        self.device.register_update(update)
         self.device.close_socket()
 
         old_socket.close.assert_called_once()
         assert self.device._socket is new_socket
+        assert self.device.available is True
+        update.assert_not_called()
 
     def test_set_ip(self) -> None:
         """Test set ip."""

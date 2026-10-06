@@ -880,6 +880,10 @@ class MideaDevice(threading.Thread):
                     # Avoid clearing a socket installed by a concurrent reconnect.
                     if self._socket is sock:
                         self._socket = None
+                        # Publish the loss before reconnecting can make the device
+                        # available again. A stale socket must not affect it.
+                        if self._is_run:
+                            self.set_available(False)
 
     def set_ip_address(self, ip_address: str) -> None:
         """Set IP address."""

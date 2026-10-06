@@ -91,6 +91,7 @@ class TestCAGeneralMessageBody:
         assert body.holiday_mode is True
         assert body.moisturize_mode is True
         assert body.preservation_mode is True
+        assert body.acme_freezing_mode is True
         assert body.acmeFreezing_mode is True
         assert body.refrigerator_setting_temp == 5
         assert body.freezer_setting_temp == -15
@@ -171,6 +172,14 @@ class TestCAGeneralMessageBody:
         assert body.freezer_door_auto == 0x30
         assert body.freezer_door_auto_control == 0x40
         assert body.storage_door_auto_control == 0x80
+
+    def test_acme_freezing_alias_clear(self) -> None:
+        """Both parser names preserve the cleared flag value."""
+        raw = _general_body(25)
+        raw[1] = 0
+        body = CAGeneralMessageBody(raw)
+        assert body.acme_freezing_mode is False
+        assert body.acmeFreezing_mode is False
 
     def test_temperature_branches(self) -> None:
         """Test general body remaining flex zone temperature branches."""

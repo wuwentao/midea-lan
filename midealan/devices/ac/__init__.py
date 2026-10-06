@@ -206,6 +206,11 @@ STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.indoor_temperature,
     DeviceAttributes.outdoor_temperature,
 )
+TIMER_ATTRIBUTES = (
+    DeviceAttributes.power_on_timer,
+    DeviceAttributes.power_off_timer,
+)
+NEW_PROTOCOL_BODY_TYPES = (ListTypes.B0, ListTypes.B1, ListTypes.B5)
 
 
 class MideaACDevice(MideaDevice):
@@ -359,6 +364,8 @@ class MideaACDevice(MideaDevice):
         )
         self._fresh_air_version: DeviceAttributes | None = None
         self._pending_self_clean: tuple[bool, float] | None = None
+        # Set once a B0/B1/B5 body reports the countdown timers.
+        self._timers_in_new_protocol = False
         # Current iECO gear the device reports; echoed back when setting iECO.
         self._ieco_number: int = 1
         self._default_temperature_step: float = 0.5
@@ -623,6 +630,14 @@ class MideaACDevice(MideaDevice):
         is_stale_c0_temperature = (
             self._prefer_new_protocol_temperature and body_type == ListTypes.C0
         )
+        if body_type in NEW_PROTOCOL_BODY_TYPES and hasattr(
+            message,
+            "power_off_timer",
+        ):
+            # Timers reported in the 0x7e new-protocol payload: prefer this
+            # source over the C0 timer bytes.
+            self._timers_in_new_protocol = True
+        is_stale_c0_timer = self._timers_in_new_protocol and body_type == ListTypes.C0
 
         if hasattr(message, "used_subprotocol"):
             self._used_subprotocol = True
@@ -671,6 +686,8 @@ class MideaACDevice(MideaDevice):
         for attr in self._attributes:
             if hasattr(message, str(attr)):
                 if is_stale_c0_temperature and attr in STALE_C0_TEMPERATURE_ATTRIBUTES:
+                    continue
+                if is_stale_c0_timer and attr in TIMER_ATTRIBUTES:
                     continue
                 value = getattr(message, str(attr))
                 if attr == DeviceAttributes.fresh_air_power:
@@ -742,12 +759,6 @@ class MideaACDevice(MideaDevice):
             new_status[DeviceAttributes.light_sensitive.value] = (
                 message.light_sensitive_active
             )
-        if hasattr(message, "power_on_timer"):
-            self._attributes[DeviceAttributes.power_on_timer] = message.power_on_timer
-            new_status[DeviceAttributes.power_on_timer.value] = message.power_on_timer
-        if hasattr(message, "power_off_timer"):
-            self._attributes[DeviceAttributes.power_off_timer] = message.power_off_timer
-            new_status[DeviceAttributes.power_off_timer.value] = message.power_off_timer
         # Merge capabilities first so a B5 frame's temperature limits are in the
         # merged map before the setpoint limits are resolved from it.
         new_status.update(self._update_capabilities(message))

@@ -138,6 +138,13 @@ NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX = 15
 NEW_PROTOCOL_TIMER_MINUTES_PER_HOUR = 60
 NEW_PROTOCOL_TIMER_MINUTES_PER_QUARTER = 15
 NEW_PROTOCOL_TIMER_POWER_ON_CORRECTION_SHIFT = 4
+# The C0 status body carries the same countdown slots as the 0x7e payload, at
+# body bytes 4 (power-on), 5 (power-off) and 6 (minute nibbles), per the vendor
+# fixed-header Lua (e.g. T_0000_AC_00000Q11_2024013001.lua). The
+# NEW_PROTOCOL_TIMER_* slot constants above apply to both.
+C0_POWER_ON_TIMER_BYTE = 4
+C0_POWER_OFF_TIMER_BYTE = 5
+C0_TIMER_MINUTE_CORRECTION_BYTE = 6
 # Live self-clean state is carried by the same payload (byte 8 bit 2).
 NEW_PROTOCOL_SELF_CLEAN_BYTE = 8
 NEW_PROTOCOL_SELF_CLEAN_MASK = 0x04
@@ -1350,22 +1357,22 @@ class XA1Body(XMessageBody):
         self.indoor_humidity = body[17] if body[17] != 0 else None
 
 
+def parse_countdown_timer(value: int, minute_correction: int) -> int:
+    """Decode an armed countdown timer slot into minutes (0 = not armed)."""
+    if not (value & NEW_PROTOCOL_TIMER_ARMED_MASK):
+        return 0
+    hours = (value & NEW_PROTOCOL_TIMER_VALUE_MASK) >> NEW_PROTOCOL_TIMER_HOUR_SHIFT
+    quarter_hours = value & NEW_PROTOCOL_TIMER_QUARTER_MASK
+    return (
+        hours * NEW_PROTOCOL_TIMER_MINUTES_PER_HOUR
+        + quarter_hours * NEW_PROTOCOL_TIMER_MINUTES_PER_QUARTER
+        + NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX
+        - minute_correction
+    )
+
+
 class PropertiesBody(NewProtocolMessageBody):
     """AC Bx message body. body[0] b0/b1, body[1] propertyNumber, cursor 2."""
-
-    @staticmethod
-    def _parse_countdown_timer(value: int, minute_correction: int) -> int:
-        """Decode an armed countdown timer into minutes (0 = not armed)."""
-        if not (value & NEW_PROTOCOL_TIMER_ARMED_MASK):
-            return 0
-        hours = (value & NEW_PROTOCOL_TIMER_VALUE_MASK) >> NEW_PROTOCOL_TIMER_HOUR_SHIFT
-        quarter_hours = value & NEW_PROTOCOL_TIMER_QUARTER_MASK
-        return (
-            hours * NEW_PROTOCOL_TIMER_MINUTES_PER_HOUR
-            + quarter_hours * NEW_PROTOCOL_TIMER_MINUTES_PER_QUARTER
-            + NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MAX
-            - minute_correction
-        )
 
     def _parse_queried_states(self, params: dict[int, bytearray]) -> None:
         """Parse live states from queried property tags (B0/B1 bodies only).
@@ -1456,14 +1463,14 @@ class PropertiesBody(NewProtocolMessageBody):
                 new_protocol_data[NEW_PROTOCOL_LIGHT_SENSITIVE_BYTE]
                 & NEW_PROTOCOL_LIGHT_SENSITIVE_MASK
             ) > 0
-            self.power_on_timer: int = self._parse_countdown_timer(
+            self.power_on_timer: int = parse_countdown_timer(
                 new_protocol_data[NEW_PROTOCOL_POWER_ON_TIMER_BYTE],
                 (
                     new_protocol_data[NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_BYTE]
                     >> NEW_PROTOCOL_TIMER_POWER_ON_CORRECTION_SHIFT
                 ),
             )
-            self.power_off_timer: int = self._parse_countdown_timer(
+            self.power_off_timer: int = parse_countdown_timer(
                 new_protocol_data[NEW_PROTOCOL_POWER_OFF_TIMER_BYTE],
                 new_protocol_data[NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_BYTE]
                 & NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MASK,
@@ -1829,6 +1836,17 @@ class StateBody(XMessageBody):
         )
         # swingLRValueUnder
         self.swing_lr_value = body[20] & 0x80 if len(body) >= SWING_LR_MIN_LENGTH else 0
+        # Countdown timers, same slot layout as the 0x7e new-protocol payload.
+        self.power_on_timer = parse_countdown_timer(
+            body[C0_POWER_ON_TIMER_BYTE],
+            body[C0_TIMER_MINUTE_CORRECTION_BYTE]
+            >> NEW_PROTOCOL_TIMER_POWER_ON_CORRECTION_SHIFT,
+        )
+        self.power_off_timer = parse_countdown_timer(
+            body[C0_POWER_OFF_TIMER_BYTE],
+            body[C0_TIMER_MINUTE_CORRECTION_BYTE]
+            & NEW_PROTOCOL_TIMER_MINUTE_CORRECTION_MASK,
+        )
         if len(body) >= FRESH_AIR_C0_MIN_LENGTH:
             self.fresh_filter_time_total = body[25] * 256 + body[24]
             self.fresh_filter_time_use = body[27] * 256 + body[26]

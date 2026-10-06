@@ -1166,6 +1166,32 @@ class TestMideaACDevice:
                 self.device.set_attribute(attr.value, 1)
             mock_build_send.assert_not_called()
 
+    @staticmethod
+    def _c0_with_timers(on_slot: int, off_slot: int, minutes: int) -> bytearray:
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[1] = 0x01  # power on
+        body[4], body[5], body[6] = on_slot, off_slot, minutes
+        return body
+
+    def test_c0_timers_update_attributes(self) -> None:
+        """Test C0 status timer bytes update the timer attributes."""
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        assert status[DeviceAttributes.power_off_timer.value] == 120
+        assert status[DeviceAttributes.power_on_timer.value] == 0
+
+    def test_c0_timers_ignored_after_new_protocol_timers(self) -> None:
+        """Test the 0x7e payload stays the timer source once it was seen."""
+        self.device._timers_in_new_protocol = True
+        self.device._attributes[DeviceAttributes.power_off_timer] = 60
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x7F, 0xFF)),
+        )
+        assert DeviceAttributes.power_off_timer.value not in status
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 60
+
     def test_set_target_temperature(self) -> None:
         """Test set target temperature."""
         with patch.object(self.device, "build_send") as mock_build_send:

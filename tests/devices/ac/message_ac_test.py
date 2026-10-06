@@ -36,7 +36,6 @@ from midealan.devices.ac.message import (
     MessageSubProtocolSet,
     PowerFormats,
     PowerQuery,
-    PropertiesBody,
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
@@ -50,6 +49,7 @@ from midealan.devices.ac.message import (
     ToggleDisplay,
     _PropertiesCapsQueryBase,
     format_property_tags,
+    parse_countdown_timer,
 )
 from midealan.message import ListTypes, MessageBase, MessageType
 
@@ -722,6 +722,27 @@ class TestNewProtocolSetOutSilent:
         body = msg.body
         assert body[0] == 0xB0
         assert body[1] == 0x00  # 0 params packed
+
+
+class TestCountdownTimers:
+    """Test countdown timer slot encoding and decoding."""
+
+    def test_c0_countdown_timers(self) -> None:
+        """Test C0 decodes both timer slots with their minute nibbles."""
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0, 0x03])
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[4] = 0x95  # power-on 5 h 1 quarter
+        body[5] = 0x87  # power-off 1 h 3 quarters
+        body[6] = 0x01  # power-on +15 min, power-off +14 min
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 330
+        assert response.power_off_timer == 119
+
+        body[4:7] = bytearray([0x7F, 0x7F, 0xFF])
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 0
+        assert response.power_off_timer == 0
 
 
 class TestNewProtocolSetAngles:
@@ -1446,9 +1467,7 @@ class TestMessageACResponse:
         expected: int,
     ) -> None:
         """Test the Lua-compatible timer byte and minute correction formula."""
-        assert (
-            PropertiesBody._parse_countdown_timer(value, minute_correction) == expected
-        )
+        assert parse_countdown_timer(value, minute_correction) == expected
 
     def test_message_notify2_a0_short_body(self) -> None:
         """Skip Message parse notify2 A0 when the body is too short."""

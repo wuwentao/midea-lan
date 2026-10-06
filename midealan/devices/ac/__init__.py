@@ -1112,6 +1112,14 @@ class MideaACDevice(MideaDevice):
         message.frost_protect = self._attributes[DeviceAttributes.frost_protect]
         message.comfort_mode = self._attributes[DeviceAttributes.comfort_mode]
         message.anion = self._attributes[DeviceAttributes.anion]
+        # Timer bytes 00 00 00 clear armed timers, so carry the armed ones
+        # forward, as the vendor app does for every command except power
+        # on/off. With no timer armed the bytes stay 00 00 00 as before.
+        power_on_timer = self._attributes[DeviceAttributes.power_on_timer] or 0
+        power_off_timer = self._attributes[DeviceAttributes.power_off_timer] or 0
+        if power_on_timer > 0 or power_off_timer > 0:
+            message.power_on_timer = power_on_timer
+            message.power_off_timer = power_off_timer
         return message
 
     def make_newprotocol_message_set(
@@ -1334,6 +1342,32 @@ class MideaACDevice(MideaDevice):
             message = self.make_message_set()
         return message
 
+    def _clear_timers_on_power_change(
+        self,
+        message: MessageSubProtocolSet | StateSet,
+        attr: str,
+        value: bool | float | str,
+    ) -> None:
+        """Clear both timers when a StateSet switches the power on or off.
+
+        Like the vendor app, a power on/off command clears the timers. A power
+        command that keeps the current state carries them like any other
+        command, so a repeated turn-on doesn't disarm an off-timer.
+        """
+        if (
+            attr != DeviceAttributes.power
+            or not isinstance(message, StateSet)
+            or bool(value) == bool(self._attributes[DeviceAttributes.power])
+        ):
+            return
+        message.power_on_timer = None
+        message.power_off_timer = None
+        # Update the cache now, so a StateSet sent before the next status
+        # reply doesn't re-arm the cleared timers.
+        cleared = dict.fromkeys(TIMER_ATTRIBUTES, 0)
+        self._attributes.update(cleared)
+        self.update_all({str(key): value for key, value in cleared.items()})
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
         # if nat a sensor
@@ -1439,6 +1473,7 @@ class MideaACDevice(MideaDevice):
                         message.comfort_mode = False
                         message.frost_protect = False
                 setattr(message, str(attr), value)
+                self._clear_timers_on_power_change(message, attr, value)
                 if attr == DeviceAttributes.mode:
                     setattr(message, str(DeviceAttributes.power.value), True)
                     # Reset dry flag when changing mode to avoid conflicts

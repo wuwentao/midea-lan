@@ -21,11 +21,11 @@ from midealan.exceptions import ValueOutOfRange, ValueWrongType
 
 from .message import (
     ALL_ATTRIBUTES,
-    BYTE_MAX,
     BYTE_MIN,
     FIRE_POWER_MAP,
     PARAM_INT_ATTRIBUTES,
     PARAM_U16_ATTRIBUTES,
+    SETTABLE_BYTE_MAX,
     STATE_INT_ATTRIBUTES,
     STATE_STR_ATTRIBUTES,
     U16_MAX,
@@ -129,8 +129,9 @@ class MideaX9BDevice(MideaDevice):
             setattr(message, attr, value)
             return message
         if attr in STATE_INT_ATTRIBUTES:
-            # screen_luminance and volume are encoded as a single byte.
-            coerced = self._coerce_int(attr, value, BYTE_MIN, BYTE_MAX)
+            # screen_luminance and volume are encoded as a single byte whose
+            # 0xFF sentinel means "leave unchanged", so 0xFF is not settable.
+            coerced = self._coerce_int(attr, value, BYTE_MIN, SETTABLE_BYTE_MAX)
             message = MessageSetState(self._message_protocol_version)
             setattr(message, attr, coerced)
             return message
@@ -150,7 +151,9 @@ class MideaX9BDevice(MideaDevice):
             if attr in PARAM_U16_ATTRIBUTES:
                 coerced = self._coerce_int(attr, value, U16_MIN, U16_MAX)
             else:
-                coerced = self._coerce_int(attr, value, BYTE_MIN, BYTE_MAX)
+                # Byte parameters (steam_quantity, hour/minute/second_set) use
+                # the 0xFF "leave unchanged" sentinel, so 0xFF is not settable.
+                coerced = self._coerce_int(attr, value, BYTE_MIN, SETTABLE_BYTE_MAX)
             message = MessageSetParam(self._message_protocol_version)
             setattr(message, attr, coerced)
             return message

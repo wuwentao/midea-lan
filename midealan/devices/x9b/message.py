@@ -44,8 +44,53 @@ NIBBLE_MASK = 0x0F  # low-nibble mask
 NIBBLE_SHIFT = 4  # bits per nibble
 BYTE_MIN = 0  # smallest value a single byte can carry
 BYTE_MAX = 0xFF  # largest value a single byte can carry
+# Byte controls whose "leave unchanged" sentinel is 0xFF can only carry 0..0xFE
+# as a real value; 0xFF would be indistinguishable from "not set".
+SETTABLE_BYTE_MAX = UNCHANGED - 1  # 0xFE
 U16_MIN = 0  # smallest value a big-endian u16 field can carry
 U16_MAX = 0xFFFF  # largest value a big-endian u16 field can carry
+
+# --- Status-flag bit positions ----------------------------------------------
+# Named positions for the single-bit flags packed into the status bytes, so the
+# decoder never reads a raw numeric bit index. Each name says which bit of which
+# status byte it is.
+BIT_0 = 0
+BIT_1 = 1
+BIT_2 = 2
+BIT_3 = 3
+BIT_4 = 4
+BIT_5 = 5
+BIT_6 = 6
+BIT_7 = 7
+
+# body[6]: step/probe flags
+HEADER_PROBE_BIT = BIT_1
+HEADER_TURNTABLE_BIT = BIT_3
+# body[32]: lock / door / water / preheat / error flags
+FLAG32_LOCK_BIT = BIT_0
+FLAG32_DOOR_OPEN_BIT = BIT_1
+FLAG32_LACK_BOX_BIT = BIT_2
+FLAG32_LACK_WATER_BIT = BIT_3
+FLAG32_CHANGE_WATER_BIT = BIT_4
+FLAG32_PREHEAT_BIT = BIT_5
+FLAG32_PREHEAT_END_BIT = BIT_6
+FLAG32_ERROR_CODE_BIT = BIT_7
+# body[33]: side / light / high-temperature / probe-mode flags
+FLAG33_FLIP_SIDE_BIT = BIT_0
+FLAG33_REACTION_BIT = BIT_1
+FLAG33_FURNACE_LIGHT_BIT = BIT_2
+FLAG33_HIGH_TEMP_LOCK_BIT = BIT_3
+FLAG33_HIGH_TEMP_WORK_BIT = BIT_4
+FLAG33_HIGH_TEMP_BIT = BIT_5
+FLAG33_PROBE_MODE_BIT = BIT_6
+# body[34] / body[35]: single flags high in the byte
+FLAG34_RAMADAN_BIT = BIT_5
+FLAG35_HOT_WIND_BIT = BIT_5
+# body[56] / body[58]: maintenance flags in the tail
+FLAG56_CLEAN_SCALE_BIT = BIT_6
+FLAG56_OTA_BIT = BIT_7
+FLAG58_CLEAN_SINK_PONDING_BIT = BIT_0
+FLAG58_DISSIPATE_HEAT_BIT = BIT_1
 
 # --- Cooking command bit flags (body byte 5) --------------------------------
 COOK_FLAG_PREHEAT = 0x01
@@ -339,6 +384,11 @@ def _split_u16(value: int) -> tuple[int, int]:
     return (value // BYTE_BASE) & BYTE_MASK, value & BYTE_MASK
 
 
+def _bit(byte: int, position: int) -> int:
+    """Return the single bit at ``position`` (0 = least significant) of ``byte``."""
+    return (byte >> position) & 1
+
+
 class MessageX9BBase(MessageRequest):
     """X9B message base."""
 
@@ -492,12 +542,15 @@ class MessageSetParam(MessageX9BBase):
             or self.minute_set is not None
             or self.second_set is not None
         ):
+            # Encode each omitted field with the protocol's "leave unchanged"
+            # sentinel so writing one field (e.g. minute_set) does not reset the
+            # others to zero on the device.
             params.append(
                 [
                     PARAM_TIME,
-                    self.hour_set or 0,
-                    self.minute_set or 0,
-                    self.second_set or 0,
+                    UNCHANGED if self.hour_set is None else self.hour_set,
+                    UNCHANGED if self.minute_set is None else self.minute_set,
+                    UNCHANGED if self.second_set is None else self.second_set,
                 ],
             )
         if self.fire_power is not None:
@@ -756,8 +809,8 @@ class X9BStatusBody:
         )
         attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
         attrs["stepnum"] = self._body[5] & NIBBLE_MASK
-        attrs["probe"] = (self._body[6] >> 1) & 1
-        attrs["turntable"] = bool((self._body[6] >> 3) & 1)
+        attrs["probe"] = _bit(self._body[6], HEADER_PROBE_BIT)
+        attrs["turntable"] = bool(_bit(self._body[6], HEADER_TURNTABLE_BIT))
         attrs["work_mode"] = WORK_MODE_MAP.get(
             _u16be(self._body[7], self._body[8]),
             VALUE_FF,
@@ -809,29 +862,29 @@ class X9BStatusBody:
         attrs = self.attributes
         byte32 = self._body[32]
         byte33 = self._body[33]
-        attrs["lock"] = bool(byte32 & 1)
-        attrs["door_open"] = bool((byte32 >> 1) & 1)
-        lack_box = (byte32 >> 2) & 1
-        lack_water = (byte32 >> 3) & 1
-        change_water = (byte32 >> 4) & 1
+        attrs["lock"] = bool(_bit(byte32, FLAG32_LOCK_BIT))
+        attrs["door_open"] = bool(_bit(byte32, FLAG32_DOOR_OPEN_BIT))
+        lack_box = _bit(byte32, FLAG32_LACK_BOX_BIT)
+        lack_water = _bit(byte32, FLAG32_LACK_WATER_BIT)
+        change_water = _bit(byte32, FLAG32_CHANGE_WATER_BIT)
         attrs["lack_box"] = lack_box
         attrs["lack_water"] = lack_water
         attrs["change_water"] = change_water
         attrs["water_status"] = self._water_status(lack_box, lack_water, change_water)
-        preheat = (byte32 >> 5) & 1
-        preheat_end = (byte32 >> 6) & 1
+        preheat = _bit(byte32, FLAG32_PREHEAT_BIT)
+        preheat_end = _bit(byte32, FLAG32_PREHEAT_END_BIT)
         attrs["pre_heat"] = self._pre_heat(preheat, preheat_end)
-        attrs["error_code"] = (byte32 >> 7) & 1
-        attrs["flip_side"] = byte33 & 1
-        attrs["reaction"] = (byte33 >> 1) & 1
-        attrs["furnace_light"] = bool((byte33 >> 2) & 1)
+        attrs["error_code"] = _bit(byte32, FLAG32_ERROR_CODE_BIT)
+        attrs["flip_side"] = _bit(byte33, FLAG33_FLIP_SIDE_BIT)
+        attrs["reaction"] = _bit(byte33, FLAG33_REACTION_BIT)
+        attrs["furnace_light"] = bool(_bit(byte33, FLAG33_FURNACE_LIGHT_BIT))
         # The high-temperature lock reads inverted: bit set means "off".
-        attrs["high_temperature_lock"] = not (byte33 >> 3) & 1
-        attrs["high_temperature_work"] = (byte33 >> 4) & 1
-        attrs["high_temperature"] = (byte33 >> 5) & 1
-        attrs["probe_mode"] = (byte33 >> 6) & 1
-        attrs["ramadan"] = (self._body[34] >> 5) & 1
-        attrs["hot_wind"] = bool((self._body[35] >> 5) & 1)
+        attrs["high_temperature_lock"] = not _bit(byte33, FLAG33_HIGH_TEMP_LOCK_BIT)
+        attrs["high_temperature_work"] = _bit(byte33, FLAG33_HIGH_TEMP_WORK_BIT)
+        attrs["high_temperature"] = _bit(byte33, FLAG33_HIGH_TEMP_BIT)
+        attrs["probe_mode"] = _bit(byte33, FLAG33_PROBE_MODE_BIT)
+        attrs["ramadan"] = _bit(self._body[34], FLAG34_RAMADAN_BIT)
+        attrs["hot_wind"] = bool(_bit(self._body[35], FLAG35_HOT_WIND_BIT))
 
     def _decode_version(self) -> None:
         b47, b48, b49 = self._get(47), self._get(48), self._get(49)
@@ -846,14 +899,16 @@ class X9BStatusBody:
         attrs["ota"] = 0
         byte56 = self._get(56)
         if byte56 is not None:
-            attrs["clean_scale"] = (byte56 >> 6) & 1
-            attrs["ota"] = (byte56 >> 7) & 1
+            attrs["clean_scale"] = _bit(byte56, FLAG56_CLEAN_SCALE_BIT)
+            attrs["ota"] = _bit(byte56, FLAG56_OTA_BIT)
         attrs["clean_sink_ponding"] = 0
         attrs["dissipate_heat"] = VALUE_OFF
         byte58 = self._get(58)
         if byte58 is not None:
-            attrs["clean_sink_ponding"] = byte58 & 1
-            attrs["dissipate_heat"] = "work" if (byte58 >> 1) & 1 else VALUE_OFF
+            attrs["clean_sink_ponding"] = _bit(byte58, FLAG58_CLEAN_SINK_PONDING_BIT)
+            attrs["dissipate_heat"] = (
+                "work" if _bit(byte58, FLAG58_DISSIPATE_HEAT_BIT) else VALUE_OFF
+            )
 
     @staticmethod
     def _water_status(lack_box: int, lack_water: int, change_water: int) -> str:

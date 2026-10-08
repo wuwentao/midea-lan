@@ -148,14 +148,32 @@ class TestMideaX9BDevice:
             self.device.set_attribute("temperature", -1)
 
     def test_set_byte_param_out_of_range(self) -> None:
-        """A single-byte parameter above 255 raises before encoding."""
+        """A single-byte parameter above the settable max raises before encoding."""
         with pytest.raises(ValueOutOfRange):
             self.device.set_attribute("steam_quantity", 300)
 
     def test_set_int_control_out_of_range(self) -> None:
-        """A single-byte state control above 255 raises before encoding."""
+        """A single-byte state control above the settable max raises."""
         with pytest.raises(ValueOutOfRange):
             self.device.set_attribute("volume", 256)
+
+    def test_set_byte_param_rejects_sentinel(self) -> None:
+        """0xFF (the leave-unchanged sentinel) is not a settable byte param."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("steam_quantity", 0xFF)
+
+    def test_set_int_control_rejects_sentinel(self) -> None:
+        """0xFF (the leave-unchanged sentinel) is not a settable byte control."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("volume", 0xFF)
+
+    def test_set_byte_param_accepts_settable_max(self) -> None:
+        """0xFE (one below the sentinel) is the largest settable byte value."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute("steam_quantity", 0xFE)
+        message = mock_send.call_args.args[0]
+        assert isinstance(message, MessageSetParam)
+        assert message.steam_quantity == 0xFE
 
     def test_set_int_control_fractional(self) -> None:
         """A fractional value for an int control raises instead of truncating."""

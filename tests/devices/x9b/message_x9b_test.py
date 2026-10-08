@@ -161,14 +161,27 @@ class TestX9BSetParam:
         assert list(message.body) == [0x03, 0x01, 0x00]
 
     def test_steam_and_time(self) -> None:
-        """Steam and time params are appended with their type bytes."""
+        """Steam and time params are appended with their type bytes.
+
+        A single-field time write leaves the omitted hour/second as the 0xFF
+        "unchanged" sentinel so the device does not reset them to zero.
+        """
         message = MessageSetParam(ProtocolVersion.V3)
         message.steam_quantity = 4
         message.minute_set = 30
         body = list(message.body)
         assert body[:3] == [0x03, 0x01, 0x02]  # two params
         assert body[3:5] == [0x00, 4]  # steam
-        assert body[5:9] == [0x01, 0, 30, 0]  # time h/m/s
+        assert body[5:9] == [0x01, 0xFF, 30, 0xFF]  # time h/m/s (h/s unchanged)
+
+    def test_time_all_fields_set(self) -> None:
+        """When every clock field is set they are all encoded verbatim."""
+        message = MessageSetParam(ProtocolVersion.V3)
+        message.hour_set = 10
+        message.minute_set = 20
+        message.second_set = 30
+        body = list(message.body)
+        assert body[3:7] == [0x01, 10, 20, 30]
 
     def test_fire_power_known_and_unknown(self) -> None:
         """Fire power maps known names and defaults unknown to 0xFF."""

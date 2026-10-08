@@ -17,13 +17,18 @@ from typing import Any, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
-from midealan.exceptions import ValueWrongType
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
 
 from .message import (
     ALL_ATTRIBUTES,
+    BYTE_MAX,
+    BYTE_MIN,
     PARAM_INT_ATTRIBUTES,
+    PARAM_U16_ATTRIBUTES,
     STATE_INT_ATTRIBUTES,
     STATE_STR_ATTRIBUTES,
+    U16_MAX,
+    U16_MIN,
     MessageQuery,
     MessageSetParam,
     MessageSetState,
@@ -122,10 +127,10 @@ class MideaX9BDevice(MideaDevice):
             setattr(message, attr, value)
             return message
         if attr in STATE_INT_ATTRIBUTES:
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                raise ValueWrongType(f"[x9b] {attr} expects a number")
+            # screen_luminance and volume are encoded as a single byte.
+            coerced = self._coerce_int(attr, value, BYTE_MIN, BYTE_MAX)
             message = MessageSetState(self._message_protocol_version)
-            setattr(message, attr, int(value))
+            setattr(message, attr, coerced)
             return message
         return None
 
@@ -140,12 +145,38 @@ class MideaX9BDevice(MideaDevice):
             message.fire_power = str(value)
             return message
         if attr in PARAM_INT_ATTRIBUTES:
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                raise ValueWrongType(f"[x9b] {attr} expects a number")
+            if attr in PARAM_U16_ATTRIBUTES:
+                coerced = self._coerce_int(attr, value, U16_MIN, U16_MAX)
+            else:
+                coerced = self._coerce_int(attr, value, BYTE_MIN, BYTE_MAX)
             message = MessageSetParam(self._message_protocol_version)
-            setattr(message, attr, int(value))
+            setattr(message, attr, coerced)
             return message
         return None
+
+    @staticmethod
+    def _coerce_int(
+        attr: str,
+        value: bool | float | str,
+        low: int,
+        high: int,
+    ) -> int:
+        """Coerce ``value`` to an int in ``[low, high]`` or raise.
+
+        Raises
+        ------
+        ValueWrongType
+            If ``value`` is not a non-bool number.
+        ValueOutOfRange
+            If the coerced integer falls outside ``[low, high]``.
+
+        """
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueWrongType(f"[x9b] {attr} expects a number")
+        coerced = int(value)
+        if not low <= coerced <= high:
+            raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")
+        return coerced
 
 
 # Re-exported control classes for callers that need structured commands.

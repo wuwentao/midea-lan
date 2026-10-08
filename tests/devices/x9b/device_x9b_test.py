@@ -11,7 +11,7 @@ from midealan.devices.x9b.message import (
     MessageSetParam,
     MessageSetState,
 )
-from midealan.exceptions import ValueWrongType
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
 
 
 class TestMideaX9BDevice:
@@ -136,6 +136,26 @@ class TestMideaX9BDevice:
         """A non-numeric value for a numeric parameter raises."""
         with pytest.raises(ValueWrongType):
             self.device.set_attribute("temperature", value=True)
+
+    def test_set_u16_param_out_of_range(self) -> None:
+        """A u16 parameter above 65535 raises instead of wrapping."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("temperature", 70000)
+
+    def test_set_u16_param_negative(self) -> None:
+        """A negative u16 parameter raises instead of wrapping."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("temperature", -1)
+
+    def test_set_byte_param_out_of_range(self) -> None:
+        """A single-byte parameter above 255 raises before encoding."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("steam_quantity", 300)
+
+    def test_set_int_control_out_of_range(self) -> None:
+        """A single-byte state control above 255 raises before encoding."""
+        with pytest.raises(ValueOutOfRange):
+            self.device.set_attribute("volume", 256)
 
     def test_set_unknown_attribute_noop(self) -> None:
         """An unknown attribute sends nothing."""

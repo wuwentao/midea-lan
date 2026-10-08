@@ -42,6 +42,10 @@ BYTE_BASE = 256  # two-byte big-endian scale factor
 BYTE_MASK = 0xFF  # low-byte mask
 NIBBLE_MASK = 0x0F  # low-nibble mask
 NIBBLE_SHIFT = 4  # bits per nibble
+BYTE_MIN = 0  # smallest value a single byte can carry
+BYTE_MAX = 0xFF  # largest value a single byte can carry
+U16_MIN = 0  # smallest value a big-endian u16 field can carry
+U16_MAX = 0xFFFF  # largest value a big-endian u16 field can carry
 
 # --- Cooking command bit flags (body byte 5) --------------------------------
 COOK_FLAG_PREHEAT = 0x01
@@ -308,16 +312,21 @@ ALL_ATTRIBUTES: tuple[str, ...] = (
 # expects. Used by the device layer to route ``set_attribute`` calls.
 STATE_STR_ATTRIBUTES = ("lock", "furnace_light", "camera", "hot_wind")
 STATE_INT_ATTRIBUTES = ("screen_luminance", "volume")
-PARAM_INT_ATTRIBUTES = (
-    "steam_quantity",
-    "hour_set",
-    "minute_set",
-    "second_set",
+# Numeric parameters encoded as a two-byte big-endian field (0..65535).
+PARAM_U16_ATTRIBUTES = (
     "temperature",
     "probe_temperature",
     "temperature_above",
     "temperature_underside",
 )
+# Numeric parameters encoded as a single byte (0..255).
+PARAM_BYTE_ATTRIBUTES = (
+    "steam_quantity",
+    "hour_set",
+    "minute_set",
+    "second_set",
+)
+PARAM_INT_ATTRIBUTES = PARAM_U16_ATTRIBUTES + PARAM_BYTE_ATTRIBUTES
 
 
 def _u16be(high: int, low: int) -> int:

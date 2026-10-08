@@ -36,7 +36,6 @@ from midealan.devices.ac.message import (
     MessageSubProtocolSet,
     PowerFormats,
     PowerQuery,
-    PropertiesBody,
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
@@ -49,7 +48,10 @@ from midealan.devices.ac.message import (
     SubProtocolQuery30,
     ToggleDisplay,
     _PropertiesCapsQueryBase,
+    encode_countdown_timer,
+    encode_properties_timer,
     format_property_tags,
+    parse_countdown_timer,
 )
 from midealan.message import ListTypes, MessageBase, MessageType
 
@@ -722,6 +724,102 @@ class TestNewProtocolSetOutSilent:
         body = msg.body
         assert body[0] == 0xB0
         assert body[1] == 0x00  # 0 params packed
+
+
+class TestCountdownTimers:
+    """Test countdown timer slot encoding and decoding."""
+
+    @pytest.mark.parametrize(
+        "minutes",
+        [1, 3, 14, 15, 16, 59, 60, 119, 120, 299, 330, 31 * 60 + 59],
+    )
+    def test_encode_round_trips_through_parse(self, minutes: int) -> None:
+        """Test encode_countdown_timer is the inverse of parse_countdown_timer."""
+        assert parse_countdown_timer(*encode_countdown_timer(minutes)) == minutes
+
+    @pytest.mark.parametrize(
+        ("minutes", "expected"),
+        [(0, (0x7F, 15)), (120, (0x88, 15)), (3, (0x80, 12)), (5000, (0xFF, 1))],
+    )
+    def test_encode_countdown_timer(
+        self,
+        minutes: int,
+        expected: tuple[int, int],
+    ) -> None:
+        """Test disarm, exact quarter-hours, sub-quarter minutes and clamping."""
+        assert encode_countdown_timer(minutes) == expected
+
+    def test_state_set_without_timers_keeps_zero_bytes(self) -> None:
+        """Test the default StateSet still sends fan 0x66 and timer bytes 00."""
+        body = StateSet(protocol_version=ProtocolVersion.V1).body
+        assert body[3:7] == bytearray([0x66, 0x00, 0x00, 0x00])
+
+    def test_state_set_power_off_timer(self) -> None:
+        """Test a 2 h power-off timer, as verified on hardware (E6 7F 88 FF)."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_off_timer = 120
+        assert msg.body[3:7] == bytearray([0xE6, 0x7F, 0x88, 0xFF])
+
+    def test_state_set_both_timers(self) -> None:
+        """Test both slots and their minute nibbles."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_on_timer = 330
+        msg.power_off_timer = 3
+        assert msg.body[3:7] == bytearray([0xE6, 0x96, 0x80, 0xFC])
+
+    def test_state_set_disarm_timers(self) -> None:
+        """Test explicit cancel sends the timer flag with disarmed slots."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_on_timer = 0
+        msg.power_off_timer = 0
+        assert msg.body[3:7] == bytearray([0xE6, 0x7F, 0x7F, 0xFF])
+
+    @pytest.mark.parametrize(
+        ("minutes", "expected"),
+        [(0, [0x00, 0x00, 0x00]), (75, [0x01, 0x01, 0x0F]), (99999, [0x01, 0xFF, 0])],
+    )
+    def test_encode_properties_timer(self, minutes: int, expected: list[int]) -> None:
+        """Test the B0 [switch, hours, minutes] value, incl. the byte clamp."""
+        assert encode_properties_timer(minutes) == bytearray(expected)
+
+    @pytest.mark.parametrize(
+        ("attr", "minutes", "expected"),
+        [
+            ("power_off_timer", 120, [0x0C, 0x00, 0x03, 0x01, 0x02, 0x00]),
+            ("power_off_timer", 0, [0x0C, 0x00, 0x03, 0x00, 0x00, 0x00]),
+            ("power_on_timer", 330, [0x0B, 0x00, 0x03, 0x01, 0x05, 0x1E]),
+        ],
+    )
+    def test_properties_set_timer(
+        self,
+        attr: str,
+        minutes: int,
+        expected: list[int],
+    ) -> None:
+        """Test the B0 timer parameters [switch, hours, minutes]."""
+        msg = PropertiesSet(protocol_version=ProtocolVersion.V1)
+        setattr(msg, attr, minutes)
+        body = msg.body
+        assert body[0] == 0xB0
+        assert body[1] == 0x01
+        assert body[2:8] == bytearray(expected)
+
+    def test_c0_countdown_timers(self) -> None:
+        """Test C0 decodes both timer slots with their minute nibbles."""
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0, 0x03])
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[4] = 0x95  # power-on 5 h 1 quarter
+        body[5] = 0x87  # power-off 1 h 3 quarters
+        body[6] = 0x01  # power-on +15 min, power-off +14 min
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 330
+        assert response.power_off_timer == 119
+
+        body[4:7] = bytearray([0x7F, 0x7F, 0xFF])
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 0
+        assert response.power_off_timer == 0
 
 
 class TestNewProtocolSetAngles:
@@ -1446,9 +1544,7 @@ class TestMessageACResponse:
         expected: int,
     ) -> None:
         """Test the Lua-compatible timer byte and minute correction formula."""
-        assert (
-            PropertiesBody._parse_countdown_timer(value, minute_correction) == expected
-        )
+        assert parse_countdown_timer(value, minute_correction) == expected
 
     def test_message_notify2_a0_short_body(self) -> None:
         """Skip Message parse notify2 A0 when the body is too short."""

@@ -28,6 +28,7 @@ class DeviceType(IntEnum):
     CD = 0xCD
     CE = 0xCE
     CF = 0xCF
+    D9 = 0xD9
     DA = 0xDA
     DB = 0xDB
     DC = 0xDC
@@ -47,6 +48,7 @@ class DeviceType(IntEnum):
     X26 = 0x26
     X34 = 0x34
     X40 = 0x40
+    X9B = 0x9B
     X9C = 0x9C
     X00 = 0x00
 

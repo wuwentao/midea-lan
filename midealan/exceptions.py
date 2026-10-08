@@ -49,3 +49,7 @@ class SocketException(MideaLanError):
 
 class ValueWrongType(MideaLanError):
     """Exception raised when the value has a wrong data type."""
+
+
+class ValueOutOfRange(MideaLanError):
+    """Exception raised when a value falls outside its encodable range."""

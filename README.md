@@ -177,3 +177,17 @@ guide for the full workflow and per-OS uv install instructions.
 
 [CONTRIBUTING](.github/CONTRIBUTING.md)
 [中文版CONTRIBUTING](.github/CONTRIBUTING.zh.md)
+
+### Adding a new device
+
+Want to add support for a new Midea appliance type? The end-to-end recipe —
+downloading the device Lua protocol, reading `dataToJson`/`jsonToData`, building
+`__init__.py` and `message.py`, registering the type, testing, and opening a PR
+— is documented, using the `0xD9` washer/dryer combo
+([PR #175](https://github.com/wuwentao/midea-lan/pull/175)) as the running example
+and the `0x9B` microwave/steam/convection oven
+([PR #181](https://github.com/wuwentao/midea-lan/pull/181)) as a second example
+for richer devices:
+
+- [Adding a New Device Type](docs/adding-a-new-device.md)
+- [新增设备类型支持指南（中文）](docs/adding-a-new-device.zh-Hans.md)

@@ -25,7 +25,9 @@ from midealan.devices.ac.message import (
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
+    PropertiesSet,
     StateQuery,
+    StateSet,
     SubProtocolFreshAirSet,
     SubProtocolQuery,
     SubProtocolQuery10,
@@ -1156,14 +1158,134 @@ class TestMideaACDevice:
                 self.device.set_attribute(attr.value, 1)
             mock_build_send.assert_not_called()
 
-    def test_set_attribute_timers_are_read_only(self) -> None:
-        """Test that timer attributes never send a set message."""
+    @staticmethod
+    def _c0_with_timers(on_slot: int, off_slot: int, minutes: int) -> bytearray:
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[1] = 0x01  # power on
+        body[4], body[5], body[6] = on_slot, off_slot, minutes
+        return body
+
+    def test_c0_timers_update_attributes(self) -> None:
+        """Test C0 status timer bytes update the timer attributes."""
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        assert status[DeviceAttributes.power_off_timer.value] == 120
+        assert status[DeviceAttributes.power_on_timer.value] == 0
+
+    def test_set_attribute_timer_uses_state_set(self) -> None:
+        """Test a timer set on a fixed-header device sends a StateSet."""
         with patch.object(self.device, "build_send") as mock_build_send:
-            for attr in [
-                DeviceAttributes.power_on_timer,
-                DeviceAttributes.power_off_timer,
-            ]:
-                self.device.set_attribute(attr.value, 1)
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 120)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.power_off_timer == 120
+            assert message.power_on_timer == 0
+
+    def test_set_attribute_timer_keeps_other_slot(self) -> None:
+        """Test setting one slot re-sends the other armed slot."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x96, 0x7F, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 0)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_on_timer == 330
+            assert message.power_off_timer == 0
+
+    def test_state_set_carries_armed_timers(self) -> None:
+        """Test routine StateSets keep an armed timer instead of clearing it."""
+        assert self.device.make_message_set().power_off_timer is None
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        message = self.device.make_message_set()
+        assert message.power_off_timer == 120
+        assert message.power_on_timer == 0
+
+    def test_power_set_clears_timers(self) -> None:
+        """Test a power command clears armed timers, like the vendor app."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, False)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_off_timer is None
+            assert message.body[4:7] == bytearray([0x00, 0x00, 0x00])
+        # The cache is cleared too, so the next StateSet doesn't re-arm.
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 0
+        assert self.device.make_message_set().power_off_timer is None
+
+    def test_power_set_without_change_keeps_timers(self) -> None:
+        """Test a turn-on of a running unit doesn't disarm its off-timer."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_off_timer == 120
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 120
+
+    def test_state_set_carries_new_protocol_timers(self) -> None:
+        """Test a 0x7e-reported timer is carried in the fixed-header bytes."""
+        self.device._timers_in_new_protocol = True
+        self.device._attributes[DeviceAttributes.power_off_timer] = 5
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_target_temperature(23.0, None)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            # 5 min: armed slot 0x80, power-off nibble 15 - 5 = 0x0A.
+            assert message.body[4:7] == bytearray([0x7F, 0x80, 0xFA])
+
+    def test_set_attribute_timer_uses_properties_set(self) -> None:
+        """Test timers reported in the 0x7e payload are set via PropertiesSet."""
+        self.device._timers_in_new_protocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_on_timer.value, 30)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, PropertiesSet)
+            assert message.power_on_timer == 30
+            assert message.power_off_timer is None
+
+    def test_c0_timers_ignored_after_new_protocol_timers(self) -> None:
+        """Test the 0x7e payload stays the timer source once it was seen."""
+        self.device._timers_in_new_protocol = True
+        self.device._attributes[DeviceAttributes.power_off_timer] = 60
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x7F, 0xFF)),
+        )
+        assert DeviceAttributes.power_off_timer.value not in status
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 60
+
+    def test_set_attribute_timer_unsupported_on_subprotocol(self) -> None:
+        """Test the BB subprotocol path sends nothing for timers."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 120)
+            mock_build_send.assert_not_called()
+        assert self.device.attributes[DeviceAttributes.power_off_timer] is None
+
+    @pytest.mark.parametrize("new_protocol", [False, True])
+    def test_set_attribute_timer_updates_cache(self, new_protocol: bool) -> None:
+        """Test a timer set updates the cached value before the next reply."""
+        self.device._timers_in_new_protocol = new_protocol
+        with (
+            patch.object(self.device, "build_send"),
+            patch.object(self.device, "update_all") as mock_update_all,
+        ):
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 5)
+            mock_update_all.assert_called_once_with(
+                {DeviceAttributes.power_off_timer.value: 5},
+            )
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 5
+
+    def test_set_attribute_timer_ignores_bool(self) -> None:
+        """Test a boolean is not taken as a 1-minute timer."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, True)
             mock_build_send.assert_not_called()
 
     def test_set_target_temperature(self) -> None:

@@ -10,6 +10,21 @@ so you can use that PR as a concrete worked example while reading.
 It is written for both human contributors and AI coding agents. Every step lists
 the concrete files, the base classes to extend, and the checks that must pass.
 
+Two worked examples are referenced throughout:
+
+- **`0xD9`** ([PR #175](https://github.com/wuwentao/midea-lan/pull/175)) — a
+  washer/dryer combo. The running example for Steps 1–8. It shows a TLV
+  (type-length-value) multi-bucket protocol and the classic one-command-per-set-message
+  shape.
+- **`0x9B`** ([PR #181](https://github.com/wuwentao/midea-lan/pull/181)) — a
+  microwave/steam/convection combi oven. Covered in
+  [Step 9](#9-second-worked-example--0x9b-patterns-beyond-d9) as a second,
+  richer example. It shows patterns D9 does not: a decoder-derived attribute
+  enum, write-only (synthetic) attributes, sub-command framing, range-checked
+  numeric controls, a structured multi-field command, and one decoder serving
+  two firmware revisions. Read it once you've understood the D9 flow — it is the
+  template to reach for when your device is more than a flat set of toggles.
+
 ## Contents
 
 1. [Background: the three protocol layers](#1-background-the-three-protocol-layers)
@@ -20,8 +35,9 @@ the concrete files, the base classes to extend, and the checks that must pass.
 6. [Step 5 — Register the device type](#6-step-5--register-the-device-type)
 7. [Step 6 — Tests, lint, coverage](#7-step-6--tests-lint-coverage)
 8. [Step 7 — Submit the PR](#8-step-7--submit-the-pr)
-9. [Step 8 — Home Assistant side (`midea_ac_lan`)](#9-step-8--home-assistant-side-midea_ac_lan)
-10. [Checklist](#10-checklist)
+9. [Step 9 — Second worked example: 0x9B patterns beyond D9](#9-second-worked-example--0x9b-patterns-beyond-d9)
+10. [Step 8 — Home Assistant side (`midea_ac_lan`)](#10-step-8--home-assistant-side-midea_ac_lan)
+11. [Checklist](#11-checklist)
 
 ---
 
@@ -189,7 +205,7 @@ Why this matters: the Home Assistant integration (`midea_ac_lan`) uses each
 attribute name **verbatim** as the entity's `translation_key`, and translation
 keys must be lowercase `snake_case`. Picking a clean name here means the HA side
 can add the translation key directly with no renaming or mapping layer. See
-[Step 8](#9-step-8--home-assistant-side-midea_ac_lan).
+[Step 8](#10-step-8--home-assistant-side-midea_ac_lan).
 
 ### 4.2 The device class
 
@@ -548,13 +564,238 @@ Reference worked examples to model your PR on:
 
 - [PR #175 — `feat(d9)`](https://github.com/wuwentao/midea-lan/pull/175):
   a TLV/multi-bucket device (this guide's running example).
+- [PR #181 — `feat(x9b)`](https://github.com/wuwentao/midea-lan/pull/181):
+  a sub-command-framed oven with a decoder-derived enum, write-only controls,
+  range-checked numeric parameters, and a structured multi-step command — see
+  [Step 9](#9-second-worked-example--0x9b-patterns-beyond-d9).
 - `feat(x9c)` (commit `feb1c64`): a `< 0xA0` type using the `x`-prefix folder.
 - `feat(c1): add support for Midea C1 device` (PR #117): a straightforward
   fixed-offset device.
 
 ---
 
-## 9. Step 8 — Home Assistant side (`midea_ac_lan`)
+## 9. Second worked example — 0x9B patterns beyond D9
+
+The D9 example above is a flat TLV device whose controls are all one-attribute-per-command.
+Many appliances are richer than that. The `0x9B` microwave/steam/convection
+combi oven ([PR #181](https://github.com/wuwentao/midea-lan/pull/181)) was built
+with the same seven steps, but it needed a handful of patterns the D9 walkthrough
+does not show. Reach for these when your device matches the situation described.
+
+Read the finished files alongside this section:
+[`devices/x9b/__init__.py`](../midealan/devices/x9b/__init__.py) and
+[`devices/x9b/message.py`](../midealan/devices/x9b/message.py).
+
+### 9.1 Derive the attribute enum from the decoder (no drift)
+
+D9 hand-writes its `DeviceAttributes(StrEnum)`. When a device reports dozens of
+fields, keeping a hand-written enum in sync with the parser is error-prone. 0x9B
+(like 0x9C) instead lists every attribute the decoder can emit in one tuple in
+`message.py`, and builds the enum from it in `__init__.py`:
+
+```python
+# message.py — the single source of truth for attribute names.
+ALL_ATTRIBUTES: tuple[str, ...] = (
+    "execute",
+    "cloudmenuid",
+    "work_mode",
+    "fire_power",
+    "temperature",
+    # ... every status field the decoder emits ...
+    # Write-only controls (see §9.2), then system-time fields.
+    "power",
+    "door",
+    "camera",
+    "screen_luminance",
+    "volume",
+    "sys_time_src",
+    "sys_second",  # ...
+)
+```
+
+```python
+# __init__.py — the enum can never drift from what the decoder produces.
+from enum import StrEnum
+from .message import ALL_ATTRIBUTES
+
+DeviceAttributes = StrEnum(  # type: ignore[misc]
+    "DeviceAttributes",
+    {name: name for name in ALL_ATTRIBUTES},
+)
+
+# ... and seed the attribute dict from the same tuple:
+super().__init__(
+    device_type=DeviceType.X9B,
+    **kwargs,
+    attributes=dict.fromkeys(ALL_ATTRIBUTES),
+)
+```
+
+Use this when the field list is long or likely to grow. The hand-written enum
+(D9 style) is fine for a small, stable device.
+
+### 9.2 Write-only (synthetic) attributes
+
+Some controls have no bit in the status report — the device accepts the command
+but never reports the value back (0x9B's `power`, `door`, `camera`,
+`screen_luminance`, `volume`). List them in `ALL_ATTRIBUTES` anyway, grouped and
+commented, so `set_attribute` can address them and the Home Assistant layer can
+map a control entity to each:
+
+```python
+# Write-only controls (not reported by the device, exposed for callers such
+# as Home Assistant that address every control through ``set_attribute``).
+(
+    "power",
+    "door",
+    "camera",
+    "screen_luminance",
+    "volume",
+)
+```
+
+Where a logically-important value _is_ derivable from what the device reports,
+synthesize it in the decoder rather than leaving it blank. 0x9B has no power
+byte, so it infers one from the running status:
+
+```python
+status = WORK_STATUS_MAP.get(self._body[31], VALUE_FF)
+attrs["work_status"] = status
+# The device never reports a dedicated power byte, so infer the on/off state
+# the way the HA power switch expects it: anything other than the power-saving
+# idle (or an unknown byte) counts as powered on.
+attrs["power"] = status not in ("save_power", VALUE_FF)
+```
+
+> Correctness note for the HA side: a flag the HA integration renders as a
+> switch, binary_sensor, or lock must decode to a real `bool`, not the string
+> `"on"`/`"off"`. HA treats any non-empty string as truthy, so a string flag
+> gets stuck "on". 0x9B decodes these with `bool(...)` for exactly this reason
+> (a fix made while building the paired HA PR). Decide the Python type with the
+> consuming entity in mind.
+
+### 9.3 Route `set_attribute` by attribute group, with range checks
+
+D9 routes with a chain of `if attr in (…)`. 0x9B has more controls, so it groups
+them into tuples in `message.py` (`STATE_STR_ATTRIBUTES`, `STATE_INT_ATTRIBUTES`,
+`PARAM_U16_ATTRIBUTES`, `PARAM_BYTE_ATTRIBUTES`) and dispatches on membership.
+Crucially, numeric controls are **range-checked** before they hit the wire —
+raising `ValueOutOfRange` (not just `ValueWrongType`) so a wrapped or truncated
+byte can never reach the appliance:
+
+```python
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
+
+
+@staticmethod
+def _coerce_int(attr: str, value: bool | float | str, low: int, high: int) -> int:
+    # Reject bools and non-numbers up front; bool is an int subclass in Python.
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueWrongType(f"[x9b] {attr} expects a number")
+    coerced = int(value)
+    if not low <= coerced <= high:
+        raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")
+    return coerced
+```
+
+A u16 temperature is checked against `0..65535`; a single-byte volume against
+`0..255`. Both bounds are named constants (`U16_MIN/U16_MAX`, `BYTE_MIN/BYTE_MAX`),
+never literals — `ruff`'s `PLR2004` enforces that outside `tests/`.
+
+### 9.4 Sub-command framing (first body byte selects the command group)
+
+D9 puts its bucket selector in the generic `body_type`. 0x9B instead carries a
+**sub-command byte as the first body byte** (`0x01` status/start-cooking, `0x02`
+state controls, `0x03` live-parameter TLV, `0x04` system time) and does **not**
+want the framework's `body_type` prefix. Override `body` to return `_body`
+unchanged:
+
+```python
+class MessageX9BBase(MessageRequest):
+    @property
+    def body(self) -> bytearray:
+        """The 0x9B protocol carries its sub-command in the first body byte
+        itself, so the generic ``body_type`` prefix is not prepended here."""
+        return self._body
+```
+
+Each message class then opens its `_body` with the right sub-command constant.
+If your Lua shows the command selector living inside the payload rather than in
+the type byte, this is the pattern to copy.
+
+### 9.5 A structured, multi-field command
+
+Not every command is one attribute. 0x9B's "start cooking" takes a whole recipe:
+a cloud-menu id, a step count, and one or more 16-byte step blocks (mode, timers,
+fire power, split temperatures, probe, weight/portion, end-behaviour). This is
+modelled as a small plain class plus a message that assembles the blocks:
+
+```python
+class CookingStep:
+    """One cooking step; encode() returns its 16-byte block."""
+
+    def encode(self) -> bytearray:
+        flags = 0
+        if self.pre_heat:
+            flags |= COOK_FLAG_PREHEAT
+        if self.turntable:
+            flags |= COOK_FLAG_TURNTABLE
+        # ... pack mode, timers, fire power, split temps, probe, portion ...
+        return bytearray([...])
+
+
+class MessageSetCooking(MessageX9BBase):
+    """Single- or multi-step start-cooking control."""
+
+    # body = [SUBCMD_COOKING, menu_hi, menu_mid, menu_lo, step_count_nibble,
+    #         *step.encode() for each step, 0x00]
+```
+
+Expose structured commands through a typed builder (not `set_attribute`), and
+re-export the builder class so callers can construct a recipe. Keep the simple
+single-value controls on `set_attribute` as usual.
+
+### 9.6 One decoder for two firmware revisions
+
+0x9B ships in a V1 (single-byte temperatures) and a V2 (two-byte temperatures
+plus extra fields) firmware. Rather than branch, the decoder treats **V2 as the
+canonical superset**: for the fields V1 also reports, the encodings coincide (V1
+keeps the value in the low byte of the V2 pair), so one fixed-offset decoder
+serves both. If your device has firmware variants, check whether one is a
+superset of the other before writing two code paths.
+
+Guard every fixed-offset read with a length check so a short/truncated body
+decodes to nothing instead of raising (both guards are named constants, and the
+length guard itself came from a CodeRabbit finding on PR #181):
+
+```python
+STATUS_MIN_LEN = 36  # last fixed-offset status byte read is body[35]
+SYSTIME_MIN_LEN = 10  # system-time body reads body[1]..body[9]
+
+
+def _decode(self) -> None:
+    if len(self._body) < STATUS_MIN_LEN:
+        return
+    # ... fixed-offset reads are now safe ...
+```
+
+### 9.7 Set-echo carries the full status
+
+0x9B replies to a `set` with the full status record (not a bare ack), so the
+response parser decodes a `set` message with the same status decoder as a query:
+
+```python
+if self.message_type == MessageType.set:
+    # A set-echo report carries the full status record.
+    self.attributes = X9BStatusBody(body).attributes
+```
+
+If your device echoes state on write, decode it — the UI then reflects the change
+immediately without waiting for the next poll.
+
+---
+
+## 10. Step 8 — Home Assistant side (`midea_ac_lan`)
 
 `midea-lan` is the protocol library; the Home Assistant integration
 [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) consumes it. After the
@@ -578,7 +819,7 @@ for the matching D9 integration.
 
 ---
 
-## 10. Checklist
+## 11. Checklist
 
 - [ ] Downloaded the device Lua by SN and contributed it to `wuwentao/midea-lua`.
 - [ ] Read `dataToJson` (parse) and `jsonToData` (control) to map the protocol.

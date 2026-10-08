@@ -10,6 +10,15 @@ PR 当作具体范例参考。
 本文同时面向人工贡献者与 AI 编码助手。每一步都会列出涉及的具体文件、需要继承的
 基类，以及必须通过的检查项。
 
+全文贯穿两个范例：
+
+- **`0xD9`**（[PR #175](https://github.com/wuwentao/midea-lan/pull/175)）：扁平的
+  TLV/多 bucket 设备，作为七个步骤的主线范例。
+- **`0x9B`**（[PR #181](https://github.com/wuwentao/midea-lan/pull/181)）：子命令
+  成帧的微蒸烤一体机，用到了解码器派生枚举、只写控制、带范围校验的数值参数，以及
+  结构化的多步命令——参见[步骤 9](#9-第二个范例--0x9b-超出-d9-的模式)，它作为第二个
+  范例，专门展示 D9 没有涉及的模式。
+
 ## 目录
 
 1. [背景：三层协议结构](#1-背景三层协议结构)
@@ -20,8 +29,9 @@ PR 当作具体范例参考。
 6. [步骤 5 —— 注册设备类型](#6-步骤-5--注册设备类型)
 7. [步骤 6 —— 测试、Lint、覆盖率](#7-步骤-6--测试lint覆盖率)
 8. [步骤 7 —— 提交 PR](#8-步骤-7--提交-pr)
-9. [步骤 8 —— Home Assistant 侧（`midea_ac_lan`）](#9-步骤-8--home-assistant-侧midea_ac_lan)
-10. [检查清单](#10-检查清单)
+9. [步骤 9 —— 第二个范例：0x9B 超出 D9 的模式](#9-第二个范例--0x9b-超出-d9-的模式)
+10. [步骤 8 —— Home Assistant 侧（`midea_ac_lan`）](#10-步骤-8--home-assistant-侧midea_ac_lan)
+11. [检查清单](#11-检查清单)
 
 ---
 
@@ -174,7 +184,7 @@ class DeviceAttributes(StrEnum):
 为什么重要：Home Assistant 集成（`midea_ac_lan`）会把每个属性名**原样**用作
 实体的 `translation_key`，而翻译键必须是小写 `snake_case`。在这里取好名字，HA
 侧就能直接添加翻译键，无需任何重命名或映射层。参见
-[步骤 8](#9-步骤-8--home-assistant-侧midea_ac_lan)。
+[步骤 8](#10-步骤-8--home-assistant-侧midea_ac_lan)。
 
 ### 4.2 设备类
 
@@ -514,12 +524,218 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
 
 - [PR #175 —— `feat(d9)`](https://github.com/wuwentao/midea-lan/pull/175)：
   TLV/多 bucket 设备（本指南的贯穿示例）。
+- [PR #181 —— `feat(x9b)`](https://github.com/wuwentao/midea-lan/pull/181)：
+  子命令成帧的烤箱，用到解码器派生枚举、只写控制、带范围校验的数值参数，以及
+  结构化的多步命令——参见[步骤 9](#9-第二个范例--0x9b-超出-d9-的模式)。
 - `feat(x9c)`（提交 `feb1c64`）：一个 `< 0xA0` 的类型，使用 `x` 前缀目录。
 - `feat(c1): add support for Midea C1 device`（PR #117）：一个直白的固定偏移设备。
 
 ---
 
-## 9. 步骤 8 —— Home Assistant 侧（`midea_ac_lan`）
+## 9. 第二个范例 —— 0x9B 超出 D9 的模式
+
+上面的 D9 范例是一个扁平的 TLV 设备，其控制都是“一命令一属性”。许多设备比它复杂。
+`0x9B` 微蒸烤一体机（[PR #181](https://github.com/wuwentao/midea-lan/pull/181)）同样
+按这七个步骤构建，但它用到了一些 D9 流程没有展示的模式。当你的设备符合下述场景时，
+就可以采用它们。
+
+对照阅读成品文件：
+[`devices/x9b/__init__.py`](../midealan/devices/x9b/__init__.py) 与
+[`devices/x9b/message.py`](../midealan/devices/x9b/message.py)。
+
+### 9.1 从解码器派生属性枚举（避免漂移）
+
+D9 手写它的 `DeviceAttributes(StrEnum)`。当设备上报几十个字段时，让手写枚举与解析器
+保持同步很容易出错。0x9B（与 0x9C 一样）改为在 `message.py` 里用一个元组列出解码器
+可能产生的全部属性，再在 `__init__.py` 中据此构建枚举：
+
+```python
+# message.py —— 属性名的唯一真实来源。
+ALL_ATTRIBUTES: tuple[str, ...] = (
+    "execute",
+    "cloudmenuid",
+    "work_mode",
+    "fire_power",
+    "temperature",
+    # ... 解码器会产生的每个状态字段 ...
+    # 只写控制（见 §9.2），然后是系统时间字段。
+    "power",
+    "door",
+    "camera",
+    "screen_luminance",
+    "volume",
+    "sys_time_src",
+    "sys_second",  # ...
+)
+```
+
+```python
+# __init__.py —— 枚举永远不会与解码器产出漂移。
+from enum import StrEnum
+from .message import ALL_ATTRIBUTES
+
+DeviceAttributes = StrEnum(  # type: ignore[misc]
+    "DeviceAttributes",
+    {name: name for name in ALL_ATTRIBUTES},
+)
+
+# ... 并用同一个元组初始化属性字典：
+super().__init__(
+    device_type=DeviceType.X9B,
+    **kwargs,
+    attributes=dict.fromkeys(ALL_ATTRIBUTES),
+)
+```
+
+当字段列表很长或可能增长时采用此法。对于小而稳定的设备，手写枚举（D9 风格）就够了。
+
+### 9.2 只写（合成）属性
+
+有些控制在状态上报里没有对应的 bit——设备接受命令但从不回报该值（0x9B 的
+`power`、`door`、`camera`、`screen_luminance`、`volume`）。仍把它们分组并加注释地列入
+`ALL_ATTRIBUTES`，这样 `set_attribute` 能寻址到它们，Home Assistant 侧也能为每个映射
+一个控制实体：
+
+```python
+# 只写控制（设备不上报，仅为通过 ``set_attribute`` 寻址所有控制的调用方
+# （如 Home Assistant）暴露）。
+(
+    "power",
+    "door",
+    "camera",
+    "screen_luminance",
+    "volume",
+)
+```
+
+当某个逻辑上重要的值其实可以从上报内容推导时，应在解码器里合成它，而不是留空。0x9B
+没有电源字节，于是从运行状态推导一个：
+
+```python
+status = WORK_STATUS_MAP.get(self._body[31], VALUE_FF)
+attrs["work_status"] = status
+# 设备不上报专门的电源字节，因此按 HA 电源开关的预期推导开关状态：
+# 除省电待机（或未知字节）以外的任何状态都视为已开机。
+attrs["power"] = status not in ("save_power", VALUE_FF)
+```
+
+> HA 侧的正确性提示：HA 渲染为 switch、binary_sensor 或 lock 的标志，必须解码为真正的
+> `bool`，而不是字符串 `"on"`/`"off"`。HA 把任何非空字符串都当作真值，因此字符串标志
+> 会一直卡在“开”。0x9B 正是出于这个原因用 `bool(...)` 解码这些标志（在构建配套的
+> HA PR 时所做的修复）。根据消费该值的实体来确定 Python 类型。
+
+### 9.3 按属性分组路由 `set_attribute`，并做范围校验
+
+D9 用一连串 `if attr in (…)` 做路由。0x9B 控制更多，于是在 `message.py` 里把它们
+分组为元组（`STATE_STR_ATTRIBUTES`、`STATE_INT_ATTRIBUTES`、`PARAM_U16_ATTRIBUTES`、
+`PARAM_BYTE_ATTRIBUTES`），并按成员归属分派。关键是，数值控制在上线前会做**范围
+校验**——抛出 `ValueOutOfRange`（而不仅是 `ValueWrongType`），这样被回绕或截断的字节
+绝不会到达设备：
+
+```python
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
+
+
+@staticmethod
+def _coerce_int(attr: str, value: bool | float | str, low: int, high: int) -> int:
+    # 先拒绝 bool 与非数字；在 Python 中 bool 是 int 的子类。
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueWrongType(f"[x9b] {attr} expects a number")
+    coerced = int(value)
+    if not low <= coerced <= high:
+        raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")
+    return coerced
+```
+
+u16 温度按 `0..65535` 校验，单字节音量按 `0..255` 校验。两处边界都是命名常量
+（`U16_MIN/U16_MAX`、`BYTE_MIN/BYTE_MAX`），绝不用字面量——`ruff` 的 `PLR2004` 在
+`tests/` 之外强制这一点。
+
+### 9.4 子命令成帧（body 第一个字节选择命令组）
+
+D9 把它的 bucket 选择器放在通用的 `body_type` 里。0x9B 则把**子命令字节作为 body 的
+第一个字节**（`0x01` 状态/开始烹饪、`0x02` 状态控制、`0x03` 实时参数 TLV、`0x04`
+系统时间），并且**不**需要框架的 `body_type` 前缀。重写 `body`，原样返回 `_body`：
+
+```python
+class MessageX9BBase(MessageRequest):
+    @property
+    def body(self) -> bytearray:
+        """0x9B 协议把子命令放在 body 的第一个字节本身，
+        因此这里不前置通用的 ``body_type`` 前缀。"""
+        return self._body
+```
+
+每个消息类随后用正确的子命令常量开启它的 `_body`。如果你的 Lua 显示命令选择器位于
+负载内部而非类型字节中，就复制这个模式。
+
+### 9.5 结构化的多字段命令
+
+并非每个命令都是单属性。0x9B 的“开始烹饪”接收一整份菜谱：云菜单 id、步骤数，以及
+一个或多个 16 字节的步骤块（模式、定时、火力、分段温度、探针、重量/份量、结束行为）。
+它被建模为一个简单的普通类加一个组装这些块的消息：
+
+```python
+class CookingStep:
+    """一个烹饪步骤；encode() 返回其 16 字节块。"""
+
+    def encode(self) -> bytearray:
+        flags = 0
+        if self.pre_heat:
+            flags |= COOK_FLAG_PREHEAT
+        if self.turntable:
+            flags |= COOK_FLAG_TURNTABLE
+        # ... 打包模式、定时、火力、分段温度、探针、份量 ...
+        return bytearray([...])
+
+
+class MessageSetCooking(MessageX9BBase):
+    """单步或多步的开始烹饪控制。"""
+
+    # body = [SUBCMD_COOKING, menu_hi, menu_mid, menu_lo, step_count_nibble,
+    #         *step.encode() for each step, 0x00]
+```
+
+通过一个带类型的构造器（而非 `set_attribute`）暴露结构化命令，并重新导出该构造器类，
+以便调用方构造菜谱。简单的单值控制照常留在 `set_attribute` 上。
+
+### 9.6 一个解码器服务两个固件版本
+
+0x9B 发行了 V1（单字节温度）与 V2（双字节温度加额外字段）两种固件。解码器不做分支，
+而是把 **V2 当作规范化的超集**：对 V1 也上报的字段，两者编码一致（V1 把值放在 V2
+双字节对的低字节里），因此一个固定偏移解码器同时服务两者。如果你的设备有固件变体，
+先确认其中之一是否为另一个的超集，再决定是否要写两套代码路径。
+
+用长度检查守护每一次固定偏移读取，让过短/截断的 body 解码为空而不是抛异常（两个守护
+都是命名常量，长度守护本身来自 PR #181 上一条 CodeRabbit 意见）：
+
+```python
+STATUS_MIN_LEN = 36  # 最后一次固定偏移状态字节读取的是 body[35]
+SYSTIME_MIN_LEN = 10  # 系统时间 body 读取 body[1]..body[9]
+
+
+def _decode(self) -> None:
+    if len(self._body) < STATUS_MIN_LEN:
+        return
+    # ... 固定偏移读取现在是安全的 ...
+```
+
+### 9.7 set 回显携带完整状态
+
+0x9B 对 `set` 的回复是完整的状态记录（而非裸 ack），因此响应解析器用与查询相同的状态
+解码器来解码 `set` 消息：
+
+```python
+if self.message_type == MessageType.set:
+    # set 回显报文携带完整的状态记录。
+    self.attributes = X9BStatusBody(body).attributes
+```
+
+如果你的设备在写入时回显状态，就解码它——UI 便能立即反映变化，无需等待下一次轮询。
+
+---
+
+## 10. 步骤 8 —— Home Assistant 侧（`midea_ac_lan`）
 
 `midea-lan` 是协议库；Home Assistant 集成
 [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) 消费它。库支持该设备
@@ -541,7 +757,7 @@ D9 对应的集成参见
 
 ---
 
-## 10. 检查清单
+## 11. 检查清单
 
 - [ ] 通过 SN 下载了设备 Lua，并贡献到 `wuwentao/midea-lua`。
 - [ ] 阅读了 `dataToJson`（解析）与 `jsonToData`（控制）以梳理协议。

@@ -50,7 +50,7 @@ def test_temperature_only_update(temperature: float) -> None:
     response = SimpleNamespace(flex_zone_setting_temp=temperature)
     with patch("midealan.devices.ca.MessageCAResponse", return_value=response):
         status = device.process_message(b"")
-    expected = {6: "baby", 2: "treasure", 0: "zero"}[temperature]
+    expected = {6.0: "baby", 2.0: "treasure", 0.0: "zero"}[temperature]
     assert status[DeviceAttributes.variable_mode] == expected
     assert device.get_attribute(DeviceAttributes.variable_mode) == expected
 

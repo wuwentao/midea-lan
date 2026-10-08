@@ -1315,7 +1315,18 @@ class MideaACDevice(MideaDevice):
         return message
 
     def set_countdown_timer(self, attr: str, value: bool | float | str) -> None:
-        """Midea AC device set a countdown timer (minutes, 0 = disarm)."""
+        """Midea AC device set a countdown timer (minutes, 0 = disarm).
+
+        ``value`` is the requested duration in minutes. The read side of the
+        same attribute reports the *remaining* minutes (a live countdown), so a
+        consumer that models these as entities should treat the set as a
+        duration and the read as remaining time.
+
+        Only timers this library armed, or decoded from a status frame, are
+        tracked. A timer armed outside the library (remote or vendor app)
+        before any status frame is seen is cleared by the next routine
+        StateSet, which still sends ``00 00 00`` while no known timer is armed.
+        """
         if isinstance(value, bool):
             _LOGGER.debug(
                 "[%s] Ignoring boolean value for %s, expected minutes",

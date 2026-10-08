@@ -320,7 +320,7 @@ class TestX9BResponse:
         assert attrs["totalstep"] == 2
         assert attrs["stepnum"] == 3
         assert attrs["probe"] == 1
-        assert attrs["turntable"] == "on"
+        assert attrs["turntable"] is True
         assert attrs["work_mode"] == "above_tube"
         assert attrs["hour_set"] == 1
         assert attrs["minute_set"] == 30
@@ -333,13 +333,14 @@ class TestX9BResponse:
         assert attrs["people_number"] == 5
         assert attrs["cur_temperature"] == 150
         assert attrs["work_status"] == "work"
-        assert attrs["lock"] == "on"
-        assert attrs["door_open"] == "on"
+        assert attrs["power"] is True
+        assert attrs["lock"] is True
+        assert attrs["door_open"] is True
         assert attrs["pre_heat"] == "work"
-        assert attrs["furnace_light"] == "on"
-        assert attrs["high_temperature_lock"] == "on"
+        assert attrs["furnace_light"] is True
+        assert attrs["high_temperature_lock"] is True
         assert attrs["ramadan"] == 1
-        assert attrs["hot_wind"] == "on"
+        assert attrs["hot_wind"] is True
         assert attrs["cbs_version"] == "V1.2.3"
         assert attrs["clean_scale"] == 1
         assert attrs["ota"] == 1

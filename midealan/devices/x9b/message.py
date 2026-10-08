@@ -757,7 +757,7 @@ class X9BStatusBody:
         attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
         attrs["stepnum"] = self._body[5] & NIBBLE_MASK
         attrs["probe"] = (self._body[6] >> 1) & 1
-        attrs["turntable"] = VALUE_ON if (self._body[6] >> 3) & 1 else VALUE_OFF
+        attrs["turntable"] = bool((self._body[6] >> 3) & 1)
         attrs["work_mode"] = WORK_MODE_MAP.get(
             _u16be(self._body[7], self._body[8]),
             VALUE_FF,
@@ -798,14 +798,19 @@ class X9BStatusBody:
         attrs["cur_temperature_underside"] = underside
         attrs["cur_temperature"] = above if above != 0 else underside
         attrs["cur_probe_temperature"] = _u16be(self._body[29], self._body[30])
-        attrs["work_status"] = WORK_STATUS_MAP.get(self._body[31], VALUE_FF)
+        status = WORK_STATUS_MAP.get(self._body[31], VALUE_FF)
+        attrs["work_status"] = status
+        # The device never reports a dedicated power byte, so infer the on/off
+        # state the way the HA power switch expects it: anything other than the
+        # power-saving idle (or an unknown byte) counts as powered on.
+        attrs["power"] = status not in ("save_power", VALUE_FF)
 
     def _decode_flags(self) -> None:
         attrs = self.attributes
         byte32 = self._body[32]
         byte33 = self._body[33]
-        attrs["lock"] = VALUE_ON if byte32 & 1 else VALUE_OFF
-        attrs["door_open"] = VALUE_ON if (byte32 >> 1) & 1 else VALUE_OFF
+        attrs["lock"] = bool(byte32 & 1)
+        attrs["door_open"] = bool((byte32 >> 1) & 1)
         lack_box = (byte32 >> 2) & 1
         lack_water = (byte32 >> 3) & 1
         change_water = (byte32 >> 4) & 1
@@ -819,14 +824,14 @@ class X9BStatusBody:
         attrs["error_code"] = (byte32 >> 7) & 1
         attrs["flip_side"] = byte33 & 1
         attrs["reaction"] = (byte33 >> 1) & 1
-        attrs["furnace_light"] = VALUE_ON if (byte33 >> 2) & 1 else VALUE_OFF
+        attrs["furnace_light"] = bool((byte33 >> 2) & 1)
         # The high-temperature lock reads inverted: bit set means "off".
-        attrs["high_temperature_lock"] = VALUE_OFF if (byte33 >> 3) & 1 else VALUE_ON
+        attrs["high_temperature_lock"] = not (byte33 >> 3) & 1
         attrs["high_temperature_work"] = (byte33 >> 4) & 1
         attrs["high_temperature"] = (byte33 >> 5) & 1
         attrs["probe_mode"] = (byte33 >> 6) & 1
         attrs["ramadan"] = (self._body[34] >> 5) & 1
-        attrs["hot_wind"] = VALUE_ON if (self._body[35] >> 5) & 1 else VALUE_OFF
+        attrs["hot_wind"] = bool((self._body[35] >> 5) & 1)
 
     def _decode_version(self) -> None:
         b47, b48, b49 = self._get(47), self._get(48), self._get(49)

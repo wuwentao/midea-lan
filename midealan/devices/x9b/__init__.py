@@ -23,12 +23,14 @@ from .message import (
     ALL_ATTRIBUTES,
     BYTE_MAX,
     BYTE_MIN,
+    FIRE_POWER_MAP,
     PARAM_INT_ATTRIBUTES,
     PARAM_U16_ATTRIBUTES,
     STATE_INT_ATTRIBUTES,
     STATE_STR_ATTRIBUTES,
     U16_MAX,
     U16_MIN,
+    WORK_STATUS_WRITE,
     MessageQuery,
     MessageSetParam,
     MessageSetState,
@@ -179,8 +181,11 @@ class MideaX9BDevice(MideaDevice):
         return coerced
 
 
-# Re-exported control classes for callers that need structured commands.
+# Re-exported control classes and option maps for callers that need structured
+# commands or want to build UI option lists (e.g. the Home Assistant integration).
 __all__ = [
+    "FIRE_POWER_MAP",
+    "WORK_STATUS_WRITE",
     "DeviceAttributes",
     "MideaAppliance",
     "MideaX9BDevice",

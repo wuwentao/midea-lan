@@ -1270,6 +1270,21 @@ class TestMideaDevice:
             call({"available": True}),
         ]
 
+    def test_close_socket_already_unavailable_does_not_republish(self) -> None:
+        """Closing the socket on an already-unavailable device stays quiet."""
+        socket_mock: Any = MagicMock()
+        update = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        self.device._available = False
+        self.device.register_update(update)
+
+        self.device.close_socket()
+
+        assert self.device._socket is None
+        assert self.device.available is False
+        update.assert_not_called()
+
     def test_close_socket_stopped_device_does_not_publish_unavailable(self) -> None:
         """An explicit thread shutdown does not publish a connection loss."""
         socket_mock: Any = MagicMock()

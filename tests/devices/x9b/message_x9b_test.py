@@ -163,7 +163,7 @@ class TestX9BSetParam:
     def test_steam_and_time(self) -> None:
         """Steam and time params are appended with their type bytes."""
         message = MessageSetParam(ProtocolVersion.V3)
-        message.steam_set = 4
+        message.steam_quantity = 4
         message.minute_set = 30
         body = list(message.body)
         assert body[:3] == [0x03, 0x01, 0x02]  # two params
@@ -173,22 +173,22 @@ class TestX9BSetParam:
     def test_fire_power_known_and_unknown(self) -> None:
         """Fire power maps known names and defaults unknown to 0xFF."""
         known = MessageSetParam(ProtocolVersion.V3)
-        known.fire_power_set = "medium_power"
+        known.fire_power = "medium_power"
         assert list(known.body)[3:5] == [0x02, 0x05]
         unknown = MessageSetParam(ProtocolVersion.V3)
-        unknown.fire_power_set = "nope"
+        unknown.fire_power = "nope"
         assert list(unknown.body)[3:5] == [0x02, 0xFF]
 
     def test_temperature_params(self) -> None:
         """Temperature params encode as big-endian two-byte values."""
         message = MessageSetParam(ProtocolVersion.V3)
-        message.temp_set = 300  # 0x012C
-        message.probe_temp_set = 80
-        message.temp_above_set = 200
-        message.temp_underside_set = 150
+        message.temperature = 300  # 0x012C
+        message.probe_temperature = 80
+        message.temperature_above = 200
+        message.temperature_underside = 150
         body = list(message.body)
         assert body[2] == 4  # four params
-        assert body[3:7] == [0x03, 0x00, 0x01, 0x2C]  # temp_set 300
+        assert body[3:7] == [0x03, 0x00, 0x01, 0x2C]  # temperature 300
         assert body[7:11] == [0x04, 0x00, 0x00, 80]  # probe
         assert body[11:17] == [0x05, 0x00, 0x00, 0x00, 0x00, 200]  # above
         assert body[17:23] == [0x05, 0x00, 0x00, 0x01, 0x00, 150]  # underside

@@ -36,6 +36,7 @@ _LOGGER = logging.getLogger(__name__)
 ATTR_POWER = "power"
 ATTR_WORK_STATUS = "work_status"
 ATTR_DOOR = "door"
+ATTR_FIRE_POWER = "fire_power"
 
 # Build the StrEnum from the decoder's attribute list so the two stay in
 # lock-step, matching the pattern used by the 0x9C device.
@@ -134,9 +135,9 @@ class MideaX9BDevice(MideaDevice):
         value: bool | float | str,
     ) -> MessageSetParam | None:
         """Build a live-parameter message for ``attr``, if it is one."""
-        if attr == "fire_power_set":
+        if attr == ATTR_FIRE_POWER:
             message = MessageSetParam(self._message_protocol_version)
-            message.fire_power_set = str(value)
+            message.fire_power = str(value)
             return message
         if attr in PARAM_INT_ATTRIBUTES:
             if isinstance(value, bool) or not isinstance(value, int | float):

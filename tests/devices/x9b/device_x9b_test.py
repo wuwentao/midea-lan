@@ -117,25 +117,25 @@ class TestMideaX9BDevice:
             self.device.set_attribute("screen_luminance", value=True)
 
     def test_set_fire_power_param(self) -> None:
-        """fire_power_set routes through a parameter message."""
+        """fire_power routes through a parameter message."""
         with patch.object(self.device, "build_send") as mock_send:
-            self.device.set_attribute("fire_power_set", "high_power")
+            self.device.set_attribute("fire_power", "high_power")
         message = mock_send.call_args.args[0]
         assert isinstance(message, MessageSetParam)
-        assert message.fire_power_set == "high_power"
+        assert message.fire_power == "high_power"
 
     def test_set_temp_param(self) -> None:
-        """temp_set routes through a parameter message."""
+        """Temperature routes through a parameter message."""
         with patch.object(self.device, "build_send") as mock_send:
-            self.device.set_attribute("temp_set", 180)
+            self.device.set_attribute("temperature", 180)
         message = mock_send.call_args.args[0]
         assert isinstance(message, MessageSetParam)
-        assert message.temp_set == 180
+        assert message.temperature == 180
 
     def test_set_param_wrong_type(self) -> None:
         """A non-numeric value for a numeric parameter raises."""
         with pytest.raises(ValueWrongType):
-            self.device.set_attribute("temp_set", value=True)
+            self.device.set_attribute("temperature", value=True)
 
     def test_set_unknown_attribute_noop(self) -> None:
         """An unknown attribute sends nothing."""

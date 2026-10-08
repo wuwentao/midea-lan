@@ -285,6 +285,13 @@ ALL_ATTRIBUTES: tuple[str, ...] = (
     "ota",
     "clean_sink_ponding",
     "dissipate_heat",
+    # Write-only controls (not reported by the device, exposed for callers such
+    # as Home Assistant that address every control through ``set_attribute``).
+    "power",
+    "door",
+    "camera",
+    "screen_luminance",
+    "volume",
     # system time
     "sys_time_src",
     "sys_second",
@@ -302,14 +309,14 @@ ALL_ATTRIBUTES: tuple[str, ...] = (
 STATE_STR_ATTRIBUTES = ("lock", "furnace_light", "camera", "hot_wind")
 STATE_INT_ATTRIBUTES = ("screen_luminance", "volume")
 PARAM_INT_ATTRIBUTES = (
-    "steam_set",
+    "steam_quantity",
     "hour_set",
     "minute_set",
     "second_set",
-    "temp_set",
-    "probe_temp_set",
-    "temp_above_set",
-    "temp_underside_set",
+    "temperature",
+    "probe_temperature",
+    "temperature_above",
+    "temperature_underside",
 )
 
 
@@ -457,20 +464,20 @@ class MessageSetParam(MessageX9BBase):
             message_type=MessageType.set,
             body_type=ListTypes.X01,
         )
-        self.steam_set: int | None = None
+        self.steam_quantity: int | None = None
         self.hour_set: int | None = None
         self.minute_set: int | None = None
         self.second_set: int | None = None
-        self.fire_power_set: str | None = None
-        self.temp_set: int | None = None
-        self.probe_temp_set: int | None = None
-        self.temp_above_set: int | None = None
-        self.temp_underside_set: int | None = None
+        self.fire_power: str | None = None
+        self.temperature: int | None = None
+        self.probe_temperature: int | None = None
+        self.temperature_above: int | None = None
+        self.temperature_underside: int | None = None
 
     def _params(self) -> list[list[int]]:
         params: list[list[int]] = []
-        if self.steam_set is not None:
-            params.append([PARAM_STEAM, self.steam_set])
+        if self.steam_quantity is not None:
+            params.append([PARAM_STEAM, self.steam_quantity])
         if (
             self.hour_set is not None
             or self.minute_set is not None
@@ -484,35 +491,37 @@ class MessageSetParam(MessageX9BBase):
                     self.second_set or 0,
                 ],
             )
-        if self.fire_power_set is not None:
+        if self.fire_power is not None:
             params.append(
                 [
                     PARAM_FIRE_POWER,
-                    FIRE_POWER_REVERSE.get(self.fire_power_set, UNCHANGED),
+                    FIRE_POWER_REVERSE.get(self.fire_power, UNCHANGED),
                 ],
             )
-        if self.temp_set is not None:
-            params.append([PARAM_TEMP, 0x00, *_split_u16(self.temp_set)])
-        if self.probe_temp_set is not None:
-            params.append([PARAM_PROBE_TEMP, 0x00, *_split_u16(self.probe_temp_set)])
-        if self.temp_above_set is not None:
+        if self.temperature is not None:
+            params.append([PARAM_TEMP, 0x00, *_split_u16(self.temperature)])
+        if self.probe_temperature is not None:
+            params.append(
+                [PARAM_PROBE_TEMP, 0x00, *_split_u16(self.probe_temperature)],
+            )
+        if self.temperature_above is not None:
             params.append(
                 [
                     PARAM_SPLIT_TEMP,
                     0x00,
                     0x00,
                     PARAM_SPLIT_ABOVE,
-                    *_split_u16(self.temp_above_set),
+                    *_split_u16(self.temperature_above),
                 ],
             )
-        if self.temp_underside_set is not None:
+        if self.temperature_underside is not None:
             params.append(
                 [
                     PARAM_SPLIT_TEMP,
                     0x00,
                     0x00,
                     PARAM_SPLIT_UNDERSIDE,
-                    *_split_u16(self.temp_underside_set),
+                    *_split_u16(self.temperature_underside),
                 ],
             )
         return params

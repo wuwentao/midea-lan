@@ -272,7 +272,9 @@ docstring in `device.py`.
 ### 4.4 `process_message`
 
 Decode an incoming frame into a `{attr_name: value}` dict, apply any value-map
-translation, store into `self._attributes`, and return only the changed keys.
+translation, store into `self._attributes`, and return the attributes carried by
+this frame (the codebase convention is to return every exposed key the frame
+decoded, not to diff against the previous state).
 
 ```python
 def process_message(self, msg: bytes) -> dict[str, Any]:
@@ -350,12 +352,12 @@ Protocol offsets, lengths, command bytes, and flag values are named
 module-level constants. `ruff`'s `PLR2004` enforces this outside `tests/`.
 
 ```python
-CONTROL_POWER = 0x01
-CONTROL_STATUS = 0x02
-CONTROL_PROGRAM = 0x04
-CONTROL_LENGTH_ONE = 0x01
-VALUE_ON = 0x01
-VALUE_OFF = 0x00
+CONTROL_POWER = 0x01  # Lua: power (jsonToData control byte)
+CONTROL_STATUS = 0x02  # Lua: status
+CONTROL_PROGRAM = 0x04  # Lua: program
+CONTROL_LENGTH_ONE = 0x01  # Lua: single-byte payload length
+VALUE_ON = 0x01  # Lua: on
+VALUE_OFF = 0x00  # Lua: off
 ```
 
 For a fixed-offset device, name each byte offset instead (see
@@ -532,7 +534,7 @@ uv run python -m pytest ./tests/
 # just your device
 uv run python -m pytest tests/devices/d9/ -v
 
-# coverage (CI enforces 100% on new code)
+# coverage (target 100% on new code)
 uv run python -m pytest --cov=midealan --cov-report xml ./tests/
 
 # lint / format / type-check / pylint in one shot
@@ -692,6 +694,10 @@ def _coerce_int(attr: str, value: bool | float | str, low: int, high: int) -> in
     # Reject bools and non-numbers up front; bool is an int subclass in Python.
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueWrongType(f"[x9b] {attr} expects a number")
+    # Reject fractional values rather than silently truncating (42.7 -> 42),
+    # which would send a different control value than the caller asked for.
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueWrongType(f"[x9b] {attr} must be a whole number")
     coerced = int(value)
     if not low <= coerced <= high:
         raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")

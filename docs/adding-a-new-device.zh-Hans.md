@@ -249,7 +249,8 @@ def build_query(self) -> list[MessageQuery]:
 ### 4.4 `process_message`
 
 把收到的帧解码为 `{属性名: 值}` 字典，应用 value-map 转换，写入
-`self._attributes`，并仅返回发生变化的键。
+`self._attributes`，并返回本帧携带的属性（本代码库的惯例是返回该帧解码出的每个已
+暴露键，而不是与上一次状态做差异比对）。
 
 ```python
 def process_message(self, msg: bytes) -> dict[str, Any]:
@@ -323,12 +324,12 @@ class MideaAppliance(MideaD9Device):
 在 `tests/` 之外强制此规则。
 
 ```python
-CONTROL_POWER = 0x01
-CONTROL_STATUS = 0x02
-CONTROL_PROGRAM = 0x04
-CONTROL_LENGTH_ONE = 0x01
-VALUE_ON = 0x01
-VALUE_OFF = 0x00
+CONTROL_POWER = 0x01  # Lua: power（jsonToData 控制字节）
+CONTROL_STATUS = 0x02  # Lua: status
+CONTROL_PROGRAM = 0x04  # Lua: program
+CONTROL_LENGTH_ONE = 0x01  # Lua: 单字节负载长度
+VALUE_ON = 0x01  # Lua: on
+VALUE_OFF = 0x00  # Lua: off
 ```
 
 对固定偏移设备，则改为给每个字节偏移命名（参见 `devices/e2/message.py`，
@@ -494,7 +495,7 @@ uv run python -m pytest ./tests/
 # 仅本设备
 uv run python -m pytest tests/devices/d9/ -v
 
-# 覆盖率（CI 对新代码要求 100%）
+# 覆盖率（新代码目标为 100%）
 uv run python -m pytest --cov=midealan --cov-report xml ./tests/
 
 # 一次性执行 lint / format / 类型检查 / pylint
@@ -641,6 +642,10 @@ def _coerce_int(attr: str, value: bool | float | str, low: int, high: int) -> in
     # 先拒绝 bool 与非数字；在 Python 中 bool 是 int 的子类。
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise ValueWrongType(f"[x9b] {attr} expects a number")
+    # 拒绝小数而不是静默截断（42.7 -> 42），否则会向设备发送与调用方
+    # 请求不同的控制值。
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueWrongType(f"[x9b] {attr} must be a whole number")
     coerced = int(value)
     if not low <= coerced <= high:
         raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")

@@ -157,6 +157,24 @@ class TestMideaX9BDevice:
         with pytest.raises(ValueOutOfRange):
             self.device.set_attribute("volume", 256)
 
+    def test_set_int_control_fractional(self) -> None:
+        """A fractional value for an int control raises instead of truncating."""
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute("volume", 7.5)
+
+    def test_set_param_fractional(self) -> None:
+        """A fractional numeric parameter raises instead of truncating."""
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute("temperature", 42.7)
+
+    def test_set_param_integral_float(self) -> None:
+        """An integral float (180.0) is accepted and coerced to int."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute("temperature", 180.0)
+        message = mock_send.call_args.args[0]
+        assert isinstance(message, MessageSetParam)
+        assert message.temperature == 180
+
     def test_set_unknown_attribute_noop(self) -> None:
         """An unknown attribute sends nothing."""
         with patch.object(self.device, "build_send") as mock_send:

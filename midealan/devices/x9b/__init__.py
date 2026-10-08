@@ -168,13 +168,17 @@ class MideaX9BDevice(MideaDevice):
         Raises
         ------
         ValueWrongType
-            If ``value`` is not a non-bool number.
+            If ``value`` is not a non-bool number, or is a non-integral float.
         ValueOutOfRange
             If the coerced integer falls outside ``[low, high]``.
 
         """
         if isinstance(value, bool) or not isinstance(value, int | float):
             raise ValueWrongType(f"[x9b] {attr} expects a number")
+        # Reject fractional values rather than silently truncating (42.7 -> 42),
+        # which would send a different control value than the caller asked for.
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueWrongType(f"[x9b] {attr} must be a whole number")
         coerced = int(value)
         if not low <= coerced <= high:
             raise ValueOutOfRange(f"[x9b] {attr} must be in [{low}, {high}]")

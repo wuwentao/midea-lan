@@ -377,6 +377,20 @@ class TestMessageNewSet:
             [0x15, 0x01, 0x01, 0x03, 0x05, 0x00, 0x00, 0x00],
         )
 
+    def test_message_newset_water_purifier_heat(self) -> None:
+        """Test MessageNewSet heat uses the official Lua encoding."""
+        new_set = MessageNewSet(protocol_version=ProtocolVersion.V1)
+        new_set.heat = True
+        # Heat on: setbytes(0x00, 0x04, 0x01, 0x00, 0x00).
+        assert new_set.body == bytearray(
+            [0x15, 0x01, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00],
+        )
+        new_set.heat = False
+        # Heat off: setbytes(0x00, 0x04, 0x00, 0x00, 0x00).
+        assert new_set.body == bytearray(
+            [0x15, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00],
+        )
+
 
 class TestMessageOldSet:
     """Test MessageOldSet."""
@@ -1049,6 +1063,26 @@ class TestEDMessageBodyFFWaterPurifier:
         assert message.sleep_status
         assert message.child_lock
         assert message.power
+        assert not message.save_mode
+        assert message.heat
+        assert message.no_obsolete_water
+        assert not message.smart_no_obsolete_water
+        assert message.v_version == 1
+        assert message.e_version == 0
+        assert message.k_version == 0
+        assert message.w_version == 0
+        assert message.quantify_1 == 0
+        assert message.quantify_2 == 0
+        assert message.quantify_3 == 0
+        assert message.quantify_4 == 0
+        assert message.quantify_5 == 0
+        assert message.cur_quantify == 21
+        assert message.quantify_21 == 300
+        assert message.quantify_22 == 500
+        assert message.quantify_23 == 1000
+        assert message.quantify_24 == 0
+        assert message.quantify_25 == 0
+        assert message.input_temperature_sensing == 35
 
     def test_captured_heating_frame(self) -> None:
         """Parse a captured heating frame (heat_start 1)."""
@@ -1135,6 +1169,8 @@ class TestEDMessageBodyFFWaterPurifier:
             ),
         )
         assert not message.antifreeze
+        assert message.no_obsolete_water
+        assert not message.smart_no_obsolete_water
         assert message.heat_start == 1
         assert message.hot_pot_temperature == 88
 
@@ -1149,6 +1185,77 @@ class TestEDMessageBodyFFWaterPurifier:
         # The 0x03B record runs past the end of the body.
         message = EDMessageBodyFF(body=bytearray([0xFF, 0x01, 0x03, 0x3B, 0x10]))
         assert not hasattr(message, "hot_pot_temperature")
+
+    def test_captured_version_3_frame(self) -> None:
+        """Parse a captured frame reporting version segments 3/0/0/0."""
+        message = EDMessageBodyFF(
+            body=self._body(
+                "aa69ed00000000000003ff0103004008820103011000024003000000105054380000001150"
+                "a8840f00001340770004002030000200236000000000000038a02c01f401e803000000003a"
+                "40000000003b105652100316503c180000003c50414000000007122c0f1200c3",
+            ),
+        )
+        assert message.v_version == 3
+        assert message.e_version == 0
+        assert message.k_version == 0
+        assert message.w_version == 0
+        assert message.cur_quantify == 0
+        assert message.input_temperature_sensing == 44
+
+    def test_input_temperature_sensing_is_signed(self) -> None:
+        """Parse the input temperature record as a two's-complement byte."""
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x07, 0x12, 0x2C]),
+        )
+        assert message.input_temperature_sensing == 44
+
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x07, 0x12, 0xE6]),
+        )
+        assert message.input_temperature_sensing == -26
+
+    def test_smart_no_obsolete_water_flag(self) -> None:
+        """Decode the smart zero-stagnant-water bit of the 0x03C record."""
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x3C, 0x20, 0x01, 0x08]),
+        )
+        assert message.antifreeze
+        assert not message.no_obsolete_water
+        assert message.smart_no_obsolete_water
+
+    def test_antifreeze_single_byte_record_skips_smart_flag(self) -> None:
+        """Decode a 0x03C record carrying a single payload byte.
+
+        The smart zero-stagnant-water bit lives in the optional second
+        payload byte; a shorter record must still decode the antifreeze bit
+        without reading past the record.
+        """
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x3C, 0x10, 0x01]),
+        )
+        assert message.antifreeze
+        assert not message.no_obsolete_water
+        assert not hasattr(message, "smart_no_obsolete_water")
+
+    def test_short_extended_records_are_skipped(self) -> None:
+        """Skip extended records whose payload misses their fields."""
+        # The 0x002 record declares two payload bytes instead of four.
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x02, 0x20, 0x01, 0x00]),
+        )
+        assert not hasattr(message, "v_version")
+
+        # The 0x023 record declares a single payload byte instead of six.
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x23, 0x10, 0x00]),
+        )
+        assert not hasattr(message, "cur_quantify")
+
+        # The 0x038 record declares two payload bytes instead of ten.
+        message = EDMessageBodyFF(
+            body=bytearray([0xFF, 0x01, 0x00, 0x38, 0x20, 0x2C, 0x01]),
+        )
+        assert not hasattr(message, "quantify_21")
 
 
 class TestMessageEDResponse:

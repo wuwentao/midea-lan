@@ -112,6 +112,26 @@ class DeviceAttributes(StrEnum):
     ice_gall_status = "ice_gall_status"
     hot_pot_temperature = "hot_pot_temperature"
     antifreeze = "antifreeze"
+    save_mode = "save_mode"
+    heat = "heat"
+    no_obsolete_water = "no_obsolete_water"
+    smart_no_obsolete_water = "smart_no_obsolete_water"
+    v_version = "v_version"
+    e_version = "e_version"
+    k_version = "k_version"
+    w_version = "w_version"
+    quantify_1 = "quantify_1"
+    quantify_2 = "quantify_2"
+    quantify_3 = "quantify_3"
+    quantify_4 = "quantify_4"
+    quantify_5 = "quantify_5"
+    cur_quantify = "cur_quantify"
+    quantify_21 = "quantify_21"
+    quantify_22 = "quantify_22"
+    quantify_23 = "quantify_23"
+    quantify_24 = "quantify_24"
+    quantify_25 = "quantify_25"
+    input_temperature_sensing = "input_temperature_sensing"
 
 
 class MideaEDDevice(MideaDevice):
@@ -183,6 +203,26 @@ class MideaEDDevice(MideaDevice):
                 DeviceAttributes.ice_gall_status: None,
                 DeviceAttributes.hot_pot_temperature: None,
                 DeviceAttributes.antifreeze: False,
+                DeviceAttributes.save_mode: False,
+                DeviceAttributes.heat: False,
+                DeviceAttributes.no_obsolete_water: False,
+                DeviceAttributes.smart_no_obsolete_water: False,
+                DeviceAttributes.v_version: None,
+                DeviceAttributes.e_version: None,
+                DeviceAttributes.k_version: None,
+                DeviceAttributes.w_version: None,
+                DeviceAttributes.quantify_1: None,
+                DeviceAttributes.quantify_2: None,
+                DeviceAttributes.quantify_3: None,
+                DeviceAttributes.quantify_4: None,
+                DeviceAttributes.quantify_5: None,
+                DeviceAttributes.cur_quantify: None,
+                DeviceAttributes.quantify_21: None,
+                DeviceAttributes.quantify_22: None,
+                DeviceAttributes.quantify_23: None,
+                DeviceAttributes.quantify_24: None,
+                DeviceAttributes.quantify_25: None,
+                DeviceAttributes.input_temperature_sensing: None,
             },
         )
         if self._is_tea_bar():
@@ -448,6 +488,7 @@ class MideaEDDevice(MideaDevice):
         if attr in [
             DeviceAttributes.wash,
             DeviceAttributes.antifreeze,
+            DeviceAttributes.heat,
         ] and not isinstance(value, bool):
             raise ValueWrongType("[ed] Expected bool")
         message: MessageNewSet | MessageOldSet | None = None
@@ -457,6 +498,7 @@ class MideaEDDevice(MideaDevice):
                 DeviceAttributes.child_lock,
                 DeviceAttributes.wash,
                 DeviceAttributes.antifreeze,
+                DeviceAttributes.heat,
                 DeviceAttributes.soften,
                 DeviceAttributes.cl_sterilization,
                 DeviceAttributes.leak_water_protection,

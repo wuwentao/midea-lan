@@ -58,6 +58,15 @@ class TestMideaEDDevice:
         assert self.device.attributes[DeviceAttributes.life2] is None
         assert self.device.attributes[DeviceAttributes.life3] is None
         assert not self.device.attributes[DeviceAttributes.child_lock]
+        assert not self.device.attributes[DeviceAttributes.save_mode]
+        assert not self.device.attributes[DeviceAttributes.heat]
+        assert not self.device.attributes[DeviceAttributes.no_obsolete_water]
+        assert self.device.attributes[DeviceAttributes.v_version] is None
+        assert self.device.attributes[DeviceAttributes.cur_quantify] is None
+        assert self.device.attributes[DeviceAttributes.quantify_21] is None
+        assert (
+            self.device.attributes[DeviceAttributes.input_temperature_sensing] is None
+        )
 
     def test_process_message(self) -> None:
         """Test process message."""
@@ -139,6 +148,14 @@ class TestMideaEDDevice:
         assert new_status[DeviceAttributes.heat_start.value] == 2
         assert new_status[DeviceAttributes.ice_gall_status.value] == 0
         assert new_status[DeviceAttributes.hot_pot_temperature.value] == 82
+        assert new_status[DeviceAttributes.save_mode.value] is False
+        assert new_status[DeviceAttributes.heat.value] is True
+        assert new_status[DeviceAttributes.no_obsolete_water.value] is True
+        assert new_status[DeviceAttributes.v_version.value] == 1
+        assert new_status[DeviceAttributes.cur_quantify.value] == 21
+        assert new_status[DeviceAttributes.quantify_21.value] == 300
+        assert new_status[DeviceAttributes.quantify_23.value] == 1000
+        assert new_status[DeviceAttributes.input_temperature_sensing.value] == 35
         assert new_status[DeviceAttributes.maxlife1.value] == 60
         assert new_status[DeviceAttributes.maxlife2.value] == 24
         assert new_status[DeviceAttributes.antifreeze.value] is True
@@ -196,6 +213,39 @@ class TestMideaEDDevice:
 
             self.device.set_attribute(DeviceAttributes.child_lock, True)
             mock_build_send.assert_called()
+
+    def test_set_attribute_heat_uses_official_lua_command(self) -> None:
+        """Test the water purifier heat toggle uses the official Lua encoding."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.heat, True)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00],
+            )
+
+            self.device.set_attribute(DeviceAttributes.heat, False)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00],
+            )
+
+        assert self.device.attributes[DeviceAttributes.heat] is False
+
+    def test_set_attribute_water_purifier_group_data_is_read_only(self) -> None:
+        """Test read-only purifier group data never emits a set command."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            for attr in (
+                DeviceAttributes.save_mode,
+                DeviceAttributes.no_obsolete_water,
+                DeviceAttributes.smart_no_obsolete_water,
+                DeviceAttributes.v_version,
+                DeviceAttributes.quantify_1,
+                DeviceAttributes.cur_quantify,
+                DeviceAttributes.quantify_21,
+                DeviceAttributes.input_temperature_sensing,
+            ):
+                self.device.set_attribute(attr, True)
+        mock_build_send.assert_not_called()
 
     def test_tea_bar_attributes_are_model_specific(self) -> None:
         """Expose tea bar status attributes only for the verified model."""
@@ -988,9 +1038,16 @@ class TestMideaEDDeviceSoftWater:
             )
 
     @pytest.mark.parametrize("value", ["False", "True", 5])
-    def test_set_attribute_wash_antifreeze_require_bool(self, value: str | int) -> None:
-        """Test a non-bool wash or antifreeze value raises and does not send."""
-        for attr in (DeviceAttributes.wash, DeviceAttributes.antifreeze):
+    def test_set_attribute_wash_antifreeze_heat_require_bool(
+        self,
+        value: str | int,
+    ) -> None:
+        """Test a non-bool wash, antifreeze or heat value raises and does not send."""
+        for attr in (
+            DeviceAttributes.wash,
+            DeviceAttributes.antifreeze,
+            DeviceAttributes.heat,
+        ):
             with (
                 patch.object(self.device, "build_send") as mock_build_send,
                 pytest.raises(ValueWrongType, match="Expected bool"),

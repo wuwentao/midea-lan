@@ -34,10 +34,15 @@ TEA_BAR_ERROR_OFFSET = 52
 # Water purifier FF body constants.
 # Record lengths cover the two-byte record header plus the payload.
 FF_SINGLE_BYTE_RECORD_LENGTH = 3
+FF_TWO_BYTE_RECORD_LENGTH = 4
 FF_THREE_BYTE_RECORD_LENGTH = 5
 FF_FOUR_BYTE_RECORD_LENGTH = 6
 FF_WATER_KIND_RECORD_LENGTH = 5
 FF_LIFE_RECORD_LENGTH = 7
+FF_QUANTIFY_RECORD_LENGTH = 8
+FF_QUANTIFY_PRESETS_RECORD_LENGTH = 12
+# Left shift for the high byte when assembling a little-endian 16-bit value.
+FF_HIGH_BYTE_SHIFT = 8
 # Status flags of the 0x000 record.
 FF_LOCK_FLAG = 0x01
 FF_FILTER_FLAG = 0x01
@@ -48,10 +53,19 @@ FF_OUT_HOT_WATER_FLAG = 0x40
 FF_POWER_FLAG = 0x01
 FF_SLEEP_FLAG = 0x02
 FF_BACKFLOW_FLAG = 0x20
+FF_SAVE_MODE_FLAG = 0x40
+FF_HEAT_FLAG = 0x02
 # Status flags of the 0x03C record.
 FF_ANTIFREEZE_FLAG = 0x01
+FF_NO_OBSOLETE_WATER_FLAG = 0x40
+FF_SMART_NO_OBSOLETE_WATER_FLAG = 0x08
 # Filter wash duration in seconds, as sent by the official app.
 WATER_PURIFIER_WASH_SECONDS = 60
+# A water purifier input temperature byte above this value is a negative
+# temperature in two's complement, matching the official Lua decoder.
+TEMP_NEG_VALUE = 127
+# Offset subtracted from negative temperature bytes (raw - TEMP_SIGN_OFFSET).
+TEMP_SIGN_OFFSET = 256
 
 
 class Attributes(IntEnum):
@@ -87,6 +101,7 @@ class Attributes(IntEnum):
 
     # Water purifier attributes for FF body.
     ERROR_CODE = 0x001
+    VERSION = 0x002
     MAX_LIFE = 0x016
     # The 0x020 record carries water_kind/heat_start/ice_gall_status for the
     # water purifier family; VELOCITY above is the soft water machine label for
@@ -94,6 +109,12 @@ class Attributes(IntEnum):
     WATER_KIND = 0x020
     HOT_POT_TEMPERATURE = 0x03B
     ANTIFREEZE = 0x03C
+    # The 0x023 record id is LEAK_WATER_PROTECTION_VALUE for the soft water
+    # machine above; the water purifier family reports quantify_1..5 and
+    # cur_quantify there.
+    QUANTIFY = 0x023
+    QUANTIFY_PRESETS = 0x038
+    INPUT_TEMPERATURE = 0x207
 
 
 class NewSetTags(IntEnum):
@@ -122,6 +143,7 @@ class NewSetTags(IntEnum):
     # Water purifier controls from the official ED Lua encoder.
     wash = 0x0300  # setbytes(0x00, 0x03, 0x01/0x00, seconds...)
     antifreeze = 0x0503  # setbytes(0x03, 0x05, 0x01/0x00)
+    heat = 0x0400  # setbytes(0x00, 0x04, 0x01/0x00)
 
 
 class EDNewSetParamPack:
@@ -376,6 +398,7 @@ class MessageNewSet(MessageEDBase):
         self.wash: bool | None = None
         self.wash_seconds: int | None = None
         self.antifreeze: bool | None = None
+        self.heat: bool | None = None
 
     @property
     def _body(self) -> bytearray:
@@ -565,6 +588,14 @@ class MessageNewSet(MessageEDBase):
                 EDNewSetParamPack.pack(
                     param=NewSetTags.antifreeze,
                     value=0x01 if self.antifreeze else 0x00,
+                ),
+            )
+        if self.heat is not None:
+            pack_count += 1
+            payload.extend(
+                EDNewSetParamPack.pack(
+                    param=NewSetTags.heat,
+                    value=0x01 if self.heat else 0x00,
                 ),
             )
         return pack_count
@@ -795,6 +826,8 @@ class EDMessageBodyFF(MessageBody):
                 self.standby_status = (
                     body[data_offset + 3] & FF_STANDBY_STATUS_FLAG
                 ) > 0
+                self.save_mode = (body[data_offset + 3] & FF_SAVE_MODE_FLAG) > 0
+                self.heat = (body[data_offset + 4] & FF_HEAT_FLAG) > 0
                 self.out_water = (body[data_offset + 5] & FF_OUT_WATER_FLAG) > 0
                 self.out_hot_water = (body[data_offset + 5] & FF_OUT_HOT_WATER_FLAG) > 0
                 self.child_lock = (body[data_offset + 5] & FF_LOCK_FLAG) > 0
@@ -855,6 +888,55 @@ class EDMessageBodyFF(MessageBody):
             self.hot_pot_temperature = body[data_offset + 3]
         elif attr == Attributes.ANTIFREEZE and length >= FF_SINGLE_BYTE_RECORD_LENGTH:
             self.antifreeze = (body[data_offset + 3] & FF_ANTIFREEZE_FLAG) > 0
+            self.no_obsolete_water = (
+                body[data_offset + 3] & FF_NO_OBSOLETE_WATER_FLAG
+            ) > 0
+            if length >= FF_TWO_BYTE_RECORD_LENGTH:
+                self.smart_no_obsolete_water = (
+                    body[data_offset + 4] & FF_SMART_NO_OBSOLETE_WATER_FLAG
+                ) > 0
+        elif attr == Attributes.VERSION and length >= FF_FOUR_BYTE_RECORD_LENGTH:
+            self.v_version = body[data_offset + 3]
+            self.e_version = body[data_offset + 4]
+            self.k_version = body[data_offset + 5]
+            self.w_version = body[data_offset + 6]
+        elif attr == Attributes.QUANTIFY and length >= FF_QUANTIFY_RECORD_LENGTH:
+            self.quantify_1 = body[data_offset + 3]
+            self.quantify_2 = body[data_offset + 4]
+            self.quantify_3 = body[data_offset + 5]
+            self.quantify_4 = body[data_offset + 6]
+            self.quantify_5 = body[data_offset + 7]
+            self.cur_quantify = body[data_offset + 8]
+        elif (
+            attr == Attributes.QUANTIFY_PRESETS
+            and length >= FF_QUANTIFY_PRESETS_RECORD_LENGTH
+        ):
+            self.quantify_21 = body[data_offset + 3] + (
+                body[data_offset + 4] << FF_HIGH_BYTE_SHIFT
+            )
+            self.quantify_22 = body[data_offset + 5] + (
+                body[data_offset + 6] << FF_HIGH_BYTE_SHIFT
+            )
+            self.quantify_23 = body[data_offset + 7] + (
+                body[data_offset + 8] << FF_HIGH_BYTE_SHIFT
+            )
+            self.quantify_24 = body[data_offset + 9] + (
+                body[data_offset + 10] << FF_HIGH_BYTE_SHIFT
+            )
+            self.quantify_25 = body[data_offset + 11] + (
+                body[data_offset + 12] << FF_HIGH_BYTE_SHIFT
+            )
+        elif (
+            attr == Attributes.INPUT_TEMPERATURE
+            and length >= FF_SINGLE_BYTE_RECORD_LENGTH
+        ):
+            # The official Lua streams key is input_temperature_Sensing.
+            raw_input_temperature = body[data_offset + 3]
+            self.input_temperature_sensing = (
+                (raw_input_temperature - TEMP_SIGN_OFFSET)
+                if raw_input_temperature > TEMP_NEG_VALUE
+                else raw_input_temperature
+            )
 
 
 class MessageEDResponse(MessageResponse):

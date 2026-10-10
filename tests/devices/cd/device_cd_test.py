@@ -693,6 +693,39 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
         assert status[DeviceAttributes.current_temperature.value] == 40
 
+    def test_process_message_mixed_temperature_protocol_rsj000cb(self) -> None:
+        """RSJ000CB uses new main temps and Fahrenheit auxiliary sensors."""
+        device = _make_device(model="RSJ000CB")
+        assert device._lua_protocol == LuaProtocol.new
+
+        class FakeMessage:
+            target_temperature = 38.0
+            current_temperature = 52.0
+            outdoor_temperature = 91.0
+            condenser_temperature = 73.0
+            compressor_temperature = 23.0
+            compressor_status = False
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+        assert status[DeviceAttributes.target_temperature.value] == 38.0
+        assert status[DeviceAttributes.current_temperature.value] == 52.0
+        assert status[DeviceAttributes.outdoor_temperature.value] == pytest.approx(
+            32.8,
+            abs=0.1,
+        )
+        assert status[DeviceAttributes.condenser_temperature.value] == pytest.approx(
+            22.8,
+            abs=0.1,
+        )
+        assert status[DeviceAttributes.compressor_temperature.value] == pytest.approx(
+            -5.0,
+            abs=0.1,
+        )
+
     # ------------------------------------------------------------------ #
     # set_attribute branches                                               #
     # ------------------------------------------------------------------ #

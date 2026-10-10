@@ -82,6 +82,41 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         "app_key": "434a209a5ce141c3b726de067835d7f0",
         "api_url": "https://mapp.appsmb.com",  # codespell:ignore
     },
+    # WORK IN PROGRESS -- see https://github.com/wuwentao/midea_ac_lan/issues/364
+    # TSmartLife (Toshiba's "oversea"/non-Japan-domestic market app,
+    # com.midea.ai.toshiba.oversea.inhouse) for the GR-RF900WI-PMV(06)-MG
+    # refrigerator (device type 0xCA). Confirmed a separate cloud
+    # deployment from Toshiba's other app, IOLife -- two unrelated
+    # TSmartLife accounts were both rejected with code 3102 when pointed
+    # at IOLife's endpoint; see home-assistant/core#182840.
+    #
+    # api_url is REAL, confirmed via three independent methods on
+    # 2026-10-10: (1) a literal string match in the TSmartLife APK's
+    # classes.dex, (2) a live PCAPdroid capture of the real app connecting
+    # to this exact host, (3) DNS/TLS inspection (resolves to an Alibaba
+    # Cloud ALB, ap-southeast-1; TLS cert verifies OK). The URL/path shape
+    # (`/mas/v5/app/proxy?alias=`) matches SmartHomeCloud's convention
+    # exactly -- hence class_name below reuses SmartHomeCloud's flow via a
+    # thin subclass.
+    #
+    # app_id/app_key/iot_key/hmac_key are UNKNOWN and intentionally left
+    # blank. TSmartLife's APK is KiwiVM-shielded; static analysis cannot
+    # reach them (confirmed, not assumed). Do NOT fill these with another
+    # cloud's real values -- that would silently test the wrong backend.
+    # TSmartLifeCloud.__init__ below refuses to construct while they are
+    # blank, specifically to prevent that mistake.
+    "TSmartLife": {
+        "class_name": "TSmartLifeCloud",
+        "app_id": "",
+        "app_key": "",
+        "iot_key": "",
+        "hmac_key": "",
+        "api_url": "https://mp-jp-prod.appsmb.com/mas/v5/app/proxy?alias=",
+        # 0008 is Toshiba's manufacturer/enterprise code (shipped in-app
+        # as APP_ENTERPRISE, prefixes every T_0008_* Lua protocol file --
+        # this device's family: T_0008_CA_{21,22,24,25,27,28,29}.lua).
+        "manufacturer_code": "0008",
+    },
 }
 
 DEFAULT_KEYS = {
@@ -1243,6 +1278,48 @@ class MideaAirCloud(MideaCloud):
                     async with aiofiles.open(fnm, "w") as fp:
                         await fp.write(stream)
         return str(fnm) if fnm else None
+
+
+class TSmartLifeCloud(SmartHomeCloud):
+    """TSmartLife cloud (Toshiba oversea-market app) -- WORK IN PROGRESS.
+
+    See https://github.com/wuwentao/midea_ac_lan/issues/364 for the full
+    investigation. Reuses SmartHomeCloud's login/getToken flow unchanged --
+    the confirmed real api_url (see SUPPORTED_CLOUDS["TSmartLife"] above)
+    matches SmartHomeCloud's URL/path convention. The maintainer has
+    confirmed any v1/v2 getToken variant is acceptable; the only goal is a
+    working LAN V3 token for device type 0xCA.
+
+    The real app_id/app_key/iot_key/hmac_key have not been recovered (see
+    the issue above) and are intentionally blank in SUPPORTED_CLOUDS. This
+    class refuses to construct while they are blank, so an accidental
+    selection of "TSmartLife" in the config flow fails immediately with a
+    clear message instead of attempting a doomed login with empty
+    credentials.
+    """
+
+    def __init__(
+        self,
+        cloud_name: str,
+        session: ClientSession,
+        account: str,
+        password: str,
+    ) -> None:
+        """Initialize TSmartLife cloud."""
+        cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
+        if not cloud_data.get("app_id") or not cloud_data.get("app_key"):
+            raise ElementMissing(
+                "TSmartLife cloud credentials (app_id/app_key) are unknown "
+                "and must be supplied before this cloud can be used -- see "
+                "https://github.com/wuwentao/midea_ac_lan/issues/364. "
+                "Refusing to initialize with blank credentials.",
+            )
+        super().__init__(
+            cloud_name=cloud_name,
+            session=session,
+            account=account,
+            password=password,
+        )
 
 
 def get_midea_cloud(

@@ -11,6 +11,13 @@ from .message import MessageCAResponse, MessageQuery
 
 _LOGGER = logging.getLogger(__name__)
 
+SUBTYPE_310A2111 = 56
+FLEX_ZONE_MODE_BY_TEMPERATURE: dict[float, str] = {
+    6.0: "baby",
+    2.0: "treasure",
+    0.0: "zero",
+}
+
 
 class DeviceAttributes(StrEnum):
     """Midea CA device attributes."""
@@ -137,6 +144,26 @@ class MideaCADevice(MideaDevice):
                 else:
                     self._attributes[attr] = value
                 new_status[str(attr)] = self._attributes[attr]
+        if (
+            self.model == "310A2111"
+            and self.subtype == SUBTYPE_310A2111
+            and (
+                DeviceAttributes.flex_zone_setting_temp in new_status
+                or DeviceAttributes.variable_mode in new_status
+            )
+        ):
+            # This model reports its preset through the setting temperature,
+            # not the generic variable-mode byte. Emit the derived attribute
+            # as well so consumers refresh on temperature-only updates.
+            temperature = self._attributes[DeviceAttributes.flex_zone_setting_temp]
+            mode = (
+                FLEX_ZONE_MODE_BY_TEMPERATURE.get(temperature)
+                if isinstance(temperature, (int, float))
+                and not isinstance(temperature, bool)
+                else None
+            )
+            self._attributes[DeviceAttributes.variable_mode] = mode
+            new_status[DeviceAttributes.variable_mode] = mode
         return new_status
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:

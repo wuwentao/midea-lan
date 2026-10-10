@@ -7,7 +7,7 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.ca import DeviceAttributes, MideaCADevice
-from midealan.message import MessageType
+from midealan.message import ListTypes, MessageType
 
 
 def make_device(model: str = "310A2111", subtype: int = 56) -> MideaCADevice:
@@ -41,6 +41,18 @@ def test_wire_temperature_overrides_generic_mode(temperature: int, mode: str) ->
     assert status[DeviceAttributes.variable_mode] == mode
     assert device.get_attribute(DeviceAttributes.variable_mode) == mode
     assert status[DeviceAttributes.flex_zone_setting_temp] == temperature
+
+
+def test_wire_x01_temperature_update_derives_mode() -> None:
+    """The Lua X01 path reports lVariableTemperature at byte 39."""
+    device = make_device()
+    body = bytearray(50)
+    body[0] = ListTypes.X01
+    body[39] = 2 + 19
+    header = bytearray([0xAA] + [0] * 7 + [ProtocolVersion.V1, MessageType.query])
+    status = device.process_message(bytes(header + body + bytearray([0])))
+    assert status[DeviceAttributes.flex_zone_setting_temp] == 2
+    assert status[DeviceAttributes.variable_mode] == "treasure"
 
 
 @pytest.mark.parametrize("temperature", [6, 6.0, 2, 2.0, 0, 0.0])

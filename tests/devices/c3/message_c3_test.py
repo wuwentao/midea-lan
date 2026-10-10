@@ -12,6 +12,7 @@ from midealan.devices.c3.message import (
     MessageC3Response,
     MessageQuery,
     MessageQueryBasic,
+    MessageQueryDiagnostic,
     MessageQueryDisinfect,
     MessageQueryECO,
     MessageQueryHMIPara,
@@ -59,6 +60,10 @@ class TestC3MessageQuery:
 
         msg = MessageQueryECO(protocol_version=ProtocolVersion.V1)
         expected_body = bytearray([0x7])
+        assert msg.body == expected_body
+
+        msg = MessageQueryDiagnostic(protocol_version=ProtocolVersion.V1)
+        expected_body = bytearray([0xD])
         assert msg.body == expected_body
 
         msg = MessageQueryInstall(protocol_version=ProtocolVersion.V1)
@@ -1817,3 +1822,98 @@ class TestC3ErrorCodeDescription:
 
         assert response.error_code == error_code
         assert response.error_code_description == expected_description
+
+
+class TestC3ShortProtocol171000:
+    """Regression tests for the 171000-series short C3 protocol."""
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.query],
+    )
+
+    def test_short_x01_body_uses_water_heater_layout(self) -> None:
+        """Test short X01 setpoint byte is not exposed as an invalid mode."""
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[2] = 0x02
+        body[3] = 105
+        body[4] = 105
+        body[16] = 0xA0
+        body[24] = 0x10
+
+        response = MessageC3Response(bytes(self.HEADER + body + bytearray([0x00])))
+
+        assert response.mode == C3DeviceMode.HEAT
+        assert response.mode_auto == C3DeviceMode.HEAT
+        assert response.dhw_power is True
+        assert response.dhw_target_temp == 70.0
+        assert response.dhw_temp_min == 55.0
+        assert response.dhw_temp_max == 70.0
+        assert response.status_dhw is True
+        assert response.status_heating is True
+        assert response.compressor_on is True
+        assert response.tbh is True
+        assert not hasattr(response, "tank_actual_temperature")
+
+    def test_notify2_short_length_non_x01_uses_standard_basic_layout(self) -> None:
+        """Test notify2 short-body detection is restricted to X01 frames."""
+        header = bytearray(self.HEADER)
+        header[-1] = MessageType.notify2
+        body = bytearray(50)
+        body[0] = ListTypes.X07
+        body[4] = 105
+        body[21] = 20
+
+        response = MessageC3Response(bytes(header + body + bytearray([0x00])))
+
+        assert response.body_type == ListTypes.X07
+        assert response.mode == 105
+        assert response.dhw_temp_min == 20.0
+
+    def test_x0d_diagnostic_body_updates_live_values(self) -> None:
+        """Test X0D diagnostic frames expose tank temperature and power."""
+        body = bytearray(52)
+        body[0] = ListTypes.X0D
+        body[7] = 0x02
+        body[8] = 0xAE
+        body[9] = 0x02
+        body[10] = 0xBC
+        body[18] = 0x12
+        body[19] = 0x20
+        body[29] = 0x01
+        body[36] = 0x08
+        body[37] = 0x7B
+        body[38] = 0x4D
+
+        response = MessageC3Response(bytes(self.HEADER + body + bytearray([0x00])))
+
+        assert response.body_type == ListTypes.X0D
+        assert response.temp_tw_out == 68.6
+        assert response.tank_actual_temperature == 70.0
+        assert response.instant_power0 == 4640
+        assert response.status_dhw is True
+        assert response.total_energy_consumption == 0x087B4D
+
+    def test_x0d_zero_tank_temperature_falls_back_to_water_temperature(self) -> None:
+        """Test active-heating X0D frames keep tank temperature useful."""
+        body = bytearray(52)
+        body[0] = ListTypes.X0D
+        body[7] = 0x01
+        body[8] = 0xF4
+        body[29] = 0x01
+
+        response = MessageC3Response(bytes(self.HEADER + body + bytearray([0x00])))
+
+        assert response.temp_tw_out == 50.0
+        assert response.tank_actual_temperature == 50.0
+        assert response.status_dhw is True
+
+    def test_x0d_non_boolean_dhw_status_is_ignored(self) -> None:
+        """Test unknown X0D status bytes do not expose a boolean state."""
+        body = bytearray(52)
+        body[0] = ListTypes.X0D
+        body[29] = 0x49
+
+        response = MessageC3Response(bytes(self.HEADER + body + bytearray([0x00])))
+
+        assert not hasattr(response, "status_dhw")

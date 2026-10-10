@@ -133,6 +133,8 @@ class DeviceAttributes(StrEnum):
 class MideaCDDevice(MideaDevice):
     """Midea CD device."""
 
+    _rsj000cb_secondary_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
+
     _modes: ClassVar[dict[int, str]] = {
         0x00: "none",
         0x01: "energy_save",
@@ -274,6 +276,44 @@ class MideaCDDevice(MideaDevice):
             return round((value - 30.0) / 2)
         # new protocol
         return value
+
+    @staticmethod
+    def _old_temperature_value(value: float) -> float:
+        """Decode old-protocol half-degree temperature values."""
+        return round((value - 30.0) / 2, 1)
+
+    def _rsj000cb_secondary_temperature(
+        self,
+        message: object,
+        attr: DeviceAttributes,
+        raw_value: float,
+    ) -> float | None:
+        """Decode RSJ000CB secondary temperatures for test branch validation."""
+        if self.model not in self._rsj000cb_secondary_temperature_models:
+            return None
+        if attr == DeviceAttributes.outdoor_temperature:
+            condenser_raw = getattr(
+                message,
+                str(DeviceAttributes.condenser_temperature),
+                raw_value,
+            )
+            return self._old_temperature_value(condenser_raw)
+        if attr == DeviceAttributes.condenser_temperature:
+            outdoor_raw = getattr(
+                message,
+                str(DeviceAttributes.outdoor_temperature),
+                raw_value,
+            )
+            return self._old_temperature_value(outdoor_raw)
+        if attr in [
+            DeviceAttributes.top_temperature,
+            DeviceAttributes.bottom_temperature,
+            DeviceAttributes.compressor_temperature,
+        ]:
+            return self._old_temperature_value(
+                raw_value,
+            )
+        return None
 
     def _temperature_to_value(self, value: float) -> float:
         # celsius to fahrenheit
@@ -454,21 +494,37 @@ class MideaCDDevice(MideaDevice):
                     DeviceAttributes.min_temperature,
                     DeviceAttributes.target_temperature,
                     DeviceAttributes.current_temperature,
+                    DeviceAttributes.top_temperature,
+                    DeviceAttributes.bottom_temperature,
                     DeviceAttributes.outdoor_temperature,
                     DeviceAttributes.condenser_temperature,
                     DeviceAttributes.compressor_temperature,
                 ]:
                     is_outdoor_temp = attr == DeviceAttributes.outdoor_temperature
                     is_current_temp = attr == DeviceAttributes.current_temperature
-                    parsed = self._value_to_temperature(
+                    parsed = self._rsj000cb_secondary_temperature(
+                        message,
+                        attr,
                         raw_value,
-                        force_fahrenheit=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_outdoor_temp
-                        ),
-                        force_old=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_current_temp
-                        ),
                     )
+                    if parsed is None:
+                        if attr in [
+                            DeviceAttributes.top_temperature,
+                            DeviceAttributes.bottom_temperature,
+                        ]:
+                            parsed = raw_value
+                        else:
+                            parsed = self._value_to_temperature(
+                                raw_value,
+                                force_fahrenheit=(
+                                    self.model in ["RSJRAC06", "RSJRAC07"]
+                                    and is_outdoor_temp
+                                ),
+                                force_old=(
+                                    self.model in ["RSJRAC06", "RSJRAC07"]
+                                    and is_current_temp
+                                ),
+                            )
                     # Defensive: ignore invalid zeros for min/max/target/current
                     # at startup
                     if attr in [

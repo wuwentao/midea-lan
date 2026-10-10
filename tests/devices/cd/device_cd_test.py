@@ -693,6 +693,39 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
         assert status[DeviceAttributes.current_temperature.value] == 40
 
+    def test_process_message_rsj000cb_secondary_temperatures(self) -> None:
+        """RSJ000CB keeps setpoint temps raw and decodes secondary temps as old."""
+        device = _make_device(model="RSJ000CB")
+        assert device._lua_protocol == LuaProtocol.new
+
+        class FakeMessage:
+            fahrenheit = False
+            target_temperature = 49.0
+            current_temperature = 52.0
+            top_temperature = 135.0
+            bottom_temperature = 115.0
+            condenser_temperature = 73.0
+            outdoor_temperature = 95.0
+            compressor_temperature = 25.0
+            max_temperature = 70.0
+            min_temperature = 38.0
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.target_temperature.value] == 49.0
+        assert status[DeviceAttributes.current_temperature.value] == 52.0
+        assert status[DeviceAttributes.max_temperature.value] == 70.0
+        assert status[DeviceAttributes.min_temperature.value] == 38.0
+        assert status[DeviceAttributes.top_temperature.value] == 52.5
+        assert status[DeviceAttributes.bottom_temperature.value] == 42.5
+        assert status[DeviceAttributes.outdoor_temperature.value] == 21.5
+        assert status[DeviceAttributes.condenser_temperature.value] == 32.5
+        assert status[DeviceAttributes.compressor_temperature.value] == -2.5
+
     # ------------------------------------------------------------------ #
     # set_attribute branches                                               #
     # ------------------------------------------------------------------ #

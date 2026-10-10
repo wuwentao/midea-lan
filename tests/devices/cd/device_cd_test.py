@@ -717,6 +717,28 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.condenser_temperature.value] == 22
         assert status[DeviceAttributes.compressor_temperature.value] == -4
 
+    def test_process_message_old_auxiliary_protocol_precedes_fahrenheit_flag(
+        self,
+    ) -> None:
+        """RSJ000CB old auxiliary scaling wins over the global unit flag."""
+        device = _make_device(model="RSJ000CB")
+
+        class FakeMessage:
+            fahrenheit = True
+            outdoor_temperature = 91.0
+            condenser_temperature = 73.0
+            compressor_temperature = 23.0
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == 30
+        assert status[DeviceAttributes.condenser_temperature.value] == 22
+        assert status[DeviceAttributes.compressor_temperature.value] == -4
+
     # ------------------------------------------------------------------ #
     # set_attribute branches                                               #
     # ------------------------------------------------------------------ #

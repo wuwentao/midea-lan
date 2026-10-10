@@ -133,6 +133,8 @@ class DeviceAttributes(StrEnum):
 class MideaCDDevice(MideaDevice):
     """Midea CD device."""
 
+    _old_auxiliary_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
+
     _modes: ClassVar[dict[int, str]] = {
         0x00: "none",
         0x01: "energy_save",
@@ -265,12 +267,15 @@ class MideaCDDevice(MideaDevice):
         force_fahrenheit: bool,
         force_old: bool,
     ) -> float:
+        # Model-specific old scaling must take precedence over the global
+        # Fahrenheit flag for mixed-encoding auxiliary fields.
+        if force_old:
+            return round((value - 30.0) / 2)
         # fahrenheit to celsius
         if self._fahrenheit or force_fahrenheit:
             return self.fahrenheit_to_celsius(value, True if force_fahrenheit else None)
-        # celsius
-        # old protocol
-        if self._lua_protocol == LuaProtocol.old or force_old:
+        # celsius old protocol
+        if self._lua_protocol == LuaProtocol.old:
             return round((value - 30.0) / 2)
         # new protocol
         return value
@@ -460,13 +465,22 @@ class MideaCDDevice(MideaDevice):
                 ]:
                     is_outdoor_temp = attr == DeviceAttributes.outdoor_temperature
                     is_current_temp = attr == DeviceAttributes.current_temperature
+                    is_auxiliary_temp = attr in [
+                        DeviceAttributes.outdoor_temperature,
+                        DeviceAttributes.condenser_temperature,
+                        DeviceAttributes.compressor_temperature,
+                    ]
                     parsed = self._value_to_temperature(
                         raw_value,
                         force_fahrenheit=(
                             self.model in ["RSJRAC06", "RSJRAC07"] and is_outdoor_temp
                         ),
                         force_old=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_current_temp
+                            (self.model in ["RSJRAC06", "RSJRAC07"] and is_current_temp)
+                            or (
+                                self.model in self._old_auxiliary_temperature_models
+                                and is_auxiliary_temp
+                            )
                         ),
                     )
                     # Defensive: ignore invalid zeros for min/max/target/current

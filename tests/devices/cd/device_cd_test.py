@@ -693,6 +693,52 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
         assert status[DeviceAttributes.current_temperature.value] == 40
 
+    def test_process_message_old_auxiliary_protocol_rsj000cb(self) -> None:
+        """RSJ000CB keeps new main temps and uses old auxiliary scaling."""
+        device = _make_device(model="RSJ000CB")
+        assert device._lua_protocol == LuaProtocol.new
+
+        class FakeMessage:
+            target_temperature = 38.0
+            current_temperature = 57.0
+            outdoor_temperature = 91.0
+            condenser_temperature = 73.0
+            compressor_temperature = 23.0
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.target_temperature.value] == 38.0
+        assert status[DeviceAttributes.current_temperature.value] == 57.0
+        assert status[DeviceAttributes.outdoor_temperature.value] == 30
+        assert status[DeviceAttributes.condenser_temperature.value] == 22
+        assert status[DeviceAttributes.compressor_temperature.value] == -4
+
+    def test_process_message_old_auxiliary_protocol_precedes_fahrenheit_flag(
+        self,
+    ) -> None:
+        """RSJ000CB old auxiliary scaling wins over the global unit flag."""
+        device = _make_device(model="RSJ000CB")
+
+        class FakeMessage:
+            fahrenheit = True
+            outdoor_temperature = 91.0
+            condenser_temperature = 73.0
+            compressor_temperature = 23.0
+
+        with patch(
+            "midealan.devices.cd.MessageCDResponse",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == 30
+        assert status[DeviceAttributes.condenser_temperature.value] == 22
+        assert status[DeviceAttributes.compressor_temperature.value] == -4
+
     # ------------------------------------------------------------------ #
     # set_attribute branches                                               #
     # ------------------------------------------------------------------ #

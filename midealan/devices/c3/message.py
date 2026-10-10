@@ -21,6 +21,28 @@ TEMP_NEG_VALUE = 127
 TEMP_PROBE_DISCONNECTED = 0x7F
 CURVE_SETPOINT_INACTIVE = 0xFF
 
+C3_SHORT_X01_BODY_LENGTH = 50
+C3_SHORT_X01_POWER_OFFSET = 2
+C3_SHORT_X01_SETPOINT_OFFSET = 3
+C3_SHORT_X01_MODE_SENTINEL_OFFSET = 4
+C3_SHORT_X01_STATUS_OFFSET = 16
+C3_SHORT_X01_TBH_OFFSET = 24
+C3_SHORT_SETPOINT_BIAS = 35
+C3_SHORT_DHW_POWER_MASK = 0x02
+C3_SHORT_DHW_RUNNING_MASK = 0x20
+C3_SHORT_COMPRESSOR_RUNNING_MASK = 0x80
+C3_SHORT_TBH_MASK = 0x10
+C3_SHORT_DHW_TEMP_MIN = 55.0
+C3_SHORT_DHW_TEMP_MAX = 70.0
+
+C3_DIAGNOSTIC_WATER_TEMP_OFFSET = 7
+C3_DIAGNOSTIC_TANK_TEMP_OFFSET = 9
+C3_DIAGNOSTIC_INSTANT_POWER_OFFSET = 18
+C3_DIAGNOSTIC_DHW_STATUS_OFFSET = 29
+C3_DIAGNOSTIC_TOTAL_COUNTER_OFFSET = 36
+C3_DIAGNOSTIC_TEMP_FACTOR = 10.0
+C3_DIAGNOSTIC_BODY_MIN_LENGTH = C3_DIAGNOSTIC_TOTAL_COUNTER_OFFSET + 3
+
 
 def _temp_or_none(raw: int) -> int | None:
     """Map the disconnected-probe sentinel (0x7F) to None."""
@@ -30,6 +52,23 @@ def _temp_or_none(raw: int) -> int | None:
 def _setpoint_or_none(raw: int) -> int | None:
     """Map the curve-inactive sentinel (0xFF) to None."""
     return None if raw == CURVE_SETPOINT_INACTIVE else raw
+
+
+def _read_be16(body: bytearray, offset: int) -> int:
+    """Read an unsigned big-endian 16-bit value."""
+    return (MessageBody.read_byte(body, offset) << 8) + MessageBody.read_byte(
+        body,
+        offset + 1,
+    )
+
+
+def _read_be24(body: bytearray, offset: int) -> int:
+    """Read an unsigned big-endian 24-bit value."""
+    return (
+        (MessageBody.read_byte(body, offset) << 16)
+        + (MessageBody.read_byte(body, offset + 1) << 8)
+        + MessageBody.read_byte(body, offset + 2)
+    )
 
 
 # Serial-number blocks appended to the X10 telemetry frame. The lua splits
@@ -255,6 +294,14 @@ class MessageQueryUnitPara(MessageQuery):
         super().__init__(protocol_version, ListTypes.X10)
 
 
+class MessageQueryDiagnostic(MessageQuery):
+    """C3 message query diagnostic data."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize C3 message query diagnostic data."""
+        super().__init__(protocol_version, ListTypes.X0D)
+
+
 class MessageQueryHMIPara(MessageQuery):
     """C3 Message query HMIPARA."""
 
@@ -457,6 +504,85 @@ class C3BasicBody(MessageBody):
         self.tbh_control = body[data_offset + 23] & 0x80 > 0
         self.sys_energy_ana_en = body[data_offset + 23] & 0x20 > 0
         self.hmi_energy_ana_set_en = body[data_offset + 23] & 0x40 > 0
+
+
+class C3ShortBasicBody(MessageBody):
+    """C3 short X01 body used by 171000-series heat-pump water heaters."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize C3 short basic message body."""
+        super().__init__(body)
+        power_byte = body[C3_SHORT_X01_POWER_OFFSET]
+        status_byte = body[C3_SHORT_X01_STATUS_OFFSET]
+        self.zone1_power = False
+        self.zone2_power = False
+        self.dhw_power = bool(power_byte & C3_SHORT_DHW_POWER_MASK)
+        self.zone1_curve = False
+        self.zone2_curve = False
+        self.fast_dhw = False
+        self.remote_onoff = None
+        self.heat = False
+        self.cool = False
+        self.dhw = True
+        self.double_zone = False
+        self.zone_temp_type = [True, True]
+        self.room_thermal_support = False
+        self.room_thermal_state = False
+        self.time_set = False
+        self.silent_mode = False
+        self.holiday_on = False
+        self.eco_mode = False
+        self.mode = C3DeviceMode.HEAT
+        self.mode_auto = C3DeviceMode.HEAT
+        self.zone_target_temp = [50.0, 25.0]
+        raw_setpoint = body[C3_SHORT_X01_SETPOINT_OFFSET]
+        if raw_setpoint >= C3_SHORT_SETPOINT_BIAS:
+            self.dhw_target_temp = float(raw_setpoint - C3_SHORT_SETPOINT_BIAS)
+            self.current_lwt_target = self.dhw_target_temp
+        self.room_target_temp = 25.0
+        self.zone_heating_temp_max = [C3_SHORT_DHW_TEMP_MAX, C3_SHORT_DHW_TEMP_MAX]
+        self.zone_heating_temp_min = [C3_SHORT_DHW_TEMP_MIN, C3_SHORT_DHW_TEMP_MIN]
+        self.zone_cooling_temp_max = [C3_SHORT_DHW_TEMP_MAX, C3_SHORT_DHW_TEMP_MAX]
+        self.zone_cooling_temp_min = [C3_SHORT_DHW_TEMP_MIN, C3_SHORT_DHW_TEMP_MIN]
+        self.room_temp_max = C3_SHORT_DHW_TEMP_MAX
+        self.room_temp_min = C3_SHORT_DHW_TEMP_MIN
+        self.dhw_temp_max = C3_SHORT_DHW_TEMP_MAX
+        self.dhw_temp_min = C3_SHORT_DHW_TEMP_MIN
+        self.error_code = 0
+        self.error_code_description = "No error"
+        self.tbh = bool(body[C3_SHORT_X01_TBH_OFFSET] & C3_SHORT_TBH_MASK)
+        self.tbh_control = False
+        self.sys_energy_ana_en = False
+        self.hmi_energy_ana_set_en = False
+        self.status_dhw = bool(status_byte & C3_SHORT_DHW_RUNNING_MASK)
+        self.status_heating = bool(status_byte & C3_SHORT_COMPRESSOR_RUNNING_MASK)
+        self.status_tbh = self.tbh
+        self.compressor_on = self.status_heating
+
+
+class C3DiagnosticBody(MessageBody):
+    """C3 X0D diagnostic body used by 171000-series devices."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize C3 diagnostic message body."""
+        super().__init__(body)
+        water_temperature = (
+            _read_be16(body, C3_DIAGNOSTIC_WATER_TEMP_OFFSET)
+            / C3_DIAGNOSTIC_TEMP_FACTOR
+        )
+        tank_temperature = (
+            _read_be16(body, C3_DIAGNOSTIC_TANK_TEMP_OFFSET) / C3_DIAGNOSTIC_TEMP_FACTOR
+        )
+        self.temp_tw_out = water_temperature
+        self.tank_actual_temperature = tank_temperature or water_temperature
+        self.instant_power0 = _read_be16(body, C3_DIAGNOSTIC_INSTANT_POWER_OFFSET)
+        dhw_status = MessageBody.read_byte(body, C3_DIAGNOSTIC_DHW_STATUS_OFFSET)
+        if dhw_status in (0, 1):
+            self.status_dhw = bool(dhw_status)
+        self.total_energy_consumption = _read_be24(
+            body,
+            C3_DIAGNOSTIC_TOTAL_COUNTER_OFFSET,
+        )
 
 
 class C3EnergyBody(MessageBody):
@@ -870,30 +996,58 @@ class MessageC3Response(MessageResponse):
     current_unit_capacity: int
     total_energy_consumption: int
     total_produced_energy: int
+    mode: C3DeviceMode
+    mode_auto: C3DeviceMode
+    dhw_power: bool
+    dhw_target_temp: float
+    dhw_temp_min: float
+    dhw_temp_max: float
+    status_dhw: bool
+    status_heating: bool
+    compressor_on: bool
+    tbh: bool
+    temp_tw_out: float
+    tank_actual_temperature: float
+    instant_power0: int
 
     def __init__(self, message: bytes) -> None:
         """Initialize C3 message response."""
         super().__init__(bytearray(message))
+        body = super().body
         if (
             self.message_type
             in [MessageType.set, MessageType.notify1, MessageType.query]
             and self.body_type == ListTypes.X01
         ) or self.message_type == MessageType.notify2:
-            self.set_body(C3BasicBody(super().body, data_offset=1))
+            if (
+                len(body) == C3_SHORT_X01_BODY_LENGTH
+                and self.body_type == ListTypes.X01
+                and body[C3_SHORT_X01_MODE_SENTINEL_OFFSET]
+                not in C3DeviceMode._value2member_map_
+            ):
+                self.set_body(C3ShortBasicBody(body))
+            else:
+                self.set_body(C3BasicBody(body, data_offset=1))
+        elif (
+            self.message_type in [MessageType.notify1, MessageType.query]
+            and self.body_type == ListTypes.X0D
+            and len(body) >= C3_DIAGNOSTIC_BODY_MIN_LENGTH
+        ):
+            self.set_body(C3DiagnosticBody(body))
         elif (
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X04
         ):
-            self.set_body(C3EnergyBody(super().body, data_offset=1))
+            self.set_body(C3EnergyBody(body, data_offset=1))
         elif self.message_type == MessageType.query and self.body_type == ListTypes.X05:
-            self.set_body(C3SilenceBody(super().body, data_offset=1))
+            self.set_body(C3SilenceBody(body, data_offset=1))
         elif (
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
         ):
-            self.set_body(C3UnitParaUpBody(super().body, data_offset=1))
+            self.set_body(C3UnitParaUpBody(body, data_offset=1))
         elif self.body_type == ListTypes.X07:
-            self.set_body(C3ECOBody(super().body, data_offset=1))
+            self.set_body(C3ECOBody(body, data_offset=1))
         elif self.body_type == ListTypes.X09:
-            self.set_body(C3DisinfectBody(super().body, data_offset=1))
+            self.set_body(C3DisinfectBody(body, data_offset=1))
         elif self.body_type == ListTypes.X10:
-            self.set_body(C3UnitParaBody(super().body, data_offset=1))
+            self.set_body(C3UnitParaBody(body, data_offset=1))
         self.set_attr()

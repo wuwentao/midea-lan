@@ -12,10 +12,12 @@ from midealan.devices.c3 import (
 from midealan.devices.c3.message import (
     C3DeviceMode,
     MessageQueryBasic,
+    MessageQueryDiagnostic,
     MessageQueryDisinfect,
     MessageQueryECO,
     MessageQuerySilence,
 )
+from midealan.message import ListTypes, MessageQuestCustom, MessageType
 
 
 class TestMideaC3Device:
@@ -169,6 +171,396 @@ class TestMideaC3Device:
         assert isinstance(queries[1], MessageQueryDisinfect)
         assert isinstance(queries[2], MessageQuerySilence)
         assert isinstance(queries[3], MessageQueryECO)
+
+    def test_build_query_171000_adds_diagnostic_poll(self) -> None:
+        """Test 171000-series devices poll X0D diagnostic data."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+
+        queries = device.build_query()
+
+        assert len(queries) == 6
+        assert isinstance(queries[-1], MessageQueryDiagnostic)
+        assert device.temperature_step == 1.0
+
+    def test_short_protocol_setpoint_uses_cached_x01_body(self) -> None:
+        """Test 171000 SET mirrors the cached short X01 body."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[2] = 0x02
+        body[3] = 105
+        body[4] = 105
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_target_temp.value, 68.0)
+
+        mock_send_command.assert_called_once()
+        cmd_type, cmd_body = mock_send_command.call_args.args
+        assert cmd_type == MessageType.set
+        assert cmd_body[0] == ListTypes.X01
+        assert cmd_body[3] == 103
+        assert len(cmd_body) == 50
+
+    def test_short_protocol_dhw_power_uses_cached_x01_body(self) -> None:
+        """Test 171000 DHW power writes toggle the short-protocol power bit."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[2] = 0x02
+        body[4] = 105
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_power.value, False)
+
+        cmd_body = mock_send_command.call_args.args[1]
+        assert cmd_body[2] == 0x00
+
+    def test_short_protocol_dhw_power_on_uses_cached_x01_body(self) -> None:
+        """Test 171000 DHW power-on writes set the short-protocol power bit."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[4] = 105
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_power.value, True)
+
+        cmd_body = mock_send_command.call_args.args[1]
+        assert cmd_body[2] == 0x02
+
+    def test_short_protocol_unsupported_attribute_does_not_fall_through(
+        self,
+    ) -> None:
+        """Test 171000 unsupported writes never use the standard SET layout."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+
+        with (
+            patch.object(device, "send_command") as mock_send_command,
+            patch.object(device, "build_send") as mock_build_send,
+        ):
+            device.set_attribute(DeviceAttributes.zone1_power.value, True)
+            device.set_attribute("unknown_attribute", True)
+
+        mock_send_command.assert_not_called()
+        mock_build_send.assert_not_called()
+
+    def test_short_protocol_send_short_set_reports_unsupported_attr(self) -> None:
+        """Test the short SET helper reports unsupported enum attributes."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+
+        assert device._send_short_set(DeviceAttributes.zone1_power, True) is False
+
+    def test_short_protocol_ignores_non_x01_cache_candidates(self) -> None:
+        """Test 171000 cache ignores short bodies that are not X01 responses."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(52)
+        body[0] = ListTypes.X0D
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_target_temp.value, 68.0)
+
+        mock_send_command.assert_not_called()
+
+    def test_short_protocol_tbh_uses_cached_x01_body(self) -> None:
+        """Test 171000 TBH writes toggle the observed short-protocol bit."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[4] = 105
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.tbh.value, True)
+
+        cmd_body = mock_send_command.call_args.args[1]
+        assert cmd_body[24] == 0x10
+
+    def test_short_protocol_tbh_off_uses_cached_x01_body(self) -> None:
+        """Test 171000 TBH off writes clear the observed short-protocol bit."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.query,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[4] = 105
+        body[24] = 0x10
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.tbh.value, False)
+
+        cmd_body = mock_send_command.call_args.args[1]
+        assert cmd_body[24] == 0x00
+
+    def test_short_protocol_write_without_cached_body_is_ignored(self) -> None:
+        """Test 171000 supported writes wait for the first short X01 response."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_target_temp.value, 68.0)
+
+        mock_send_command.assert_not_called()
+
+    def test_short_protocol_caches_set_x01_response(self) -> None:
+        """Test 171000 caches set echoes as well as query responses."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        header = bytearray(
+            [
+                0xAA,
+                0x00,
+                0xC3,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                MessageType.set,
+            ],
+        )
+        body = bytearray(50)
+        body[0] = ListTypes.X01
+        body[4] = 105
+        device.process_message(bytes(header + body + bytearray([0x00])))
+
+        with patch.object(device, "send_command") as mock_send_command:
+            device.set_attribute(DeviceAttributes.dhw_target_temp.value, 67.0)
+
+        cmd_body = mock_send_command.call_args.args[1]
+        assert cmd_body[3] == 102
+
+    def test_short_protocol_raw_build_send_logs_then_delegates(self) -> None:
+        """Test raw short commands still use the normal transport path."""
+        device = MideaC3Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="171000AU",
+            subtype=1,
+            customize="",
+        )
+        cmd = MessageQuestCustom(
+            device_type=device.device_type,
+            protocol_version=ProtocolVersion.V1,
+            cmd_type=MessageType.set,
+            cmd_body=bytearray([ListTypes.X01, 0x00]),
+        )
+
+        with patch.object(device, "send_message") as mock_send_message:
+            device.build_send(cmd)
+
+        mock_send_message.assert_called_once()
 
     def test_process_message(self) -> None:
         """Test process message."""

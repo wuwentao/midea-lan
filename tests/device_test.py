@@ -130,6 +130,9 @@ class TestMideaDevice:
             attributes={},
             mac="1234567890ab",
             serial_number="test_serial",
+            sn8="9d52c159",
+            manufacturer_code="1234",
+            cloud_name="MSmartHome",
         )
 
     def test_initial_attributes(self) -> None:
@@ -142,6 +145,9 @@ class TestMideaDevice:
         assert self.device.subtype == 1
         assert self.device.mac == "1234567890ab"
         assert self.device.serial_number == "test_serial"
+        assert self.device.sn8 == "9d52c159"
+        assert self.device.manufacturer_code == "1234"
+        assert self.device.cloud_name == "MSmartHome"
 
     def test_get_attribute(self) -> None:
         """Test get_attribute reads from the internal attributes dict."""
@@ -1590,7 +1596,12 @@ class TestMideaDevice:
             self.device.set_attribute("power", True)
 
     @staticmethod
-    def _make_device(serial_number: str | None) -> MideaDevice:
+    def _make_device(
+        serial_number: str | None,
+        sn8: str | None = None,
+        manufacturer_code: str | None = None,
+        cloud_name: str | None = None,
+    ) -> MideaDevice:
         return MideaDevice(
             name="Test Device",
             device_id=1,
@@ -1605,6 +1616,9 @@ class TestMideaDevice:
             attributes={},
             mac="1234567890ab",
             serial_number=serial_number,
+            sn8=sn8,
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
         )
 
     def test_serial_number_normalization(self) -> None:
@@ -1615,3 +1629,37 @@ class TestMideaDevice:
         assert self._make_device("\x00" * 32).serial_number is None
         assert self._make_device(None).serial_number is None
         assert self._make_device("ABC123\x00\x00").serial_number == "ABC123"
+
+    def test_sn8_normalization(self) -> None:
+        """Test sn8 normalization in __init__."""
+        assert self._make_device(None, sn8="9d52c159").sn8 == "9d52c159"
+        assert self._make_device(None, sn8="9d52c159\x00").sn8 == "9d52c159"
+        # Empty, NUL-padded, None or the "00000000" placeholder normalize to None.
+        assert self._make_device(None, sn8="").sn8 is None
+        assert self._make_device(None, sn8="\x00" * 8).sn8 is None
+        assert self._make_device(None, sn8="00000000").sn8 is None
+        assert self._make_device(None, sn8=None).sn8 is None
+
+    def test_manufacturer_code_normalization(self) -> None:
+        """Test manufacturer_code normalization in __init__."""
+        assert self._make_device(None, manufacturer_code="1234").manufacturer_code == (
+            "1234"
+        )
+        # Empty, NUL-padded, None or the "0000" placeholder normalize to None.
+        assert self._make_device(None, manufacturer_code="").manufacturer_code is None
+        assert self._make_device(None, manufacturer_code="0000").manufacturer_code is (
+            None
+        )
+        assert self._make_device(None, manufacturer_code=None).manufacturer_code is None
+
+    def test_cloud_name_normalization(self) -> None:
+        """Test cloud_name normalization in __init__."""
+        assert self._make_device(None, cloud_name="MSmartHome").cloud_name == (
+            "MSmartHome"
+        )
+        assert self._make_device(None, cloud_name="  MSmartHome  ").cloud_name == (
+            "MSmartHome"
+        )
+        # Empty or None cloud names normalize to None.
+        assert self._make_device(None, cloud_name="").cloud_name is None
+        assert self._make_device(None, cloud_name=None).cloud_name is None

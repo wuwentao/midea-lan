@@ -88,6 +88,9 @@ class MideaDeviceInitKwargs(TypedDict):
     subtype: int
     mac: NotRequired[str | None]
     serial_number: NotRequired[str | None]
+    sn8: NotRequired[str | None]
+    manufacturer_code: NotRequired[str | None]
+    cloud_name: NotRequired[str | None]
 
 
 class MideaDevice(threading.Thread):
@@ -134,6 +137,26 @@ class MideaDevice(threading.Thread):
         # empty ``apc_sn`` attribute; normalize these to None (mirrors set_mac).
         sn = kwargs.get("serial_number")
         self._serial_number = (sn.strip("\x00").strip() or None) if sn else None
+        # sn8 and manufacturer_code come from the cloud at setup time; the cloud
+        # defaults them to "00000000"/"0000" when absent. Normalize those
+        # placeholders (and blanks) to None so the debug log and consumers can
+        # distinguish "unknown" from a real value.
+        sn8 = kwargs.get("sn8")
+        self._sn8 = (
+            (sn8.strip("\x00").strip() or None)
+            if sn8 and sn8.strip("\x00").strip() != "00000000"
+            else None
+        )
+        manufacturer_code = kwargs.get("manufacturer_code")
+        self._manufacturer_code = (
+            (manufacturer_code.strip("\x00").strip() or None)
+            if manufacturer_code and manufacturer_code.strip("\x00").strip() != "0000"
+            else None
+        )
+        # cloud_name records which Midea cloud account/service the user used to
+        # add the device at setup time (it is not part of the device payload).
+        cloud_name = kwargs.get("cloud_name")
+        self._cloud_name = (cloud_name.strip() or None) if cloud_name else None
 
     _fahrenheit_default: ClassVar[bool] = False
 
@@ -218,6 +241,21 @@ class MideaDevice(threading.Thread):
     def serial_number(self) -> str | None:
         """Device serial number."""
         return self._serial_number
+
+    @property
+    def sn8(self) -> str | None:
+        """Device SN8 (8-char model identifier from the cloud)."""
+        return self._sn8
+
+    @property
+    def manufacturer_code(self) -> str | None:
+        """Device manufacturer (enterprise) code from the cloud."""
+        return self._manufacturer_code
+
+    @property
+    def cloud_name(self) -> str | None:
+        """Cloud account/service the device was added with."""
+        return self._cloud_name
 
     @staticmethod
     def fetch_v2_message(msg: bytes) -> tuple[list, bytes]:
@@ -633,10 +671,14 @@ class MideaDevice(threading.Thread):
             _LOGGER.debug("[%s] Appliance query Received: %s", self._device_id, message)
             self._message_protocol_version = message.protocol_version
             _LOGGER.debug(
-                "[%s] device model %s subtype %s, device protocol %s, msg protocol %s",
+                "[%s] device model %s subtype %s sn8 %s manufacturer_code %s "
+                "cloud_name %s, device protocol %s, msg protocol %s",
                 self._device_id,
                 self._model,
                 self._subtype,
+                self._sn8,
+                self._manufacturer_code,
+                self._cloud_name,
                 self._device_protocol_version,
                 self._message_protocol_version,
             )

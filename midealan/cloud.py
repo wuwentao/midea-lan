@@ -8,7 +8,6 @@ import time
 from asyncio import Lock
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from hashlib import md5
 from http import HTTPStatus
 from pathlib import Path
 from secrets import token_hex
@@ -16,8 +15,6 @@ from typing import Any, cast
 
 import aiofiles
 from aiohttp import ClientConnectionError, ClientError, ClientSession, ClientTimeout
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
 
 from midealan.exceptions import CloudAuthError, CloudError, ElementMissing
 
@@ -26,6 +23,7 @@ from .security import (
     MeijuCloudSecurity,
     MideaAirSecurity,
     MSmartCloudSecurity,
+    ToshibaIOLifeSecurity,
 )
 
 SN8_MIN_SERIAL_LENGTH = 17
@@ -1064,12 +1062,13 @@ class MideaAirCloud(MideaCloud):
         session: ClientSession,
         account: str,
         password: str,
+        security: CloudSecurity | None = None,
     ) -> None:
         """Initialize Midea Air Cloud."""
         cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
         super().__init__(
             session=session,
-            security=MideaAirSecurity(login_key=cloud_data["app_key"]),
+            security=security or MideaAirSecurity(login_key=cloud_data["app_key"]),
             app_id=cloud_data["app_id"],
             app_key=cloud_data["app_key"],
             account=account,
@@ -1271,13 +1270,14 @@ class ToshibaIOLife(MideaAirCloud):
         password: str,
     ) -> None:
         """Initialize Toshiba IOLife cloud."""
+        cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
         super().__init__(
             cloud_name=cloud_name,
             session=session,
             account=account,
             password=password,
+            security=ToshibaIOLifeSecurity(cloud_data["app_key"]),
         )
-        cloud_data = cast("dict[str, Any]", SUPPORTED_CLOUDS[cloud_name])
         self._app_version: str = cloud_data["app_version"]
         self._manufacturer_code: str = cloud_data["manufacturer_code"]
 
@@ -1286,21 +1286,10 @@ class ToshibaIOLife(MideaAirCloud):
         if not self._access_token or not encrypted_sn:
             return ""
         try:
-            aes_key = (
-                md5(
-                    self._app_key.encode(),
-                    usedforsecurity=False,
-                )
-                .hexdigest()[:16]
-                .encode()
+            return cast("ToshibaIOLifeSecurity", self._security).decrypt_appliance_sn(
+                encrypted_sn,
+                self._access_token,
             )
-            token_bytes = bytes.fromhex(self._access_token)
-            data_key = bytes(
-                unpad(AES.new(aes_key, AES.MODE_ECB).decrypt(token_bytes), 16),
-            )
-            sn_bytes = bytes.fromhex(encrypted_sn)
-            plain = unpad(AES.new(data_key[:16], AES.MODE_ECB).decrypt(sn_bytes), 16)
-            return plain.decode()
         except (ValueError, UnicodeDecodeError):
             _LOGGER.debug("Failed to decrypt appliance SN")
             return ""

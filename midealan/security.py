@@ -31,6 +31,7 @@ MSGTYPE_HANDSHAKE_RESPONSE = 0x1
 MSGTYPE_ENCRYPTED_RESPONSE = 0x3
 MSGTYPE_ENCRYPTED_REQUEST = 0x6
 TCP_KEY_RESPONSE_LENGTH = 64
+AES_KEY_LENGTH = 16
 
 
 class UdpIdMethod(IntEnum):
@@ -148,19 +149,21 @@ class CloudSecurity:
         if isinstance(data, str):
             data = bytes.fromhex(data)
         if aes_iv is None or aes_iv == b"0":  # ECB
-            return AES.new(aes_key, AES.MODE_ECB).encrypt(pad(data, 16))
+            return AES.new(aes_key, AES.MODE_ECB).encrypt(pad(data, AES.block_size))
         # CBC
-        return AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).encrypt(pad(data, 16))
+        return AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).encrypt(
+            pad(data, AES.block_size),
+        )
 
-    def aes_decrypt(
+    def aes_decrypt_bytes(
         self,
         data: str | bytes,
         key: bytes | None = None,
         iv: bytes | None = None,
-    ) -> str:
-        """Decrypt AES."""
+    ) -> bytes:
+        """Decrypt AES and return raw bytes."""
         if len(data) == 0:
-            return ""
+            return b""
         if key is not None:
             aes_key = key
             aes_iv = iv
@@ -174,12 +177,21 @@ class CloudSecurity:
         if aes_iv is None or aes_iv == b"0":  # ECB
             return unpad(
                 AES.new(aes_key, AES.MODE_ECB).decrypt(data),
-                len(aes_key),
-            ).decode()
+                AES.block_size,
+            )
         return unpad(
             AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).decrypt(data),
-            len(aes_key),
-        ).decode()
+            AES.block_size,
+        )
+
+    def aes_decrypt(
+        self,
+        data: str | bytes,
+        key: bytes | None = None,
+        iv: bytes | None = None,
+    ) -> str:
+        """Decrypt AES."""
+        return self.aes_decrypt_bytes(data, key, iv).decode()
 
 
 class MeijuCloudSecurity(CloudSecurity):
@@ -279,8 +291,22 @@ class MideaAirSecurity(CloudSecurity):
         )
         return unpad(
             AES.new(key, AES.MODE_ECB).decrypt(bytes.fromhex(data)),
-            16,
+            AES.block_size,
         ).decode()
+
+
+class ToshibaIOLifeSecurity(MideaAirSecurity):
+    """Toshiba IOLife security."""
+
+    def decrypt_appliance_sn(self, encrypted_sn: str, access_token: str) -> str:
+        """Decrypt a Toshiba IOLife appliance serial number."""
+        key = (
+            md5(self._login_key.encode("ascii"), usedforsecurity=False)
+            .hexdigest()[:16]
+            .encode("ascii")
+        )
+        data_key = self.aes_decrypt_bytes(access_token, key)
+        return self.aes_decrypt(encrypted_sn, data_key[:AES_KEY_LENGTH])
 
 
 class LocalSecurity:

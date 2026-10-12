@@ -27,6 +27,7 @@ from midealan.cloud import (
     get_preset_account_cloud,
 )
 from midealan.exceptions import CloudAuthError, CloudError, ElementMissing
+from midealan.security import ToshibaIOLifeSecurity
 
 # ``CloudSecurity.get_udp_id(100, method)``. Hard-coded on purpose: deriving them
 # with the same helper the implementation calls would not catch a request that
@@ -35,9 +36,9 @@ UDP_IDS = {
     1: "dec4da86e0aeefadde14a4e553680b9b",
     2: "b2dd199071d527a33c8239833a5bf5fb",
 }
-_TOSHIBA_APP_KEY = "00000000000000000000000000000000"
+_TOSHIBA_APP_KEY = SUPPORTED_CLOUDS["Toshiba Iolife"]["app_key"]
 _TOSHIBA_ACCESS_TOKEN = (
-    "e4ddcc22d5ccc270e3b1c876df7c9a8d0a31b22810d0e532c2dd921bb9e0389f"
+    "bd18a46bb4d681f5142bca381d56924a86aad13f1f9870157f22b7c924ddb431"
 )
 _TOSHIBA_ENCRYPTED_SN = (
     "e1f17526c18d049e4862e19f5d6cd269"
@@ -1611,7 +1612,8 @@ def make_toshiba_cloud_fixture() -> Callable[[Mock], ToshibaIOLife]:
             password="password",
         )
         assert isinstance(cloud, ToshibaIOLife)
-        cloud._app_key = _TOSHIBA_APP_KEY
+        assert cloud._app_key == _TOSHIBA_APP_KEY
+        assert isinstance(cloud._security, ToshibaIOLifeSecurity)
         return cloud
 
     return _make
@@ -1626,9 +1628,6 @@ class TestToshibaDecryptSn:
             (_TOSHIBA_ENCRYPTED_SN, _TOSHIBA_ACCESS_TOKEN, _TOSHIBA_EXPECTED_SN),
             (_TOSHIBA_ENCRYPTED_SN, None, ""),
             ("", _TOSHIBA_ACCESS_TOKEN, ""),
-            ("deadbeef" * 4, _TOSHIBA_ACCESS_TOKEN, ""),
-            ("nothexatall", _TOSHIBA_ACCESS_TOKEN, ""),
-            (_TOSHIBA_ENCRYPTED_SN, "nothexatall", ""),
         ],
     )
     def test_decrypt_sn(
@@ -1642,6 +1641,25 @@ class TestToshibaDecryptSn:
         cloud = make_toshiba_cloud(Mock())
         cloud._access_token = access_token
         assert cloud._decrypt_sn(encrypted_sn) == expected
+
+    @pytest.mark.parametrize(
+        ("encrypted_sn", "access_token"),
+        [
+            ("deadbeef" * 4, _TOSHIBA_ACCESS_TOKEN),
+            ("nothexatall", _TOSHIBA_ACCESS_TOKEN),
+            (_TOSHIBA_ENCRYPTED_SN, "nothexatall"),
+        ],
+    )
+    def test_decrypt_sn_hides_security_errors(
+        self,
+        make_toshiba_cloud: Callable[[Mock], ToshibaIOLife],
+        encrypted_sn: str,
+        access_token: str,
+    ) -> None:
+        """_decrypt_sn returns an empty string when security rejects the payload."""
+        cloud = make_toshiba_cloud(Mock())
+        cloud._access_token = access_token
+        assert cloud._decrypt_sn(encrypted_sn) == ""
 
 
 class ToshibaIOLifeTest(IsolatedAsyncioTestCase):

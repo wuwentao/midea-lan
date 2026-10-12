@@ -89,15 +89,25 @@ FAN_SPEED_FACTOR = 10
 # envelope whose inner command is 0x2010. Temperatures in this frame are
 # unsigned 16-bit big-endian values in tenths of a degree Celsius.
 C3_2010_COMMAND = bytes((0x20, 0x10))
+C3_2010_COMMAND_OFFSET = 1
+C3_2010_COMMAND_LENGTH = len(C3_2010_COMMAND)
+C3_2010_TEMPERATURE_BYTE_LENGTH = 2
+C3_2010_TEMPERATURE_SCALE = 10
 C3_2010_DHW_TARGET_TEMP_OFFSET = 20
 C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
 C3_2010_OUTDOOR_TEMP_OFFSET = 97
-C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + 2
+C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + C3_2010_TEMPERATURE_BYTE_LENGTH
 
 
 def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
     """Decode a C3 0x2010 temperature stored as unsigned tenths of a degree."""
-    return (body[offset] * 256 + body[offset + 1]) / 10
+    return (
+        int.from_bytes(
+            body[offset : offset + C3_2010_TEMPERATURE_BYTE_LENGTH],
+            byteorder="big",
+        )
+        / C3_2010_TEMPERATURE_SCALE
+    )
 
 
 # Error code lookup (source: Midea Modbus documentation V4.7,
@@ -934,7 +944,13 @@ class MessageC3Response(MessageResponse):
             self.message_type == MessageType.notify1
             and self.body_type == ListTypes.X00
             and len(super().body) >= C3_2010_MIN_LENGTH
-            and bytes(super().body[1:3]) == C3_2010_COMMAND
+            and bytes(
+                super().body[
+                    C3_2010_COMMAND_OFFSET : C3_2010_COMMAND_OFFSET
+                    + C3_2010_COMMAND_LENGTH
+                ],
+            )
+            == C3_2010_COMMAND
         ):
             self.set_body(C3Basic2010Body(super().body))
         elif self.body_type == ListTypes.X07:

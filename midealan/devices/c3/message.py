@@ -85,6 +85,21 @@ def _parse_sn_block(
 # Outdoor fan speed is transmitted as RPM / 10.
 FAN_SPEED_FACTOR = 10
 
+# Newer C3 controllers report their basic state in an unsolicited X00
+# envelope whose inner command is 0x2010. Temperatures in this frame are
+# unsigned 16-bit big-endian values in tenths of a degree Celsius.
+C3_2010_COMMAND = bytes((0x20, 0x10))
+C3_2010_DHW_TARGET_TEMP_OFFSET = 20
+C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
+C3_2010_OUTDOOR_TEMP_OFFSET = 97
+C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + 2
+
+
+def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
+    """Decode a C3 0x2010 temperature stored as unsigned tenths of a degree."""
+    return (body[offset] * 256 + body[offset + 1]) / 10
+
+
 # Error code lookup (source: Midea Modbus documentation V4.7,
 # 0052003044313 V.E, "Error code table 1", page 11).
 # Format: raw_value -> (display_code, human_description).
@@ -457,6 +472,27 @@ class C3BasicBody(MessageBody):
         self.tbh_control = body[data_offset + 23] & 0x80 > 0
         self.sys_energy_ana_en = body[data_offset + 23] & 0x20 > 0
         self.hmi_energy_ana_set_en = body[data_offset + 23] & 0x40 > 0
+
+
+class C3Basic2010Body(MessageBody):
+    """C3 basic state carried by the newer 0x2010 inner protocol."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize a C3 0x2010 basic-state message body."""
+        super().__init__(body)
+        self.dhw_target_temp = _parse_c3_2010_temperature(
+            body,
+            C3_2010_DHW_TARGET_TEMP_OFFSET,
+        )
+        self.tank_actual_temperature = _parse_c3_2010_temperature(
+            body,
+            C3_2010_TANK_ACTUAL_TEMP_OFFSET,
+        )
+        self.temp_t4 = _parse_c3_2010_temperature(
+            body,
+            C3_2010_OUTDOOR_TEMP_OFFSET,
+        )
+        self.outdoor_temperature = self.temp_t4
 
 
 class C3EnergyBody(MessageBody):
@@ -870,6 +906,10 @@ class MessageC3Response(MessageResponse):
     current_unit_capacity: int
     total_energy_consumption: int
     total_produced_energy: int
+    dhw_target_temp: float
+    tank_actual_temperature: float
+    temp_t4: float
+    outdoor_temperature: float
 
     def __init__(self, message: bytes) -> None:
         """Initialize C3 message response."""
@@ -890,6 +930,13 @@ class MessageC3Response(MessageResponse):
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
         ):
             self.set_body(C3UnitParaUpBody(super().body, data_offset=1))
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and len(super().body) >= C3_2010_MIN_LENGTH
+            and bytes(super().body[1:3]) == C3_2010_COMMAND
+        ):
+            self.set_body(C3Basic2010Body(super().body))
         elif self.body_type == ListTypes.X07:
             self.set_body(C3ECOBody(super().body, data_offset=1))
         elif self.body_type == ListTypes.X09:

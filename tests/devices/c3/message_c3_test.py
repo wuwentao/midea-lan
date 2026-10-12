@@ -176,6 +176,43 @@ class TestMessageC3Response:
             ],
         )
 
+    @pytest.mark.parametrize(
+        ("message", "tank_actual_temperature"),
+        [
+            (
+                (
+                    "aa7cc300000000000004002010ff1cffff00ffff01ff0103015e7fff00f001fe"
+                    "01ff00000000010101000000000000000000010202028a015e00fa0032022600"
+                    "fa00fa0032012c00aa025800c801fe00010105ff010130000000002f00000000"
+                    "0000000000000000000001005a0001ffff001a0a0c1437ffffffff0009"
+                ),
+                51.0,
+            ),
+            (
+                (
+                    "aa7cc300000000000004002010ff1cffff00ffff01ff0103015e7fff00f001fe"
+                    "01ff00000000010101000000000000000000010202028a015e00fa0032022600"
+                    "fa00fa0032012c00aa025800c801fd00010105ff010130000000002f00000000"
+                    "0000000000000000000001005a0001ffff001a0a0c143bffffffff0006"
+                ),
+                50.9,
+            ),
+        ],
+    )
+    def test_message_2010_response(
+        self,
+        message: str,
+        tank_actual_temperature: float,
+    ) -> None:
+        """Test the read-only basic state used by C3 model 17100007."""
+        response = MessageC3Response(bytes.fromhex(message))
+
+        assert response.body_type == ListTypes.X00
+        assert response.dhw_target_temp == 51.0
+        assert response.tank_actual_temperature == tank_actual_temperature
+        assert response.temp_t4 == 9.0
+        assert response.outdoor_temperature == 9.0
+
     def test_message_generic_response(self) -> None:
         """Test message generic response."""
         body = bytearray(

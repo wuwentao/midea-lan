@@ -1069,10 +1069,16 @@ class MideaACDevice(MideaDevice):
         return (limits["min"], limits["max"])
 
     def _refresh_temperature_limits(self) -> dict[str, Any]:
-        """Resolve min/max setpoint limits.
+        """Resolve min/max setpoint limits, returning only changed values.
 
         Priority: customize option > capability response > None (the consumer
         then falls back to its own default range).
+
+        The limits depend on the merged capabilities and the current mode, so
+        they are re-evaluated for every message. Only the keys whose value
+        actually changed are returned, so an unrelated status frame (power,
+        humidity, compressor power, ...) does not carry redundant min/max
+        entries in its update.
         """
         capability_limits = self._capability_temperature_limits()
         minimum = self._customize_min_temperature
@@ -1081,12 +1087,14 @@ class MideaACDevice(MideaDevice):
         maximum = self._customize_max_temperature
         if maximum is None and capability_limits is not None:
             maximum = capability_limits[1]
-        self._attributes[DeviceAttributes.min_temperature] = minimum
-        self._attributes[DeviceAttributes.max_temperature] = maximum
-        return {
-            DeviceAttributes.min_temperature.value: minimum,
-            DeviceAttributes.max_temperature.value: maximum,
-        }
+        changed: dict[str, Any] = {}
+        if minimum != self._attributes[DeviceAttributes.min_temperature]:
+            self._attributes[DeviceAttributes.min_temperature] = minimum
+            changed[DeviceAttributes.min_temperature.value] = minimum
+        if maximum != self._attributes[DeviceAttributes.max_temperature]:
+            self._attributes[DeviceAttributes.max_temperature] = maximum
+            changed[DeviceAttributes.max_temperature.value] = maximum
+        return changed
 
     def make_message_set(self) -> StateSet:
         """Midea AC device make message set."""

@@ -348,6 +348,32 @@ class TestMideaACDevice:
         self.device._capabilities["temperature"] = {"cool": {"min": 16}}
         assert self.device._capability_temperature_limits() is None
 
+    def test_refresh_temperature_limits_returns_only_changes(self) -> None:
+        """Only changed min/max keys are returned, so repeat calls stay empty.
+
+        An unrelated status frame re-evaluates the limits for every message,
+        but must not carry redundant min/max entries in its update when the
+        resolved values have not changed.
+        """
+        self.device._attributes[DeviceAttributes.mode] = 2  # -> "cool"
+        self.device._capabilities["temperature"] = {"cool": {"min": 16, "max": 30}}
+
+        # First resolution publishes both keys.
+        first = self.device._refresh_temperature_limits()
+        assert first == {
+            DeviceAttributes.min_temperature.value: 16,
+            DeviceAttributes.max_temperature.value: 30,
+        }
+
+        # A second call with identical inputs returns nothing to update.
+        assert self.device._refresh_temperature_limits() == {}
+
+        # Only the key whose value changed is republished.
+        self.device._capabilities["temperature"] = {"cool": {"min": 16, "max": 31}}
+        assert self.device._refresh_temperature_limits() == {
+            DeviceAttributes.max_temperature.value: 31,
+        }
+
     def test_build_query(self) -> None:
         """Test build query."""
         self.device._used_subprotocol = True

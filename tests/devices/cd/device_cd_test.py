@@ -703,6 +703,9 @@ class TestMideaCDDevice:
     @pytest.mark.parametrize(
         ("body_hex", "current", "top", "bottom", "outdoor", "condenser", "compressor"),
         [
+            # Key 0xCD status bytes for RSJ000CB validation:
+            # body[5]=T5U/top, body[6]=T5L/bottom, body[7]=T3/condenser,
+            # body[8]=T4/outdoor, body[9]=TP/compressor.
             pytest.param(
                 "01011531348773495f19462609001100110508000031000000000000"
                 "070300000000030000000000000000000000060b0000000000",
@@ -710,7 +713,7 @@ class TestMideaCDDevice:
                 52.5,
                 42.5,
                 22.5,
-                73.0,
+                21.5,
                 25.0,
                 id="first-log",
             ),
@@ -721,7 +724,7 @@ class TestMideaCDDevice:
                 52.5,
                 52.5,
                 21.0,
-                52.0,
+                11.0,
                 80.0,
                 id="log2",
             ),
@@ -732,7 +735,7 @@ class TestMideaCDDevice:
                 53.0,
                 52.5,
                 21.0,
-                52.0,
+                11.0,
                 80.0,
                 id="log2-tank-change",
             ),
@@ -749,7 +752,7 @@ class TestMideaCDDevice:
         condenser: float,
         compressor: float,
     ) -> None:
-        """Recorded frames correct only empirical tank and outdoor fields."""
+        """Recorded RSJ000CB frames decode validated mixed sensor fields."""
         device = _make_device(model="RSJ000CB")
         assert device._lua_protocol == LuaProtocol.new
         body = bytearray.fromhex(body_hex)
@@ -771,7 +774,7 @@ class TestMideaCDDevice:
     def test_process_message_mixed_sensors_ignore_fahrenheit_flag(
         self,
     ) -> None:
-        """RSJ000CB sensor offsets are separate from main unit conversion."""
+        """RSJ000CB mixed sensors ignore the message display-unit flag."""
         device = _make_device(model="RSJ000CB")
         body = _general_body()
         body[3] = 104
@@ -793,11 +796,21 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.min_temperature.value] == 35.0
         assert status[DeviceAttributes.top_temperature.value] == 52.5
         assert status[DeviceAttributes.bottom_temperature.value] == 42.5
-        assert status[DeviceAttributes.condenser_temperature.value] == pytest.approx(
-            (73.0 - 32.0) * 5 / 9,
-        )
+        assert status[DeviceAttributes.condenser_temperature.value] == 21.5
         assert status[DeviceAttributes.outdoor_temperature.value] == 21.0
         assert status[DeviceAttributes.compressor_temperature.value] == -5.0
+
+    def test_process_message_mixed_condenser_latest_review_value(
+        self,
+    ) -> None:
+        """PR #197 real-device review: T3 raw 66 decodes to 18 C."""
+        device = _make_device(model="RSJ000CB")
+        body = _general_body()
+        body[7] = 66
+        body[8] = 83
+        status = device.process_message(_build_message(MessageType.query, body))
+        assert status[DeviceAttributes.condenser_temperature.value] == 18.0
+        assert status[DeviceAttributes.outdoor_temperature.value] == 16.5
 
     @pytest.mark.parametrize(
         ("raw", "expected"),
@@ -819,19 +832,21 @@ class TestMideaCDDevice:
         ("raw", "expected"),
         [(20, -5.0), (30, 0.0), (40, 5.0), (60, 15.0), (61, 15.5)],
     )
-    def test_process_message_mixed_tank_has_no_raw_threshold(
+    def test_process_message_mixed_sensor_has_no_raw_threshold(
         self,
         raw: int,
         expected: float,
     ) -> None:
-        """The tank candidate also decodes values at or below the bridge cutoff."""
+        """T5U/T5L/T3 decode values at or below the bridge cutoff."""
         device = _make_device(model="RSJ000CB")
         body = _general_body()
         body[5] = raw
         body[6] = raw
+        body[7] = raw
         status = device.process_message(_build_message(MessageType.query, body))
         assert status[DeviceAttributes.top_temperature.value] == expected
         assert status[DeviceAttributes.bottom_temperature.value] == expected
+        assert status[DeviceAttributes.condenser_temperature.value] == expected
 
     @pytest.mark.parametrize(
         "model",
@@ -853,6 +868,14 @@ class TestMideaCDDevice:
         status = device.process_message(_build_message(MessageType.query, body))
         assert status[DeviceAttributes.top_temperature.value] == 135.0
         assert status[DeviceAttributes.bottom_temperature.value] == 115.0
+
+    def test_process_message_other_new_models_keep_condenser_generic(self) -> None:
+        """The PR #197 T3 scaling remains scoped to RSJ000CB only."""
+        device = _make_device(model="RSJRAC01")
+        body = _general_body()
+        body[7] = 66
+        status = device.process_message(_build_message(MessageType.query, body))
+        assert status[DeviceAttributes.condenser_temperature.value] == 66.0
 
     def test_rsj000cb_target_write_keeps_new_protocol_encoding(self) -> None:
         """Mixed sensor offsets never affect the target-temperature write."""

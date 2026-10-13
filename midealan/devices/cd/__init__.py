@@ -27,8 +27,12 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 
-MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0
-MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0
+# RSJ000CB reports some auxiliary sensors as half-degree raw bytes while
+# target/current/min/max stay direct. Lua only identifies the raw fields;
+# T5/T4 offsets come from midea_ac_lan#586, and T3 was added after
+# midea-lan#197 real-device review showed raw 66 maps plausibly to 18 C.
+MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0  # T5U/body[5], T5L/body[6], T3/body[7]
+MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0  # T4/body[8]
 MIXED_SENSOR_TEMPERATURE_DIVISOR = 2.0
 
 
@@ -464,12 +468,18 @@ class MideaCDDevice(MideaDevice):
                     # Skip unknown values; the next device status notification
                     # will correct the mode.
                     continue
-                # RSJ000CB mixes direct main temperatures with half-degree
-                # sensor values. T4 uses a different offset; keep the Lua
-                # sensor mapping and do not apply the display-unit flag here.
+                # MessageCDResponse keeps the 0xCD body bytes raw. RSJ000CB
+                # then applies empirical scaling only for validated sensors:
+                # T5U/body[5]/top, T5L/body[6]/bottom, and T3/body[7]/
+                # condenser use (raw-30)/2; T4/body[8]/outdoor uses
+                # (raw-50)/2. This intentionally differs from the Lua file,
+                # which has field names but no scaling formula. TP/body[9]/
+                # compressor stays on the generic path until matched C01/raw
+                # data confirms a separate RSJ000CB conversion.
                 if self.model in self._mixed_temperature_models and attr in [
                     DeviceAttributes.top_temperature,
                     DeviceAttributes.bottom_temperature,
+                    DeviceAttributes.condenser_temperature,
                     DeviceAttributes.outdoor_temperature,
                 ]:
                     offset = (

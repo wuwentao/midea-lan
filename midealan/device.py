@@ -36,6 +36,7 @@ SOCKET_TIMEOUT = 10  # socket connection default timeout
 QUERY_TIMEOUT = (
     5  # default is 1s, 0xAC have more queries, set to 2s, latest: increase to 5s
 )
+PERIODIC_QUERY_DELAY = 0.1
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -579,10 +580,12 @@ class MideaDevice(threading.Thread):
         while index < len(cmds):
             cmd = cmds[index]
             index += 1
+            query_sent = False
             if cmd.__class__.__name__ not in self._unsupported_protocol:
                 # set socket QUERY_TIMEOUT for query msg
                 # build_send exception should be catch by connect/run
                 self.build_send(cmd, query=True)
+                query_sent = True
                 # init check_protocol, skip timeout exception
                 if check_protocol:
                     try:
@@ -638,6 +641,8 @@ class MideaDevice(threading.Thread):
                         real_cmds,
                         status_appended,
                     )
+            if not check_protocol and query_sent and index < len(cmds):
+                time.sleep(self.periodic_query_delay())
             # All the REAL status queries failed. The appliance query is excluded: it
             # answers even when the device serves no status protocol, so counting it
             # left error_count one short of len(cmds) and the failure was masked --
@@ -774,6 +779,10 @@ class MideaDevice(threading.Thread):
     def build_query(self) -> list:
         """Build query."""
         raise NotImplementedError
+
+    def periodic_query_delay(self) -> float:
+        """Return the delay between periodic query sends."""
+        return PERIODIC_QUERY_DELAY
 
     def build_init_query(self) -> list:
         """Build one-time queries to run once at connect time.

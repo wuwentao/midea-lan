@@ -1048,6 +1048,51 @@ class TestMideaDevice:
 
         build_send_mock.assert_called_once_with(cmd, query=True)
 
+    def test_unchecked_refresh_delays_between_queries(self) -> None:
+        """Pause between periodic query sends."""
+        commands = [type(f"Query{index}", (), {})() for index in range(3)]
+        sent: list[object] = []
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=commands),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch("midealan.device.time.sleep") as sleep_mock,
+        ):
+            self.device.refresh_status()
+
+        assert sent == commands
+        assert sleep_mock.call_count == 2
+        sleep_mock.assert_called_with(0.1)
+
+    def test_checked_refresh_does_not_delay_between_queries(self) -> None:
+        """Protocol checking remains reply-driven and is not delay-paced."""
+        command = type("Query", (), {})()
+        self.device._appliance_query = False
+        socket_mock = MagicMock()
+        self.device._socket = socket_mock
+        with (
+            patch.object(self.device, "build_query", return_value=[command]),
+            patch.object(self.device, "build_send"),
+            patch.object(
+                socket_mock,
+                "recv",
+                return_value=bytearray([0x0]),
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                return_value=MessageResult.SUCCESS,
+            ),
+            patch("midealan.device.time.sleep") as sleep_mock,
+        ):
+            self.device.refresh_status(check_protocol=True)
+
+        sleep_mock.assert_not_called()
+
     def test_unchecked_refresh_skips_unsupported_query_without_advancing(self) -> None:
         """An unchecked refresh skips an unsupported query and sends the rest.
 
@@ -1067,11 +1112,13 @@ class TestMideaDevice:
                 return_value=[unsupported, supported],
             ),
             patch.object(self.device, "build_send") as build_send_mock,
+            patch("midealan.device.time.sleep") as sleep_mock,
         ):
             self.device.refresh_status()
 
         # Only the supported query is sent; the unsupported one is skipped.
         build_send_mock.assert_called_once_with(supported, query=True)
+        sleep_mock.assert_not_called()
 
     def test_parse_message(self) -> None:
         """Test parse message."""

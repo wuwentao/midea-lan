@@ -31,6 +31,8 @@ _LOGGER = logging.getLogger(__name__)
 # target/current/min/max stay direct. Lua only identifies the raw fields;
 # T5/T4 offsets come from midea_ac_lan#586, and T3 was added after
 # midea-lan#197 real-device review showed raw 66 maps plausibly to 18 C.
+OLD_PROTOCOL_TEMPERATURE_OFFSET = 30.0
+OLD_PROTOCOL_TEMPERATURE_DIVISOR = 2.0
 MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0  # T5U/body[5], T5L/body[6], T3/body[7]
 MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0  # T4/body[8]
 MIXED_SENSOR_TEMPERATURE_DIVISOR = 2.0
@@ -281,8 +283,8 @@ class MideaCDDevice(MideaDevice):
         # celsius old protocol
         if self._lua_protocol == LuaProtocol.old or force_old:
             return round(
-                (value - MIXED_SENSOR_TEMPERATURE_OFFSET)
-                / MIXED_SENSOR_TEMPERATURE_DIVISOR,
+                (value - OLD_PROTOCOL_TEMPERATURE_OFFSET)
+                / OLD_PROTOCOL_TEMPERATURE_DIVISOR,
             )
         # new protocol
         return value
@@ -300,8 +302,8 @@ class MideaCDDevice(MideaDevice):
         # old protocol
         if self._lua_protocol == LuaProtocol.old:
             return round(
-                value * MIXED_SENSOR_TEMPERATURE_DIVISOR
-                + MIXED_SENSOR_TEMPERATURE_OFFSET,
+                value * OLD_PROTOCOL_TEMPERATURE_DIVISOR
+                + OLD_PROTOCOL_TEMPERATURE_OFFSET,
             )
         # new protocol
         return value

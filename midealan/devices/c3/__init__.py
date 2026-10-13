@@ -7,13 +7,22 @@ from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.message import ListTypes, MessageQuestCustom, MessageRequest, MessageType
 
 from .message import (
+    C3_SHORT_DHW_POWER_MASK,
+    C3_SHORT_SETPOINT_BIAS,
+    C3_SHORT_TBH_MASK,
+    C3_SHORT_X01_BODY_LENGTH,
+    C3_SHORT_X01_POWER_OFFSET,
+    C3_SHORT_X01_SETPOINT_OFFSET,
+    C3_SHORT_X01_TBH_OFFSET,
     C3DeviceMode,
     C3SilentLevel,
     MessageC3Response,
     MessageQuery,
     MessageQueryBasic,
+    MessageQueryDiagnostic,
     MessageQueryDisinfect,
     MessageQueryECO,
     MessageQuerySilence,
@@ -326,6 +335,11 @@ class MideaC3Device(MideaDevice):
         )
         self._default_temperature_step: float = 0.5
         self._temperature_step: float = 0.5
+        self._short_protocol = str(self.model).startswith("171000")
+        self._last_short_x01_body: bytes | None = None
+        if self._short_protocol:
+            self._default_temperature_step = 1.0
+            self._temperature_step = 1.0
         self.set_customize(customize)
 
     @property
@@ -340,18 +354,78 @@ class MideaC3Device(MideaDevice):
 
     def build_query(self) -> list[MessageQuery]:
         """Midea C3 device build query."""
-        return [
+        queries: list[MessageQuery] = [
             MessageQueryBasic(self._message_protocol_version),
             MessageQueryDisinfect(self._message_protocol_version),
             MessageQuerySilence(self._message_protocol_version),
             MessageQueryECO(self._message_protocol_version),
             MessageQueryUnitPara(self._message_protocol_version),
         ]
+        if self._short_protocol:
+            queries.append(MessageQueryDiagnostic(self._message_protocol_version))
+        return queries
+
+    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+        """Serialize and send, preserving raw short-protocol commands."""
+        if self._short_protocol and not query and isinstance(cmd, MessageQuestCustom):
+            _LOGGER.debug(
+                "[%s] Sending C3 short raw command: %s",
+                self.device_id,
+                cmd.body.hex(),
+            )
+        super().build_send(cmd, query=query)
+
+    def _cache_short_x01_body(self, message: MessageC3Response) -> None:
+        """Cache the latest short X01 body so writes mirror device state."""
+        if (
+            message.body_type == ListTypes.X01
+            and message.message_type in (MessageType.set, MessageType.query)
+            and len(message.body) == C3_SHORT_X01_BODY_LENGTH
+        ):
+            self._last_short_x01_body = bytes(message.body)
+
+    def _send_short_set(
+        self,
+        attr: DeviceAttributes,
+        value: bool | float | str,
+    ) -> bool:
+        """Send a 171000-series X01 mirror SET when the attribute is supported."""
+        if attr not in (
+            DeviceAttributes.dhw_power,
+            DeviceAttributes.dhw_target_temp,
+            DeviceAttributes.tbh,
+        ):
+            return False
+        if self._last_short_x01_body is None:
+            _LOGGER.warning(
+                "[%s] C3 short SET skipped because no X01 body has been cached",
+                self.device_id,
+            )
+            return True
+        body = bytearray(self._last_short_x01_body)
+        if attr == DeviceAttributes.dhw_target_temp:
+            body[C3_SHORT_X01_SETPOINT_OFFSET] = (
+                int(float(value)) + C3_SHORT_SETPOINT_BIAS
+            ) & 0xFF
+        elif attr == DeviceAttributes.dhw_power:
+            if bool(value):
+                body[C3_SHORT_X01_POWER_OFFSET] |= C3_SHORT_DHW_POWER_MASK
+            else:
+                body[C3_SHORT_X01_POWER_OFFSET] &= ~C3_SHORT_DHW_POWER_MASK & 0xFF
+        elif bool(value):
+            body[C3_SHORT_X01_TBH_OFFSET] |= C3_SHORT_TBH_MASK
+        else:
+            body[C3_SHORT_X01_TBH_OFFSET] &= ~C3_SHORT_TBH_MASK & 0xFF
+        self._attributes[attr] = value
+        self.send_command(MessageType.set, body)
+        return True
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea C3 device process message."""
         message = MessageC3Response(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        if self._short_protocol:
+            self._cache_short_x01_body(message)
         new_status = {}
         for status in self._attributes:
             if hasattr(message, str(status)):
@@ -455,6 +529,10 @@ class MideaC3Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea C3 device set attribute."""
+        if self._short_protocol:
+            if attr in DeviceAttributes:
+                self._send_short_set(DeviceAttributes(attr), value)
+            return
         message: (
             MessageSet | MessageSetECO | MessageSetSilent | MessageSetDisinfect | None
         ) = None

@@ -139,6 +139,7 @@ class MideaDevice(threading.Thread):
         self._is_run: bool = False
         self._available = False
         self._appliance_query = True
+        self._probe_answered = False
         self._refresh_interval = 30
         self._heartbeat_interval = SOCKET_TIMEOUT
         self._default_refresh_interval = 30
@@ -479,16 +480,16 @@ class MideaDevice(threading.Thread):
     ) -> tuple[int, bool]:
         """Wait for a checked-pass probe reply, retrying once when it times out.
 
-        A single timeout is not proof that the protocol is unsupported: a
-        not-yet-ready device can miss the first reply window (issue #658), so
-        every probe reply gets one more chance before its command is recorded
-        in _unsupported_protocol. Only reply waits that time out count as
-        proof. A retry *send* that times out is a transport failure and is
-        deliberately left to propagate to connection recovery, exactly like
-        the initial send, which sits outside the checked-pass try. The decoder
-        buffer is dropped before the resend so a partial frame left behind by
-        the timed-out attempt cannot be prepended to the retry reply and make
-        decode_8370 lose it.
+        A single timeout is not proof that the protocol is unsupported before
+        the device has answered in this checked pass: a not-yet-ready device
+        can miss the first reply window (issue #658), so probe replies get one
+        more chance until the first successful reply proves the appliance is
+        ready. Only reply waits that time out count as proof. A retry *send*
+        that times out is a transport failure and is deliberately left to
+        propagate to connection recovery, exactly like the initial send, which
+        sits outside the checked-pass try. The decoder buffer is dropped before
+        the resend so a partial frame left behind by the timed-out attempt
+        cannot be prepended to the retry reply and make decode_8370 lose it.
 
         Returns the number of failures the caller must add to its error count
         and whether the command ended with repeated timeouts. The latter keeps
@@ -496,17 +497,18 @@ class MideaDevice(threading.Thread):
         protocol family.
         """
         attempt = 1
+        max_attempts = 1 if self._probe_answered else QUERY_PROBE_RETRIES
         while True:
             try:
                 self._await_query_reply()
             except TimeoutError:
-                if attempt < QUERY_PROBE_RETRIES:
+                if attempt < max_attempts:
                     _LOGGER.debug(
                         "[%s] Probe for %s timed out (%s/%s), retrying",
                         self._device_id,
                         cmd.__class__.__name__,
                         attempt,
-                        QUERY_PROBE_RETRIES,
+                        max_attempts,
                     )
                     attempt += 1
                     self._buffer = b""
@@ -536,6 +538,7 @@ class MideaDevice(threading.Thread):
                     cmd,
                 )
                 return 1 if cmd in real_cmds else 0, False
+            self._probe_answered = True
             if not self._is_query_response_valid(cmd):
                 _LOGGER.debug(
                     "[%s] Invalid response family for %s",
@@ -638,6 +641,8 @@ class MideaDevice(threading.Thread):
         status_appended = False
         error_count = 0
         timeout_count = 0
+        if check_protocol:
+            self._probe_answered = False
         # Names already queued this refresh, so a stage command left armed after
         # a timeout (recorded in _unsupported_protocol) is not queued again.
         queued: set[str] = set()

@@ -854,7 +854,6 @@ class TestMideaDevice:
                 side_effect=[
                     bytearray([0x0]),
                     TimeoutError(),
-                    TimeoutError(),
                     bytearray([0x0]),
                 ],
             ),
@@ -869,8 +868,9 @@ class TestMideaDevice:
             self.device.refresh_status(True)  # must not raise (real query answered)
 
         assert "_Additional" in self.device._unsupported_protocol
-        # The first timeout is retried once before the probe is blacklisted.
-        assert sum(isinstance(c, _Additional) for c in sent) == 2
+        # The basic probe already answered in this pass, so a later timeout is
+        # treated as unsupported without another wait.
+        assert sum(isinstance(c, _Additional) for c in sent) == 1
 
     def test_blacklisted_init_query_still_advances_stage_in_checked_pass(self) -> None:
         """A skipped (already-unsupported) init stage still advances to the next.
@@ -1035,8 +1035,6 @@ class TestMideaDevice:
                     bytearray([0x0]),
                     TimeoutError(),
                     TimeoutError(),
-                    TimeoutError(),
-                    TimeoutError(),
                 ],
             ),
             patch.object(self.device, "build_send", return_value=None),
@@ -1049,11 +1047,10 @@ class TestMideaDevice:
             self.device._socket = socket_mock
             with pytest.raises(NoSupportedProtocol):
                 self.device.refresh_status(True)
-            # Both must have failed on their own two-attempt timeout. If they shared
-            # a class name the second would take the SKIP path, consuming fewer
-            # recv side effects and testing a different branch than this claims.
+            # The appliance query answered, so both status timeouts are treated
+            # as unsupported without a second wait.
             assert self.device._unsupported_protocol == ["QueryA", "QueryB"]
-            assert socket_mock.recv.call_count == 5
+            assert socket_mock.recv.call_count == 3
 
     def test_refresh_status_probes_fallback_query_family(self) -> None:
         """A silent primary family must be followed by the fallback family.
@@ -1137,6 +1134,75 @@ class TestMideaDevice:
             primary[0],
             fallback[0],
         ]
+
+    def test_probe_success_disables_later_timeout_retries(self) -> None:
+        """Once this pass gets a reply, later timeouts are not retried."""
+        init = type("InitQuery", (), {})()
+        primary = [type("PrimaryA", (), {})(), type("PrimaryB", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(
+                self.device,
+                "build_init_query",
+                return_value=[init],
+            ),
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_query_fallback", return_value=fallback),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    None,
+                    TimeoutError(),
+                    TimeoutError(),
+                    None,
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            init,
+            primary[0],
+            primary[1],
+            fallback[0],
+        ]
+        assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
+
+    def test_probe_answered_state_resets_each_checked_pass(self) -> None:
+        """A later checked pass still retries before any reply is seen."""
+        first_cmd = type("FirstPassQuery", (), {})()
+        second_cmd = type("SecondPassQuery", (), {})()
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        queries = [[first_cmd], [second_cmd]]
+
+        with (
+            patch.object(self.device, "build_query", side_effect=queries),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    None,
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+            with pytest.raises(NoSupportedProtocol):
+                self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            first_cmd,
+            second_cmd,
+            second_cmd,
+        ]
+        assert self.device._unsupported_protocol == ["SecondPassQuery"]
 
     def test_refresh_status_fallback_is_probed_only_once(self) -> None:
         """A fallback that is silent too must still fail the probe.

@@ -226,6 +226,122 @@ class TestMessageC3Response:
         assert response.temp_t4 == outdoor_temperature
         assert response.outdoor_temperature == outdoor_temperature
 
+    @pytest.mark.parametrize(
+        (
+            "message",
+            "temp_t3",
+            "temp_t4",
+            "temp_tp",
+            "temp_tw_in",
+            "temp_tw_out",
+        ),
+        [
+            (
+                (
+                    "aabac3000000000000040020b0ff1cffff00ffff0013000002000064005a"
+                    "00fa01360136ffff0700000000000000df01e00c010000000000000000"
+                    "00000000000000000000000001000000ff010100010000000000000000"
+                    "00000000000000010100010000000134ffff011d01340105ffffffffff"
+                    "ff28006f000a008c020000380096014a7fff0052000000000000005a00"
+                    "0000003e00000043000000f600000043000000f6000000060000000000"
+                    "0000c900000000000000000e"
+                ),
+                10.0,
+                9.0,
+                25.0,
+                31.0,
+                31.0,
+            ),
+            (
+                (
+                    "aabac3000000000000040020b0ff1cffff00ffff0013000002000064005a"
+                    "00f000dd00e1ffff0700000000000000de01e00c010000000000000000"
+                    "00000000000000000000000001000000ff010100010000000000000000"
+                    "000000000000000000010100000000dcffff0119012800e2ffffffffff"
+                    "ff28006f000a0091020000380096014a7fff0087000000000000005a00"
+                    "0000001900000043000000f600000043000000f6000000080000000000"
+                    "0000c9000000000000000040"
+                ),
+                10.0,
+                9.0,
+                24.0,
+                22.1,
+                22.5,
+            ),
+            (
+                (
+                    "aac0c300000000000004002f10ff1cffff00ffff0000000064005a00fa"
+                    "01360136000000df0134ffff011d01340104ffff006f000a008c0000"
+                    "96014a7fff005200000000000000000043000000f600000043000000f6"
+                    "0000000600000000000000c90000002e3e031300000000000000000000"
+                    "000000000000000000000000000000010c0000002e01e000000000000"
+                    "0ffffffffffff023000000001000101000000000000000000002f000000"
+                    "7a000000000000000000000000000000000127"
+                ),
+                10.0,
+                9.0,
+                25.0,
+                31.0,
+                31.0,
+            ),
+            (
+                (
+                    "aac0c300000000000004002f10ff1cffff00ffff0000000064005a00f0"
+                    "00dc00de000000de00d8ffff0119012700e2ffff006f000a00910000"
+                    "96014a7fff008700000000000000000043000000f600000043000000f6"
+                    "0000000800000000000000c90000002e18031300000000000000000000"
+                    "000000000000000000000000000000010c0000002e01e000000000000"
+                    "0ffffffffffff023000000100000100000000000000000000002f000000"
+                    "7a000000000000000000000000000000000162"
+                ),
+                10.0,
+                9.0,
+                24.0,
+                22.0,
+                22.2,
+            ),
+        ],
+        ids=["20b0_initial", "20b0_later", "2f10_initial", "2f10_later"],
+    )
+    def test_message_x00_sensor_telemetry_response(
+        self,
+        message: str,
+        temp_t3: float,
+        temp_t4: float,
+        temp_tp: float,
+        temp_tw_in: float,
+        temp_tw_out: float,
+    ) -> None:
+        """Test sensor telemetry used by C3 model 17100007."""
+        response = MessageC3Response(bytes.fromhex(message))
+
+        assert response.body_type == ListTypes.X00
+        assert response.temp_t3 == temp_t3
+        assert response.temp_t4 == temp_t4
+        assert response.outdoor_temperature == temp_t4
+        assert response.temp_tp == temp_tp
+        assert response.temp_tw_in == temp_tw_in
+        assert response.temp_tw_out == temp_tw_out
+
+    def test_message_x00_sensor_telemetry_handles_signed_and_invalid_temps(
+        self,
+    ) -> None:
+        """Test C3 X00 sensor telemetry temperature edge values."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray([0x00] * 27)
+        body[0] = ListTypes.X00
+        body[1:3] = bytes((0x20, 0xB0))
+        body[16:26] = bytes.fromhex("800cffff000000110022")
+
+        response = MessageC3Response(bytes(self.header + body + bytes([0x00])))
+
+        assert response.temp_t3 == -1.2
+        assert response.temp_t4 is None
+        assert response.outdoor_temperature is None
+        assert response.temp_tp == 0.0
+        assert response.temp_tw_in == 1.7
+        assert response.temp_tw_out == 3.4
+
     def test_message_generic_response(self) -> None:
         """Test message generic response."""
         body = bytearray(

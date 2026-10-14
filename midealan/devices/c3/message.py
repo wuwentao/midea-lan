@@ -85,28 +85,70 @@ def _parse_sn_block(
 # Outdoor fan speed is transmitted as RPM / 10.
 FAN_SPEED_FACTOR = 10
 
-# Newer C3 controllers report their basic state in an unsolicited X00
-# envelope whose inner command is 0x2010. Temperatures in this frame are
+# Newer C3 controllers report state in an unsolicited X00 envelope whose
+# first byte is 0x00 and whose next two bytes are the inner command.
+C3_X00_COMMAND_OFFSET = 1
+C3_X00_COMMAND_LENGTH = 2
+C3_X00_VALUE_BYTE_LENGTH = 2
+C3_X00_TEMPERATURE_SCALE = 10
+C3_X00_SIGN_BIT = 0x8000
+C3_X00_SIGN_VALUE_MASK = 0x7FFF
+C3_X00_INVALID_U16 = 0xFFFF
+
+# Basic state command used by model 17100007. Temperatures in this frame are
 # unsigned 16-bit big-endian values in tenths of a degree Celsius.
 C3_2010_COMMAND = bytes((0x20, 0x10))
-C3_2010_COMMAND_OFFSET = 1
-C3_2010_COMMAND_LENGTH = len(C3_2010_COMMAND)
-C3_2010_TEMPERATURE_BYTE_LENGTH = 2
-C3_2010_TEMPERATURE_SCALE = 10
 C3_2010_DHW_TARGET_TEMP_OFFSET = 20
 C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
 C3_2010_OUTDOOR_TEMP_OFFSET = 97
-C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + C3_2010_TEMPERATURE_BYTE_LENGTH
+C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + C3_X00_VALUE_BYTE_LENGTH
+
+# Sensor telemetry commands observed on model 17100007. The confirmed leading
+# block is a sequence of signed 16-bit big-endian temperatures in tenths of a
+# degree Celsius. The same block starts at a different offset in each command.
+C3_20B0_COMMAND = bytes((0x20, 0xB0))
+C3_2F10_COMMAND = bytes((0x2F, 0x10))
+C3_20B0_SENSOR_OFFSET = 16
+C3_2F10_SENSOR_OFFSET = 13
+C3_X00_SENSOR_TEMP_T3_OFFSET = 0
+C3_X00_SENSOR_TEMP_T4_OFFSET = 2
+C3_X00_SENSOR_TEMP_TP_OFFSET = 4
+C3_X00_SENSOR_TEMP_TW_IN_OFFSET = 6
+C3_X00_SENSOR_TEMP_TW_OUT_OFFSET = 8
+C3_X00_SENSOR_MIN_LENGTH = C3_X00_SENSOR_TEMP_TW_OUT_OFFSET + C3_X00_VALUE_BYTE_LENGTH
+C3_20B0_MIN_LENGTH = C3_20B0_SENSOR_OFFSET + C3_X00_SENSOR_MIN_LENGTH
+C3_2F10_MIN_LENGTH = C3_2F10_SENSOR_OFFSET + C3_X00_SENSOR_MIN_LENGTH
 
 
 def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
     """Decode a C3 0x2010 temperature stored as unsigned tenths of a degree."""
     return (
         int.from_bytes(
-            body[offset : offset + C3_2010_TEMPERATURE_BYTE_LENGTH],
+            body[offset : offset + C3_X00_VALUE_BYTE_LENGTH],
             byteorder="big",
         )
-        / C3_2010_TEMPERATURE_SCALE
+        / C3_X00_TEMPERATURE_SCALE
+    )
+
+
+def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | None:
+    """Decode a signed C3 X00 temperature stored as tenths of a degree."""
+    raw = int.from_bytes(
+        body[offset : offset + C3_X00_VALUE_BYTE_LENGTH],
+        byteorder="big",
+    )
+    if raw == C3_X00_INVALID_U16:
+        return None
+    magnitude = raw & C3_X00_SIGN_VALUE_MASK
+    if raw & C3_X00_SIGN_BIT:
+        magnitude = -magnitude
+    return magnitude / C3_X00_TEMPERATURE_SCALE
+
+
+def _c3_x00_inner_command(body: bytearray) -> bytes:
+    """Return the two-byte inner command carried by a C3 X00 message."""
+    return bytes(
+        body[C3_X00_COMMAND_OFFSET : C3_X00_COMMAND_OFFSET + C3_X00_COMMAND_LENGTH],
     )
 
 
@@ -503,6 +545,35 @@ class C3Basic2010Body(MessageBody):
             C3_2010_OUTDOOR_TEMP_OFFSET,
         )
         self.outdoor_temperature = self.temp_t4
+
+
+class C3X00SensorTelemetryBody(MessageBody):
+    """C3 sensor telemetry carried by newer X00 inner protocols."""
+
+    def __init__(self, body: bytearray, data_offset: int) -> None:
+        """Initialize a C3 X00 sensor telemetry message body."""
+        super().__init__(body)
+        self.temp_t3 = _parse_c3_x00_signed_temperature(
+            body,
+            data_offset + C3_X00_SENSOR_TEMP_T3_OFFSET,
+        )
+        self.temp_t4 = _parse_c3_x00_signed_temperature(
+            body,
+            data_offset + C3_X00_SENSOR_TEMP_T4_OFFSET,
+        )
+        self.outdoor_temperature = self.temp_t4
+        self.temp_tp = _parse_c3_x00_signed_temperature(
+            body,
+            data_offset + C3_X00_SENSOR_TEMP_TP_OFFSET,
+        )
+        self.temp_tw_in = _parse_c3_x00_signed_temperature(
+            body,
+            data_offset + C3_X00_SENSOR_TEMP_TW_IN_OFFSET,
+        )
+        self.temp_tw_out = _parse_c3_x00_signed_temperature(
+            body,
+            data_offset + C3_X00_SENSOR_TEMP_TW_OUT_OFFSET,
+        )
 
 
 class C3EnergyBody(MessageBody):
@@ -918,45 +989,59 @@ class MessageC3Response(MessageResponse):
     total_produced_energy: int
     dhw_target_temp: float
     tank_actual_temperature: float
-    temp_t4: float
-    outdoor_temperature: float
+    temp_t3: float | None
+    temp_t4: float | None
+    temp_tp: float | None
+    temp_tw_in: float | None
+    temp_tw_out: float | None
+    outdoor_temperature: float | None
 
     def __init__(self, message: bytes) -> None:
         """Initialize C3 message response."""
         super().__init__(bytearray(message))
+        body = super().body
+        x00_command = _c3_x00_inner_command(body)
         if (
             self.message_type
             in [MessageType.set, MessageType.notify1, MessageType.query]
             and self.body_type == ListTypes.X01
         ) or self.message_type == MessageType.notify2:
-            self.set_body(C3BasicBody(super().body, data_offset=1))
+            self.set_body(C3BasicBody(body, data_offset=1))
         elif (
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X04
         ):
-            self.set_body(C3EnergyBody(super().body, data_offset=1))
+            self.set_body(C3EnergyBody(body, data_offset=1))
         elif self.message_type == MessageType.query and self.body_type == ListTypes.X05:
-            self.set_body(C3SilenceBody(super().body, data_offset=1))
+            self.set_body(C3SilenceBody(body, data_offset=1))
         elif (
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
         ):
-            self.set_body(C3UnitParaUpBody(super().body, data_offset=1))
+            self.set_body(C3UnitParaUpBody(body, data_offset=1))
         elif (
             self.message_type == MessageType.notify1
             and self.body_type == ListTypes.X00
-            and len(super().body) >= C3_2010_MIN_LENGTH
-            and bytes(
-                super().body[
-                    C3_2010_COMMAND_OFFSET : C3_2010_COMMAND_OFFSET
-                    + C3_2010_COMMAND_LENGTH
-                ],
-            )
-            == C3_2010_COMMAND
+            and len(body) >= C3_2010_MIN_LENGTH
+            and x00_command == C3_2010_COMMAND
         ):
-            self.set_body(C3Basic2010Body(super().body))
+            self.set_body(C3Basic2010Body(body))
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and len(body) >= C3_20B0_MIN_LENGTH
+            and x00_command == C3_20B0_COMMAND
+        ):
+            self.set_body(C3X00SensorTelemetryBody(body, C3_20B0_SENSOR_OFFSET))
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and len(body) >= C3_2F10_MIN_LENGTH
+            and x00_command == C3_2F10_COMMAND
+        ):
+            self.set_body(C3X00SensorTelemetryBody(body, C3_2F10_SENSOR_OFFSET))
         elif self.body_type == ListTypes.X07:
-            self.set_body(C3ECOBody(super().body, data_offset=1))
+            self.set_body(C3ECOBody(body, data_offset=1))
         elif self.body_type == ListTypes.X09:
-            self.set_body(C3DisinfectBody(super().body, data_offset=1))
+            self.set_body(C3DisinfectBody(body, data_offset=1))
         elif self.body_type == ListTypes.X10:
-            self.set_body(C3UnitParaBody(super().body, data_offset=1))
+            self.set_body(C3UnitParaBody(body, data_offset=1))
         self.set_attr()

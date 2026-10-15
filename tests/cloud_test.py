@@ -1353,6 +1353,39 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert cloud is not None
         assert await cloud._api_request(endpoint="/endpoint", data={}) is None
 
+    async def test_mideaaircloud_api_request_error_code_logged(self) -> None:
+        """Test MideaAirCloud _api_request logs the cloud error and returns None.
+
+        The legacy appsmb.com backend answers getToken with
+        9999 "system error" since Midea retired that service; the error code
+        and message must reach the log so the root cause is visible.
+        """
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            return_value=b'{"errorCode": 9999, "msg": "system error"}',
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "NetHome Plus",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert (
+                await cloud._api_request(
+                    endpoint="/v1/iot/secure/getToken",
+                    data={},
+                )
+                is None
+            )
+        joined = "\n".join(logs.output)
+        assert "9999" in joined
+        assert "system error" in joined
+        assert "/v1/iot/secure/getToken" in joined
+
     async def test_mideaaircloud_download_lua(self) -> None:
         """Test MideaAirCloud download_lua against the legacy backend."""
         session = Mock()

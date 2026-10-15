@@ -1386,6 +1386,32 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert "system error" in joined
         assert "/v1/iot/secure/getToken" in joined
 
+    async def test_mideaaircloud_api_request_negative_error_code_logged(self) -> None:
+        """Test a cloud-returned errorCode of -1 is still logged, not swallowed.
+
+        A parsed response is distinguished from an absent reply by tracking
+        parse success, so a cloud that genuinely answers errorCode -1 must
+        reach the warning log rather than being mistaken for "no response".
+        """
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            return_value=b'{"errorCode": -1, "msg": "error"}',
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "NetHome Plus",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        with self.assertLogs("midealan.cloud", level="WARNING") as logs:
+            assert await cloud._api_request(endpoint="/endpoint", data={}) is None
+        joined = "\n".join(logs.output)
+        assert "returned error -1" in joined
+        assert "error" in joined
+
     async def test_mideaaircloud_download_lua(self) -> None:
         """Test MideaAirCloud download_lua against the legacy backend."""
         session = Mock()

@@ -39,11 +39,6 @@ DAY_REPORT_TIMEOUT = ClientTimeout(20)
 # user token; callers log in again instead of retrying the same token.
 AUTH_ERROR_CODES = frozenset({40001, 40002, 44001})
 
-# Sentinel errorCode seeded on the legacy MideaAirCloud response before any
-# reply is parsed: it means no response arrived (timeout / connection / JSON
-# error, already logged by the except branch), not a cloud-reported error.
-NO_RESPONSE_CODE = -1
-
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_CLOUDS: dict[str, Any] = {
@@ -1145,7 +1140,10 @@ class MideaAirCloud(MideaCloud):
             header.update({"uid": self._uid})
         if self._access_token is not None:
             header.update({"accessToken": self._access_token})
-        response: dict = {"errorCode": NO_RESPONSE_CODE}
+        # Track parse success separately: a reply that never arrived must not be
+        # confused with a cloud that genuinely returns errorCode -1, so use None
+        # for the absent-reply case rather than a cloud-controlled sentinel code.
+        response: dict | None = None
         for _ in range(3):
             try:
                 async with self._api_lock:
@@ -1171,6 +1169,9 @@ class MideaAirCloud(MideaCloud):
                     url,
                     repr(e),
                 )
+        if response is None:
+            # No reply arrived after all retries; already logged above.
+            return None
         error_code = int(response["errorCode"])
         if error_code == 0:
             if "result" in response:
@@ -1179,14 +1180,13 @@ class MideaAirCloud(MideaCloud):
             # of "result"; fall back to it so download_lua can read the url.
             if "data" in response:
                 return cast("dict[str, Any]", response["data"])
-        elif error_code != NO_RESPONSE_CODE:
-            # Surface the cloud's own error. The legacy appsmb.com backend
-            # now answers getToken with 9999 "system error" for NetHome Plus /
-            # Midea Air / Ariston accounts: Midea retired that service and this
-            # backend has no v2 endpoint to fall back to, so the device must be
-            # re-paired under a SmartHome or Meiju account instead. The
-            # NO_RESPONSE_CODE sentinel means no reply arrived at all (already
-            # logged by the except branch above), so it is skipped here.
+        else:
+            # Surface the cloud's own error for every parsed non-zero code. The
+            # legacy appsmb.com backend now answers getToken with 9999 "system
+            # error" for NetHome Plus / Midea Air / Ariston accounts: Midea
+            # retired that service and this backend has no v2 endpoint to fall
+            # back to, so the device must be re-paired under a SmartHome or
+            # Meiju account instead.
             _LOGGER.warning(
                 "Midea Air cloud API %s returned error %s: %s",
                 endpoint,

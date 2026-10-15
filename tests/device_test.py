@@ -1003,11 +1003,10 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                # appliance ok, first real ok, second real times out twice
+                # appliance ok, first real ok, second real times out once
                 side_effect=[
                     bytearray([0x0]),
                     bytearray([0x0]),
-                    TimeoutError(),
                     TimeoutError(),
                 ],
             ),
@@ -1020,6 +1019,7 @@ class TestMideaDevice:
         ):
             self.device._socket = socket_mock
             self.device.refresh_status(True)  # must not raise
+            assert socket_mock.recv.call_count == 3
 
     def test_all_queries_failing_among_several_raises(self) -> None:
         """The sibling of the above: every real query failing must still raise."""

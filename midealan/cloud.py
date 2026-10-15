@@ -1257,6 +1257,64 @@ class MideaAirCloud(MideaCloud):
             return appliances
         return None
 
+    def _decrypt_appliance_lua(self, lua: str, sn: str) -> str | None:
+        """Decrypt a downloaded appliance lua file.
+
+        The current ``luaGetCbc`` endpoint serves AES-128-CBC content, while
+        the legacy ``luaGet`` endpoint served AES-128-ECB. Try the current CBC
+        scheme first and fall back to the legacy ECB scheme so a file from
+        either endpoint decrypts correctly.
+        """
+        security = cast("MideaAirSecurity", self._security)
+        try:
+            return security.decrypt_appliance_lua_cbc(lua)
+        except (ValueError, UnicodeDecodeError) as cbc_error:
+            try:
+                return security.decrypt_appliance_lua(lua)
+            except (ValueError, UnicodeDecodeError) as ecb_error:
+                _LOGGER.warning(
+                    "Failed to decrypt lua for appliance %s (cbc: %s, ecb: %s)",
+                    sn,
+                    cbc_error,
+                    ecb_error,
+                )
+                return None
+
+    async def _download_lua_from_endpoint(
+        self,
+        endpoint: str,
+        path: str,
+        data: dict[str, Any],
+        sn: str,
+    ) -> str | None:
+        """Request lua metadata from one endpoint and download the file.
+
+        ``_api_request`` adds a ``sign`` entry to ``data`` derived from its
+        current contents, so each attempt is given a fresh copy to avoid
+        signing over a previous attempt's ``sign`` (which the backend rejects
+        with "Sign illegal").
+        """
+        response = await self._api_request(endpoint=endpoint, data=dict(data))
+        if not response:
+            return None
+        metadata = self._get_lua_download_metadata(path, response, sn)
+        if not metadata:
+            return None
+        url, file_path = metadata
+        res = await self._session.get(url, timeout=ClientTimeout(10))
+        if res.status != HTTPStatus.OK:
+            return None
+        lua = await res.text()
+        if not lua:
+            return None
+        decrypted_lua = self._decrypt_appliance_lua(lua, sn)
+        if decrypted_lua is None:
+            return None
+        stream = ('local bit = require "bit"\n' + decrypted_lua).replace("\r\n", "\n")
+        async with aiofiles.open(file_path, "w") as fp:
+            await fp.write(stream)
+        return str(file_path)
+
     async def download_lua(
         self,
         path: str,
@@ -1267,10 +1325,11 @@ class MideaAirCloud(MideaCloud):
     ) -> str | None:
         """Download lua integration.
 
-        The legacy backend returns the lua payload under ``data`` (handled by
-        :meth:`_api_request`) and serves a hex-encoded AES-128-ECB file keyed
-        by the app key (see
-        :meth:`MideaAirSecurity.decrypt_appliance_lua`).
+        The current app requests lua files from the ``luaGetCbc`` endpoint
+        (AES-128-CBC), while older firmware used the plain ``luaGet`` endpoint
+        (AES-128-ECB). Try the current endpoint first and fall back to the
+        legacy one; the file served by either is decrypted by
+        :meth:`_decrypt_appliance_lua`.
         """
         data = self._make_general_data()
         data.update(
@@ -1281,36 +1340,14 @@ class MideaAirCloud(MideaCloud):
                 "version": "0",
             },
         )
-        fnm = None
-        if (
-            response := await self._api_request(
-                endpoint="/v1/appliance/protocol/lua/luaGet",
-                data=data,
-            )
-        ) and (metadata := self._get_lua_download_metadata(path, response, sn)):
-            url, file_path = metadata
-            res = await self._session.get(url, timeout=ClientTimeout(10))
-            if res.status == HTTPStatus.OK:
-                lua = await res.text()
-                if lua:
-                    try:
-                        decrypted_lua = cast(
-                            "MideaAirSecurity",
-                            self._security,
-                        ).decrypt_appliance_lua(lua)
-                    except (ValueError, UnicodeDecodeError) as e:
-                        _LOGGER.warning(
-                            "Failed to decrypt lua for appliance %s: %s",
-                            sn,
-                            e,
-                        )
-                        return None
-                    stream = 'local bit = require "bit"\n' + decrypted_lua
-                    stream = stream.replace("\r\n", "\n")
-                    fnm = file_path
-                    async with aiofiles.open(fnm, "w") as fp:
-                        await fp.write(stream)
-        return str(fnm) if fnm else None
+        for endpoint in (
+            "/v1/appliance/protocol/lua/luaGetCbc",
+            "/v1/appliance/protocol/lua/luaGet",
+        ):
+            fnm = await self._download_lua_from_endpoint(endpoint, path, data, sn)
+            if fnm:
+                return fnm
+        return None
 
 
 class TSmartLifeCloud(SmartHomeCloud):

@@ -236,6 +236,22 @@ class TestMideaAirSecurity:
             security.decrypt_appliance_lua(encrypted) == "function test() return 1 end"
         )
 
+    def test_decrypt_appliance_lua_cbc(self) -> None:
+        """Test the current lua blob decrypts with the sha256(app_key) CBC key."""
+        security = MideaAirSecurity("login_key")
+        digest = sha256(b"login_key").hexdigest()
+        key = digest[:16].encode("ascii")
+        iv = digest[16:32].encode("ascii")
+        encrypted = security.aes_encrypt(
+            b"function test() return 1 end",
+            key,
+            iv,
+        ).hex()
+        assert (
+            security.decrypt_appliance_lua_cbc(encrypted)
+            == "function test() return 1 end"
+        )
+
 
 class TestToshibaIOLifeSecurity:
     """Test Toshiba IOLife security."""

@@ -275,12 +275,32 @@ class MideaAirSecurity(CloudSecurity):
         sha.update((urlparse(url).path + payload + self._login_key).encode("ascii"))
         return sha.hexdigest()
 
+    def decrypt_appliance_lua_cbc(self, data: str) -> str:
+        """Decrypt an appliance lua file served by the ``luaGetCbc`` endpoint.
+
+        The current NetHome Plus / Midea Air apps request lua files from
+        ``/v1/appliance/protocol/lua/luaGetCbc`` and serve them as a
+        hex-encoded AES-128-CBC blob. Both key and IV are derived from
+        ``sha256(app_key)``: ``key = sha256(app_key)[:16]`` and
+        ``iv = sha256(app_key)[16:32]`` (hex digest sliced as ASCII), where
+        ``app_key`` is this security object's login key.
+        """
+        digest = sha256(self._login_key.encode("ascii")).hexdigest()
+        key = digest[:16].encode("ascii")
+        iv = digest[16:32].encode("ascii")
+        return unpad(
+            AES.new(key, AES.MODE_CBC, iv=iv).decrypt(bytes.fromhex(data)),
+            AES.block_size,
+        ).decode()
+
     def decrypt_appliance_lua(self, data: str) -> str:
         """Decrypt a legacy appliance lua file.
 
-        Unlike the Meiju/SmartHome clouds, the legacy backend serves lua files
-        as a hex-encoded AES-128-ECB blob keyed by ``md5(app_key)[:16]``, where
-        ``app_key`` is this security object's login key.
+        Unlike the Meiju/SmartHome clouds, the legacy ``luaGet`` endpoint
+        serves lua files as a hex-encoded AES-128-ECB blob keyed by
+        ``md5(app_key)[:16]``, where ``app_key`` is this security object's
+        login key. Retained as a fallback for the current CBC scheme (see
+        :meth:`decrypt_appliance_lua_cbc`).
         """
         # The legacy backend derives the AES key with MD5; not used as a
         # security hash.

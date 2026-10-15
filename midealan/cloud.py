@@ -1280,6 +1280,26 @@ class MideaAirCloud(MideaCloud):
                 )
                 return None
 
+    async def _fetch_lua_file(self, url: str, sn: str, endpoint: str) -> str | None:
+        """Download the lua file body, swallowing transport errors.
+
+        A failed download returns ``None`` so :meth:`download_lua` can fall
+        back to the next endpoint instead of propagating the error.
+        """
+        try:
+            res = await self._session.get(url, timeout=ClientTimeout(10))
+            if res.status != HTTPStatus.OK:
+                return None
+            return cast("str", await res.text())
+        except (ClientError, TimeoutError) as e:
+            _LOGGER.warning(
+                "Failed to download lua for appliance %s from %s: %s",
+                sn,
+                endpoint,
+                e,
+            )
+            return None
+
     async def _download_lua_from_endpoint(
         self,
         endpoint: str,
@@ -1301,10 +1321,7 @@ class MideaAirCloud(MideaCloud):
         if not metadata:
             return None
         url, file_path = metadata
-        res = await self._session.get(url, timeout=ClientTimeout(10))
-        if res.status != HTTPStatus.OK:
-            return None
-        lua = await res.text()
+        lua = await self._fetch_lua_file(url, sn, endpoint)
         if not lua:
             return None
         decrypted_lua = self._decrypt_appliance_lua(lua, sn)

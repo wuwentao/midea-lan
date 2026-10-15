@@ -1495,15 +1495,24 @@ class CloudTest(IsolatedAsyncioTestCase):
         res.text = AsyncMock(
             return_value=self._mideaair_ecb_lua(cloud, b"function test() return 1 end"),
         )
-        # First endpoint (luaGetCbc) yields no metadata; the second succeeds.
+        # Mimic _api_request mutating the request with a per-call signature:
+        # the first (luaGetCbc) attempt signs its data and yields no metadata,
+        # the second (luaGet) attempt must receive a copy without that sign.
+        seen_data: list[dict] = []
+
+        async def fake_api_request(endpoint: str, data: dict) -> dict | None:
+            seen_data.append(dict(data))
+            data["sign"] = f"sign-for-{endpoint}"
+            if endpoint.endswith("luaGetCbc"):
+                return None
+            return {"url": "returnedURL", "fileName": "f.lua"}
+
         with (
             TemporaryDirectory() as tmpdir,
             patch.object(
                 cloud,
                 "_api_request",
-                AsyncMock(
-                    side_effect=[None, {"url": "returnedURL", "fileName": "f.lua"}],
-                ),
+                AsyncMock(side_effect=fake_api_request),
             ) as api_request,
         ):
             file = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
@@ -1519,6 +1528,8 @@ class CloudTest(IsolatedAsyncioTestCase):
             "/v1/appliance/protocol/lua/luaGetCbc",
             "/v1/appliance/protocol/lua/luaGet",
         ]
+        # The legacy attempt must not inherit the signed CBC request.
+        assert "sign" not in seen_data[1]
 
     async def test_mideaaircloud_download_lua_non_ok_response(self) -> None:
         """Test download_lua returns None when both endpoints fail download."""
@@ -1544,6 +1555,39 @@ class CloudTest(IsolatedAsyncioTestCase):
             assert (
                 await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010") is None
             )
+
+    async def test_mideaaircloud_download_lua_download_error_fallback(self) -> None:
+        """Test download_lua tries the legacy endpoint after a download error."""
+        session = Mock()
+        res = Mock()
+        res.status = 200
+        # First (luaGetCbc) download raises; second (luaGet) download succeeds.
+        session.get = AsyncMock(side_effect=[ClientConnectionError("boom"), res])
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert isinstance(cloud, MideaAirCloud)
+        res.text = AsyncMock(
+            return_value=self._mideaair_ecb_lua(cloud, b"function test() return 1 end"),
+        )
+        with (
+            TemporaryDirectory() as tmpdir,
+            patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value={"url": "returnedURL", "fileName": "f.lua"}),
+            ),
+            self.assertLogs("midealan.cloud", level="WARNING") as logs,
+        ):
+            file = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
+            assert file is not None
+            Path.unlink(Path(file))
+        assert "Failed to download lua for appliance 00000000" in "\n".join(logs.output)
+        assert session.get.await_count == 2
 
     async def test_mideaaircloud_download_lua_invalid_metadata(self) -> None:
         """Test download_lua returns None when metadata lacks a usable name."""

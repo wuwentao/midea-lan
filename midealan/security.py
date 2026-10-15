@@ -32,6 +32,9 @@ MSGTYPE_ENCRYPTED_RESPONSE = 0x3
 MSGTYPE_ENCRYPTED_REQUEST = 0x6
 TCP_KEY_RESPONSE_LENGTH = 64
 AES_KEY_LENGTH = 16
+# luaGetCbc derives a 16-byte key and 16-byte IV from a sha256 hex digest:
+# key = digest[:AES_KEY_LENGTH], iv = digest[AES_KEY_LENGTH:LUA_CBC_IV_END].
+LUA_CBC_IV_END = 32
 
 
 class UdpIdMethod(IntEnum):
@@ -286,8 +289,8 @@ class MideaAirSecurity(CloudSecurity):
         ``app_key`` is this security object's login key.
         """
         digest = sha256(self._login_key.encode("ascii")).hexdigest()
-        key = digest[:16].encode("ascii")
-        iv = digest[16:32].encode("ascii")
+        key = digest[:AES_KEY_LENGTH].encode("ascii")
+        iv = digest[AES_KEY_LENGTH:LUA_CBC_IV_END].encode("ascii")
         return unpad(
             AES.new(key, AES.MODE_CBC, iv=iv).decrypt(bytes.fromhex(data)),
             AES.block_size,

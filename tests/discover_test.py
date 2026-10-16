@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from midealan.discover import (
+    DISCOVERY_MIN_REPLY_LENGTH,
     _decode_ascii_or_hex,
     _decrypt_or_plaintext_reply,
     _extract_mac,
@@ -30,8 +31,13 @@ def _build_reply(
     ssid: bytes = SSID,
     sn: bytes = SN_TYPE1,
     mac: bytes = bytes.fromhex("aabbccddeeff"),
+    tail: bytes = b"",
 ) -> bytes:
-    """Build a decrypted v2/v3 discover reply payload."""
+    """Build a decrypted v2/v3 discover reply payload.
+
+    ``tail`` is appended after the 6-byte MAC (i.e. starting at offset 28 past
+    the end of the SSID) to exercise the extended-field parser.
+    """
     return (
         b"\x00" * 4
         + bytes([0x2C, 0x19, 0x00, 0x00])  # port 6444 little endian
@@ -40,6 +46,7 @@ def _build_reply(
         + ssid
         + b"\x00" * 22  # pad up to mac_start = 63 + ssid_len
         + mac
+        + tail
     )
 
 
@@ -177,7 +184,75 @@ class TestParseDiscoverResponse:
             "sn": SN_TYPE1.decode(),
             "protocol": protocol,
             "mac": "aabbccddeeff",
+            # The zero-filled tail of the fixture yields these extended fields
+            # up to the point the reply becomes too short for the next one.
+            "udp_version": 0,
+            "protocol_code": 0,
+            "is_master_gateway": False,
+            "manufacturer_code": 0,
+            "device_subtype": 0,
         }
+
+    def test_parse_extended_fields(self) -> None:
+        """Test every extended identity field decodes at the right offset.
+
+        Builds a reply whose tail region (relative to the end of the SSID)
+        carries a distinct value in each field, then checks the decoded
+        device dict against the official MSDeviceScanResult layout.
+        """
+        base = DISCOVERY_MIN_REPLY_LENGTH + len(SSID)
+        reply = bytearray(_build_reply())
+        reply.extend(b"\x00" * (base + 53 - len(reply)))  # room for all fields
+        # Offsets are relative to ``base`` (end of the SSID).
+        reply[base + 4 : base + 8] = (2).to_bytes(4, "little")  # udp_version
+        reply[base + 8] = 0x42  # protocol_code
+        reply[base + 11] = 0x81  # is_master_gateway (0x81 & 0x81 == 0x81)
+        reply[base + 12 : base + 14] = (0x1234).to_bytes(2, "little")  # mfr code
+        reply[base + 16 : base + 18] = (0x0056).to_bytes(2, "little")  # subtype
+        reply[base + 28 : base + 34] = bytes.fromhex("010203040506")  # proto ver
+        reply[base + 34] = 1  # server_connected
+        reply[base + 35] = 7  # max_tcp_count
+        reply[base + 36] = 3  # current_tcp_count
+        reply[base + 37 : base + 53] = bytes(range(16))  # random_code
+
+        data = _build_v2_packet(encrypt_data=bytes(reply))
+        _, device = _parse_discover_response(_mock_sock_with(data), {})
+        assert device is not None
+        assert device["udp_version"] == 2
+        assert device["protocol_code"] == 0x42
+        assert device["is_master_gateway"] is True
+        assert device["manufacturer_code"] == 0x1234
+        assert device["device_subtype"] == 0x0056
+        assert device["protocol_version"] == "010203040506"
+        assert device["server_connected"] is True
+        assert device["max_tcp_count"] == 7
+        assert device["current_tcp_count"] == 3
+        assert device["random_code"] == bytes(range(16)).hex()
+
+    def test_parse_extended_fields_truncated(self) -> None:
+        """Test a short reply yields only the fields it can hold.
+
+        The default fixture tail reaches the MAC (base + 28), so the fields
+        past that point must be absent rather than guessed or zero-filled.
+        """
+        _, device = _parse_discover_response(
+            _mock_sock_with(_build_v2_packet()),
+            {},
+        )
+        assert device is not None
+        assert "device_subtype" in device  # min_len 22, present
+        assert "protocol_version" not in device  # min_len 34, absent
+        assert "random_code" not in device  # min_len 53, absent
+
+    def test_parse_master_gateway_false_for_partial_bits(self) -> None:
+        """Test the master-gateway flag needs every masked bit set."""
+        base = DISCOVERY_MIN_REPLY_LENGTH + len(SSID)
+        reply = bytearray(_build_reply())
+        reply[base + 11] = 0x01  # only one of the 0x81 bits set
+        data = _build_v2_packet(encrypt_data=bytes(reply))
+        _, device = _parse_discover_response(_mock_sock_with(data), {})
+        assert device is not None
+        assert device["is_master_gateway"] is False
 
     def test_parse_duplicate_device(self) -> None:
         """Test a device already in found_devices is skipped."""

@@ -37,12 +37,18 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_NEW_SWING_ANGLE = 1275
 INVALID_MODE_CODE = 0
 MAX_LEGACY_SWING_MODE = 6
+# Models whose Lua uses the 54-byte protocol v5 set frame (MessageCB4Set).
+# 56011C99 shares 56011CB4's framing byte-for-byte (same body length, invalid
+# marker bytes, and Ecology mode); it only adds cloud-side lr_swing/ud_swing
+# convenience keys that map onto the same swing bytes.
+MODE_CB4_PROTOCOL_MODELS = {"56011CB4", "56011C99"}
 MODE_NEW_PROTOCOL_MODELS = {
     "560000F3": FA_MESSAGE_PROTOCOL,
     "56011CB4": FA_MESSAGE_PROTOCOL,
+    "56011C99": FA_MESSAGE_PROTOCOL,
     "56011CEC": FA_MESSAGE_PROTOCOL_V6,
 }
-MODE_ECOLOGY_MODELS = {"56011CB4", "56011CEC"}
+MODE_ECOLOGY_MODELS = {"56011CB4", "56011C99", "56011CEC"}
 MODE_OFFICIAL_V6_MODELS = {"56011CEC"}
 # Model 56000211 reports raw mode 4 with the additional power-mode bit set.
 MODE_LEGACY_SET_OVERRIDES = {
@@ -519,6 +525,33 @@ class MideaFADevice(MideaDevice):
             self._set_tilting_angle(message, str(value))
         return message
 
+    def _set_new_oscillate_toggle(
+        self,
+        message: MessageNewSet | MessageV6Set,
+        value: bool,
+        current_mode: str | None,
+    ) -> None:
+        """Encode a protocol v5/v6 oscillate on/off toggle."""
+        message.oscillate = value
+        if value:
+            message.oscillation_angle = (
+                V6_DEFAULT_SWING_ANGLE
+                if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                else DEFAULT_NEW_SWING_ANGLE
+            )
+            message.oscillation_mode = "oscillation"
+            return
+        message.oscillation_angle = 0
+        current_tilting = self._attributes[DeviceAttributes.tilting_angle]
+        if current_mode == "both" or self._is_active_angle(current_tilting):
+            # The device swings on both axes; the firmware only acts on the axis
+            # named by the direction byte, so clear the UD axis too and send the
+            # combined direction to stop both.
+            message.oscillation_mode = "both"
+            message.tilting_angle = 0
+        else:
+            message.oscillation_mode = "oscillation"
+
     def set_new_oscillation(
         self,
         attr: str,
@@ -532,17 +565,7 @@ class MideaFADevice(MideaDevice):
         is_v6 = self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
         current_mode = self._attributes[DeviceAttributes.oscillation_mode]
         if attr == DeviceAttributes.oscillate:
-            message.oscillate = bool(value)
-            if value:
-                message.oscillation_angle = (
-                    V6_DEFAULT_SWING_ANGLE
-                    if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
-                    else DEFAULT_NEW_SWING_ANGLE
-                )
-                message.oscillation_mode = "oscillation"
-            else:
-                message.oscillation_angle = 0
-                message.oscillation_mode = "oscillation"
+            self._set_new_oscillate_toggle(message, bool(value), current_mode)
         elif attr == DeviceAttributes.oscillation_mode:
             if value in {"off", "", None}:
                 message.oscillate = False
@@ -662,7 +685,7 @@ class MideaFADevice(MideaDevice):
             MessageV6Set
             if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
             else MessageCB4Set
-            if self.model == "56011CB4"
+            if self.model in MODE_CB4_PROTOCOL_MODELS
             else MessageNewSet
         )
         return message_type(self._message_protocol_version, self.subtype)

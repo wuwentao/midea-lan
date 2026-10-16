@@ -404,7 +404,11 @@ class MessageV6Set(MessageNewSet):
 
 
 class MessageCB4Set(MessageNewSet):
-    """FA protocol v5 set message from T_0000_FA_56011CB4_2023081801.lua."""
+    """FA protocol v5 54-byte set message.
+
+    Shared by T_0000_FA_56011CB4_2023081801.lua and
+    T_0000_FA_56011C99_2024061401.lua, which encode the set frame identically.
+    """
 
     _body_length = CB4_PROTOCOL_BODY_LENGTH
     _invalid_body_bytes = CB4_PROTOCOL_INVALID_BODY_BYTES

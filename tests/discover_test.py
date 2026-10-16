@@ -338,6 +338,31 @@ class TestDiscover:
             result = discover(discover_type=[0xFF], ip_address=["192.168.1.255"])
         assert result == {}
 
+    def test_discover_skips_unparsable_response(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test a malformed reply is skipped without aborting the scan.
+
+        A plaintext reply whose SSID has no ``_`` separator makes
+        ``ssid.split("_")[1]`` raise IndexError. The scan must swallow it
+        and still return the valid device that arrives afterwards.
+        """
+        bad_reply = _build_reply(ssid=b"no-separator")
+        good_device_id = DEVICE_ID + 1
+        sock = MagicMock()
+        sock.recvfrom.side_effect = [
+            (_build_v2_packet(encrypt_data=bad_reply), (DEVICE_IP, 6445)),
+            (_build_v2_packet(device_id=good_device_id), (DEVICE_IP, 6445)),
+            TimeoutError,
+        ]
+        mock_socket = MagicMock()
+        mock_socket.__enter__.return_value = sock
+        with patch("midealan.discover.socket.socket", return_value=mock_socket):
+            result = discover(ip_address=["192.168.1.255"])
+        assert list(result) == [good_device_id]
+        assert "Skipping an unparsable discovery response" in caplog.text
+
     def test_discover_send_and_socket_errors(self) -> None:
         """Test sendto OSError and recvfrom OSError are survived."""
         sock = MagicMock()

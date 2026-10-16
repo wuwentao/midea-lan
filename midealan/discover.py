@@ -9,7 +9,7 @@ from typing import Any
 import ifaddr
 from defusedxml import ElementTree
 
-from .exceptions import ElementMissing
+from .exceptions import ElementMissing, MideaLanError
 from .security import LocalSecurity
 
 _LOGGER = logging.getLogger(__name__)
@@ -363,6 +363,15 @@ def discover(
                 break
             except OSError:
                 _LOGGER.exception("Socket error")
+            except (MideaLanError, ValueError, IndexError, KeyError):
+                # A single malformed or unknown reply must not abort the whole
+                # scan: skip just this packet so the remaining devices on the
+                # LAN are still discovered. Mirrors the official app, which
+                # wraps per-packet parsing in a catch-all and keeps scanning.
+                _LOGGER.warning(
+                    "Skipping an unparsable discovery response",
+                    exc_info=True,
+                )
     return found_devices
 
 

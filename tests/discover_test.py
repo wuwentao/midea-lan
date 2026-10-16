@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from midealan.discover import (
+    _decode_ascii_or_hex,
+    _decrypt_or_plaintext_reply,
     _extract_mac,
+    _is_valid_reply,
     _parse_discover_response,
     bytes2port,
     discover,
@@ -106,6 +109,51 @@ def test_extract_mac(
     assert _extract_mac(reply, ssid_len, sn) == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (b"12345678", "12345678"),  # printable ASCII decodes as-is
+        (b"\x80\x81\x82", "808182"),  # non-ASCII falls back to hex
+    ],
+)
+def test_decode_ascii_or_hex(raw: bytes, expected: str) -> None:
+    """Test _decode_ascii_or_hex ASCII path and hex fallback."""
+    assert _decode_ascii_or_hex(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (_build_reply(), True),  # well-formed reply
+        (b"\x00" * 10, False),  # too short to hold the SSID-length byte
+        (b"\x00" * 40 + b"\xff", False),  # SSID length overruns the buffer
+    ],
+)
+def test_is_valid_reply(reply: bytes, expected: bool) -> None:
+    """Test _is_valid_reply structure checks."""
+    assert _is_valid_reply(reply) is expected
+
+
+def test_decrypt_or_plaintext_reply_encrypted() -> None:
+    """Test an AES-encrypted body is decrypted."""
+    reply = _build_reply()
+    encrypt_data = bytes(LocalSecurity().aes_encrypt(reply))
+    assert _decrypt_or_plaintext_reply(LocalSecurity(), encrypt_data) == bytearray(
+        reply,
+    )
+
+
+def test_decrypt_or_plaintext_reply_plaintext() -> None:
+    """Test a plaintext body is returned unchanged."""
+    reply = _build_reply()
+    assert _decrypt_or_plaintext_reply(LocalSecurity(), reply) == bytearray(reply)
+
+
+def test_decrypt_or_plaintext_reply_invalid() -> None:
+    """Test a body that is neither decryptable nor valid plaintext."""
+    assert _decrypt_or_plaintext_reply(LocalSecurity(), b"\xde\xad" * 40) is None
+
+
 class TestParseDiscoverResponse:
     """_parse_discover_response test case."""
 
@@ -154,6 +202,40 @@ class TestParseDiscoverResponse:
         """Test undecryptable encrypt_data is reported as unsupported."""
         data = _build_v2_packet(encrypt_data=b"\xde\xad" * 40)
         assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+
+    def test_parse_plaintext_broadcast(self) -> None:
+        """Test a plaintext (unencrypted) broadcast body is parsed.
+
+        Newer appliances send the reply body as plaintext instead of
+        AES-ECB ciphertext. The body cannot be decrypted, but it is itself
+        a valid reply and must be parsed directly.
+        """
+        reply = _build_reply()
+        data = _build_v2_packet(encrypt_data=reply)
+        device_id, device = _parse_discover_response(_mock_sock_with(data), {})
+        assert device_id == DEVICE_ID
+        assert device is not None
+        assert device["type"] == 0xAC
+        assert device["port"] == DEVICE_PORT
+        assert device["model"] == "12345678"
+        assert device["sn"] == SN_TYPE1.decode()
+
+    def test_parse_plaintext_broadcast_binary_sn(self) -> None:
+        """Test a plaintext broadcast whose serial/model bytes are binary.
+
+        Plaintext broadcasts carry an obfuscated binary serial number, so
+        the ASCII decode of the SN and model fields must fall back to hex
+        rather than raising.
+        """
+        binary_sn = bytes(range(0x80, 0xA0))  # non-ASCII serial bytes
+        reply = _build_reply(sn=binary_sn)
+        data = _build_v2_packet(encrypt_data=reply)
+        device_id, device = _parse_discover_response(_mock_sock_with(data), {})
+        assert device_id == DEVICE_ID
+        assert device is not None
+        assert device["type"] == 0xAC
+        assert device["sn"] == binary_sn.hex()
+        assert device["model"] == binary_sn[9:17].hex()
 
     def test_parse_garbage(self) -> None:
         """Test a datagram matching no known protocol."""

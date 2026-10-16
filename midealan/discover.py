@@ -158,6 +158,11 @@ MAX_NETWORK_PREFIX_LENGHT = 32
 SERIAL_TYPE1_LENGTH = 32
 SERIAL_TYPE2_LENGTH = 22
 DISCOVERY_MIN_REPLY_LENGTH = 41
+# Offset of the SSID-length byte inside a decrypted/plaintext reply.
+SSID_LENGTH_OFFSET = 40
+# Byte ranges inside a decrypted/plaintext reply.
+SN_START, SN_END = 8, 40
+MODEL_START, MODEL_END = 17, 25
 
 
 def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None:
@@ -187,6 +192,54 @@ def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None
         _LOGGER.warning("Invalid MAC address %s", mac)
         mac = None
     return mac
+
+
+def _is_valid_reply(reply: bytes | bytearray) -> bool:
+    """Return whether ``reply`` is a well-formed decrypted discover reply.
+
+    A valid reply carries an SSID-length byte at ``SSID_LENGTH_OFFSET`` and
+    enough trailing bytes to hold that SSID.
+    """
+    return len(reply) > DISCOVERY_MIN_REPLY_LENGTH and reply[
+        SSID_LENGTH_OFFSET
+    ] + DISCOVERY_MIN_REPLY_LENGTH <= len(reply)
+
+
+def _decrypt_or_plaintext_reply(
+    security: LocalSecurity,
+    encrypt_data: bytes,
+) -> bytearray | None:
+    """Return the plaintext discover reply, or None if it cannot be parsed.
+
+    Historically every device encrypted the reply body with AES-ECB. Newer
+    appliances (e.g. 2024+ KFR-* ACs, dishwashers, range hoods) broadcast the
+    body as plaintext instead -- the official app treats a broadcast as plain
+    when its command byte flags it so, and its encrypted-broadcast branch is
+    dead code. midealan has no command byte here, so distinguish the two by
+    structure rather than by flag.
+
+    Try decryption first (keeps every existing encrypted device working), and
+    fall back to treating the body as plaintext when decryption yields nothing
+    usable but the raw body is itself a valid reply.
+    """
+    reply = security.aes_decrypt(encrypt_data)
+    if _is_valid_reply(reply):
+        return reply
+    if _is_valid_reply(encrypt_data):
+        return bytearray(encrypt_data)
+    return None
+
+
+def _decode_ascii_or_hex(raw: bytes | bytearray) -> str:
+    """Decode ``raw`` as ASCII, falling back to hex for non-ASCII bytes.
+
+    Plaintext broadcasts carry an obfuscated binary serial number where older
+    devices sent printable ASCII, so decode defensively instead of raising.
+    """
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError:
+        return raw.hex()
 
 
 def _parse_discover_response(
@@ -220,27 +273,24 @@ def _parse_discover_response(
         if device_id in found_devices:
             return 0, None
         encrypt_data = data[40:-16]
-        reply = security.aes_decrypt(encrypt_data)
-        if len(reply) > DISCOVERY_MIN_REPLY_LENGTH and reply[
-            40
-        ] + DISCOVERY_MIN_REPLY_LENGTH <= len(reply):
-            _LOGGER.debug("Declassified reply: %s", reply.hex())
-            ssid_len = reply[40]
-            ssid = reply[
-                DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len
-            ].decode("ascii")
-            device_type = ssid.split("_")[1]
-            port = bytes2port(reply[4:8])
-            model = reply[17:25].decode("ascii")
-            sn = reply[8:40].decode("ascii")
-            mac = _extract_mac(reply, ssid_len, sn)
-        else:
+        reply = _decrypt_or_plaintext_reply(security, encrypt_data)
+        if reply is None:
             _LOGGER.warning(
                 "Failed to decrypt the encrypt_data: %s from %s. Maybe not support.",
                 encrypt_data.hex(),
                 ip,
             )
             return 0, None
+        _LOGGER.debug("Declassified reply: %s", reply.hex())
+        ssid_len = reply[SSID_LENGTH_OFFSET]
+        ssid = reply[
+            DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len
+        ].decode("ascii")
+        device_type = ssid.split("_")[1]
+        port = bytes2port(reply[4:8])
+        model = _decode_ascii_or_hex(reply[MODEL_START:MODEL_END])
+        sn = _decode_ascii_or_hex(reply[SN_START:SN_END])
+        mac = _extract_mac(reply, ssid_len, sn)
     elif data[:6].hex() == "3c3f786d6c20":
         protocol = 1
         root = ElementTree.fromstring(

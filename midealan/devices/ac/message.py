@@ -337,6 +337,15 @@ class CapabilityTag(IntEnum):
     jet_cool = 0x0067
     rewarming_dry = 0x0068
     arom = 0x0069
+    unknown_6d = 0x006D
+    has_cool_heat_amount = 0x0090
+    has_icheck = 0x0091
+    emergent_heat_wind = 0x0093
+    heat_ptc_wind = 0x0094
+    unknown_95 = 0x0095
+    cvp = 0x0098
+    new_wind_sense = 0x00AA
+    comfort = 0x00AD
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
     ieco = 0x00E3

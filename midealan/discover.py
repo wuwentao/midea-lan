@@ -6,13 +6,14 @@ import re
 import select
 import socket
 import time
+from collections.abc import Callable
 from ipaddress import IPv4Network
-from typing import Any
+from typing import Any, NamedTuple
 
 import ifaddr
 from defusedxml import ElementTree
 
-from .exceptions import ElementMissing
+from .exceptions import ElementMissing, MideaLanError
 from .security import LocalSecurity
 
 _LOGGER = logging.getLogger(__name__)
@@ -161,6 +162,15 @@ MAX_NETWORK_PREFIX_LENGHT = 32
 SERIAL_TYPE1_LENGTH = 32
 SERIAL_TYPE2_LENGTH = 22
 DISCOVERY_MIN_REPLY_LENGTH = 41
+# Offset of the SSID-length byte inside a decrypted/plaintext reply.
+SSID_LENGTH_OFFSET = 40
+# Byte ranges inside a decrypted/plaintext reply.
+SN_START, SN_END = 8, 40
+MODEL_START, MODEL_END = 17, 25
+# A device reports it is connected to the Midea cloud when this byte equals 1.
+CONNECTED_FLAG = 1
+# A device is the master gateway when exactly these bits are set.
+MASTER_GATEWAY_MASK = 0x81
 # Datagram read size. The official app reads 1024-byte datagrams; keep parity so
 # a larger reply (e.g. a long SSID plus the identity tail) is never truncated.
 DISCOVERY_RECV_BUFFER = 1024
@@ -175,6 +185,90 @@ SEND_BROADCAST_PORTS = (6445, 20086)
 RECEIVE_BROADCAST_PORTS = (7083, 15000)
 # Overall time budget for one discover() scan.
 DISCOVERY_TIMEOUT = 5.0
+
+
+def _ext_le_int(raw: bytes | bytearray) -> int:
+    """Decode a little-endian unsigned integer (official Util.bytesToInt)."""
+    return int.from_bytes(raw, "little")
+
+
+def _ext_first_byte(raw: bytes | bytearray) -> int:
+    """Decode a single unsigned byte."""
+    return raw[0]
+
+
+def _ext_is_master_gateway(raw: bytes | bytearray) -> bool:
+    """Decode the master-gateway flag byte."""
+    return (raw[0] & MASTER_GATEWAY_MASK) == MASTER_GATEWAY_MASK
+
+
+def _ext_is_connected(raw: bytes | bytearray) -> bool:
+    """Decode the cloud-connected flag byte."""
+    return raw[0] == CONNECTED_FLAG
+
+
+def _ext_hex(raw: bytes | bytearray) -> str:
+    """Decode a byte range as a lowercase hex string (BCD / random code)."""
+    return raw.hex()
+
+
+class _ExtendedField(NamedTuple):
+    """One best-effort field in the tail of a v2/v3 discover reply.
+
+    ``start``/``end`` are byte offsets relative to the end of the SSID
+    (``DISCOVERY_MIN_REPLY_LENGTH + ssid_len``); ``min_len`` is how many bytes
+    must follow the SSID before the field is safe to read, matching the
+    official MSDeviceScanResult.parseDataBytes length guards.
+    """
+
+    key: str
+    start: int
+    end: int
+    min_len: int
+    decode: Callable[[bytes | bytearray], Any]
+
+
+# Field layout of the reply tail, ordered by ascending min_len so parsing can
+# stop at the first field the reply is too short to contain (the official
+# parser returns early at the same points). Offsets are relative to the end of
+# the SSID. Capability/provisioning flag bytes (identification, extra-low/high)
+# are intentionally not exposed -- they only matter during device setup.
+_EXTENDED_FIELDS: tuple[_ExtendedField, ...] = (
+    _ExtendedField("udp_version", 4, 8, 8, _ext_le_int),
+    _ExtendedField("protocol_code", 8, 9, 9, _ext_first_byte),
+    _ExtendedField("is_master_gateway", 11, 12, 12, _ext_is_master_gateway),
+    _ExtendedField("manufacturer_code", 12, 14, 14, _ext_le_int),
+    _ExtendedField("device_subtype", 16, 18, 22, _ext_le_int),
+    _ExtendedField("protocol_version", 28, 34, 34, _ext_hex),
+    _ExtendedField("server_connected", 34, 35, 35, _ext_is_connected),
+    _ExtendedField("max_tcp_count", 35, 36, 37, _ext_first_byte),
+    _ExtendedField("current_tcp_count", 36, 37, 37, _ext_first_byte),
+    _ExtendedField("random_code", 37, 53, 53, _ext_hex),
+)
+
+
+def _parse_extended_fields(
+    reply: bytes | bytearray,
+    ssid_len: int,
+) -> dict[str, Any]:
+    """Decode the optional device-identity fields after the SSID.
+
+    Mirrors MSDeviceScanResult.parseDataBytes: every field is length-guarded,
+    so a short reply simply yields fewer keys instead of raising. Only the
+    fields actually present are returned; callers use ``.get()``.
+
+    Note: when ``udp_version`` >= 4 the device uses TLS and its serial/tid are
+    PBKDF2-encrypted with the app's private key (unavailable here), so those
+    stay as decoded by the caller rather than being re-decrypted.
+    """
+    base = DISCOVERY_MIN_REPLY_LENGTH + ssid_len
+    length = len(reply)
+    fields: dict[str, Any] = {}
+    for spec in _EXTENDED_FIELDS:
+        if length < base + spec.min_len:
+            break
+        fields[spec.key] = spec.decode(reply[base + spec.start : base + spec.end])
+    return fields
 
 
 def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None:
@@ -204,6 +298,54 @@ def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None
         _LOGGER.warning("Invalid MAC address %s", mac)
         mac = None
     return mac
+
+
+def _is_valid_reply(reply: bytes | bytearray) -> bool:
+    """Return whether ``reply`` is a well-formed decrypted discover reply.
+
+    A valid reply carries an SSID-length byte at ``SSID_LENGTH_OFFSET`` and
+    enough trailing bytes to hold that SSID.
+    """
+    return len(reply) > DISCOVERY_MIN_REPLY_LENGTH and reply[
+        SSID_LENGTH_OFFSET
+    ] + DISCOVERY_MIN_REPLY_LENGTH <= len(reply)
+
+
+def _decrypt_or_plaintext_reply(
+    security: LocalSecurity,
+    encrypt_data: bytes,
+) -> bytearray | None:
+    """Return the plaintext discover reply, or None if it cannot be parsed.
+
+    Historically every device encrypted the reply body with AES-ECB. Newer
+    appliances (e.g. 2024+ KFR-* ACs, dishwashers, range hoods) broadcast the
+    body as plaintext instead -- the official app treats a broadcast as plain
+    when its command byte flags it so, and its encrypted-broadcast branch is
+    dead code. midealan has no command byte here, so distinguish the two by
+    structure rather than by flag.
+
+    Try decryption first (keeps every existing encrypted device working), and
+    fall back to treating the body as plaintext when decryption yields nothing
+    usable but the raw body is itself a valid reply.
+    """
+    reply = security.aes_decrypt(encrypt_data)
+    if _is_valid_reply(reply):
+        return reply
+    if _is_valid_reply(encrypt_data):
+        return bytearray(encrypt_data)
+    return None
+
+
+def _decode_ascii_or_hex(raw: bytes | bytearray) -> str:
+    """Decode ``raw`` as ASCII, falling back to hex for non-ASCII bytes.
+
+    Plaintext broadcasts carry an obfuscated binary serial number where older
+    devices sent printable ASCII, so decode defensively instead of raising.
+    """
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError:
+        return raw.hex()
 
 
 def _parse_discover_response(
@@ -237,27 +379,25 @@ def _parse_discover_response(
         if device_id in found_devices:
             return 0, None
         encrypt_data = data[40:-16]
-        reply = security.aes_decrypt(encrypt_data)
-        if len(reply) > DISCOVERY_MIN_REPLY_LENGTH and reply[
-            40
-        ] + DISCOVERY_MIN_REPLY_LENGTH <= len(reply):
-            _LOGGER.debug("Declassified reply: %s", reply.hex())
-            ssid_len = reply[40]
-            ssid = reply[
-                DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len
-            ].decode("ascii")
-            device_type = ssid.split("_")[1]
-            port = bytes2port(reply[4:8])
-            model = reply[17:25].decode("ascii")
-            sn = reply[8:40].decode("ascii")
-            mac = _extract_mac(reply, ssid_len, sn)
-        else:
+        reply = _decrypt_or_plaintext_reply(security, encrypt_data)
+        if reply is None:
             _LOGGER.warning(
                 "Failed to decrypt the encrypt_data: %s from %s. Maybe not support.",
                 encrypt_data.hex(),
                 ip,
             )
             return 0, None
+        _LOGGER.debug("Declassified reply: %s", reply.hex())
+        ssid_len = reply[SSID_LENGTH_OFFSET]
+        ssid = reply[
+            DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len
+        ].decode("ascii")
+        device_type = ssid.split("_")[1]
+        port = bytes2port(reply[4:8])
+        model = _decode_ascii_or_hex(reply[MODEL_START:MODEL_END])
+        sn = _decode_ascii_or_hex(reply[SN_START:SN_END])
+        mac = _extract_mac(reply, ssid_len, sn)
+        extended = _parse_extended_fields(reply, ssid_len)
     elif data[:6].hex() == "3c3f786d6c20":
         protocol = 1
         root = ElementTree.fromstring(
@@ -281,6 +421,7 @@ def _parse_discover_response(
         else:
             model = ""
         mac = _extract_mac(b"", 0, sn)
+        extended = {}
     else:
         return 0, None
     return device_id, {
@@ -292,6 +433,7 @@ def _parse_discover_response(
         "sn": sn,
         "protocol": protocol,
         "mac": mac,
+        **extended,
     }
 
 
@@ -397,6 +539,15 @@ def _discover_receive_loop(
                     _LOGGER.debug("Found a unsupported device: %s", device)
             except OSError:
                 _LOGGER.exception("Socket error")
+            except (MideaLanError, ValueError, IndexError, KeyError):
+                # A single malformed or unknown reply must not abort the whole
+                # scan: skip just this packet so the remaining devices on the
+                # LAN are still discovered. Mirrors the official app, which
+                # wraps per-packet parsing in a catch-all and keeps scanning.
+                _LOGGER.warning(
+                    "Skipping an unparsable discovery response",
+                    exc_info=True,
+                )
 
 
 def get_id_from_response(response: bytearray) -> int:

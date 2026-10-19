@@ -14,6 +14,10 @@ from midealan.devices.db.message import (
     MessagePower,
     MessageQuery,
     MessageStart,
+    MessageToshibaDBResponse,
+    MessageToshibaQuery,
+    toshiba_crc16,
+    toshiba_frame,
 )
 from midealan.exceptions import ValueWrongType
 from midealan.message import ListTypes, MessageType
@@ -42,6 +46,21 @@ def frame(
 ) -> bytes:
     """Build an identity-free response frame for parser tests."""
     return bytes([0xAA] + [0] * 7 + [ProtocolVersion.V1, message_type]) + body + b"\x00"
+
+
+def toshiba_body() -> bytearray:
+    """Build a complete anonymous T_0008 base report."""
+    body = bytearray(47)
+    body[2] = 2
+    body[3] = 1
+    body[9] = 0x82
+    body[11] = 10
+    body[14] = 40
+    body[15] = 0x14
+    body[18] = 0x02
+    body[22] = 1
+    body[23:27] = (125).to_bytes(4, "little")
+    return body
 
 
 class TestMessageDBBase:
@@ -116,6 +135,88 @@ class TestMessageDBResponse:
         """Leave truncated, acknowledgement and invalid-power bodies undecoded."""
         message = MessageDBResponse(frame(body))
         assert not hasattr(message, "program")
+
+
+class TestToshibaDBProtocol:
+    """Test the common 55AA protocol used by T_0008 DB versions 24 through 33."""
+
+    def test_query_uart_frame_and_crc(self) -> None:
+        """Match the Lua query header, length, type, body and CRC byte order."""
+        message = MessageToshibaQuery(ProtocolVersion.V1)
+        frame_data = message.serialize()
+        assert frame_data == bytes.fromhex("55aacc330f0001db000000000000030000e687")
+        assert frame_data[:4] == bytes.fromhex("55aacc33")
+        assert int.from_bytes(frame_data[4:6], "little") == len(frame_data) - 4
+        assert frame_data[7] == 0xDB
+        assert frame_data[14:17] == bytes.fromhex("030000")
+        assert int.from_bytes(frame_data[-2:], "little") == toshiba_crc16(
+            frame_data[:-2],
+        )
+        assert message._body == bytearray([0])
+
+    def test_response_decodes_common_base_status(self) -> None:
+        """Translate Toshiba status, mode, program, time and process fields."""
+        message = MessageToshibaDBResponse(bytes(toshiba_frame(toshiba_body(), 3)))
+        assert message.power is True
+        assert message.start is False
+        assert message.status == 1
+        assert message.mode == "wash"
+        assert message.program == "standard"
+        assert message.temperature == 40
+        assert message.wash_time == 120
+        assert message.dehydration_time == 10
+        assert message.progress == 3
+        assert message.time_remaining == 125
+
+    @pytest.mark.parametrize(
+        ("wash_time", "process_info", "expected_wash", "expected_progress"),
+        [
+            (12, 0x00, 12, 0),
+            (12, 0x04, 12, 2),
+            (12, 0x08, 12, 1),
+            (12, 0x10, 12, 5),
+            (12, 0x20, 12, 8),
+        ],
+    )
+    def test_response_raw_wash_time_and_process_flags(
+        self,
+        wash_time: int,
+        process_info: int,
+        expected_wash: int,
+        expected_progress: int,
+    ) -> None:
+        """Preserve minute values and map every common process flag."""
+        body = toshiba_body()
+        body[9], body[18] = (wash_time, process_info)
+        message = MessageToshibaDBResponse(bytes(toshiba_frame(body, 3)))
+        assert message.wash_time == expected_wash
+        assert message.progress == expected_progress
+
+    @pytest.mark.parametrize(
+        "mutation",
+        ["crc", "length", "device_type", "frame_type", "short"],
+    )
+    def test_response_rejects_invalid_frames(self, mutation: str) -> None:
+        """Ignore corrupt or unrelated Toshiba UART frames."""
+        frame_data = toshiba_frame(toshiba_body(), 3)
+        if mutation == "crc":
+            frame_data[-1] ^= 1
+        elif mutation == "length":
+            frame_data[4] ^= 1
+        elif mutation == "device_type":
+            frame_data[7] = 0xAC
+        elif mutation == "frame_type":
+            frame_data = toshiba_frame(toshiba_body(), 5)
+        else:
+            frame_data = frame_data[:10]
+        message = MessageToshibaDBResponse(bytes(frame_data))
+        assert message.body == bytearray()
+        assert not hasattr(message, "program")
+
+    def test_response_rejects_complete_frame_with_short_body(self) -> None:
+        """Require all offsets even when the UART envelope and CRC are valid."""
+        message = MessageToshibaDBResponse(bytes(toshiba_frame(bytearray([0]), 3)))
+        assert message.body == bytearray()
 
 
 class TestDBControls:

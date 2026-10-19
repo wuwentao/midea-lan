@@ -33,12 +33,15 @@ PAUSE_COMMAND = 0
 type ControlValue = bool | int | str | None
 
 
-# Verified DB v33 only: other 0x0000 Lua versions differ in field mappings,
-# while 0x0008 variants use different frames and offsets. Verify each profile
-# before enabling these 22/54-byte commands for another model or subtype.
-# Protocol reference: wuwentao/midea-lua, lua/0xDB/T_0000_DB_33.lua.
+# Only the DB v33 control profile is verified for writes. DB v41 is decoded
+# read-only, while Toshiba 0x0008 uses a separate 55AA/CRC16 frame below.
+# Protocol reference: wuwentao/midea-lua, lua/0xDB/.
 PROFILE_MODEL = "38131140"
 PROFILE_SUBTYPE = 13145
+PROFILE_V41_MODEL = "38132386"
+PROFILE_V41_SUBTYPE = 0
+TOSHIBA_MANUFACTURER_CODE = "0008"
+TOSHIBA_CLOUD_NAMES = frozenset(("Toshiba Iolife", "TSmartLife"))
 STATUS_IDLE = 0
 STATUS_STANDBY = 1
 STATUS_END = 4
@@ -83,6 +86,25 @@ APPOINTMENT_REPORT_MASK = 0x02
 APPOINTMENT_CONTROL_OFFSET = 35
 APPOINTMENT_OFF = 0xF3
 APPOINTMENT_ON = 0xF7
+TOSHIBA_HEADER_LENGTH = 16
+TOSHIBA_TRAILER_LENGTH = 2
+TOSHIBA_FRAME_MAGIC = b"\x55\xaa\xcc\x33"
+TOSHIBA_MINIMUM_STATUS_LENGTH = 47
+TOSHIBA_FRAME_QUERY = 0x0003
+TOSHIBA_SUBTYPE_BASE = 0x00
+TOSHIBA_PROGRAM_OFFSET = 3
+TOSHIBA_TEMPERATURE_OFFSET = 14
+TOSHIBA_STATUS_OFFSET = 22
+TOSHIBA_REMAINING_TIME_OFFSET = 23
+TOSHIBA_REMAINING_TIME_END = 27
+TOSHIBA_STATUS_RUNNING = 2
+TOSHIBA_CRC_POLYNOMIAL = 0x1021
+TOSHIBA_CRC_HIGH_BIT = 0x8000
+TOSHIBA_CRC_MASK = 0xFFFF
+TOSHIBA_WASH_HOUR_MIN = 0x81
+TOSHIBA_WASH_HOUR_MAX = 0x8C
+TOSHIBA_WASH_HOUR_BASE = 0x80
+MINUTES_PER_HOUR = 60
 
 
 class ControlAttributes(StrEnum):
@@ -143,6 +165,179 @@ PROGRAMS = {
     8: "sport_clothes",
     147: "yoga",
     145: "quick_drying_clothes",
+}
+
+V41_PROGRAMS = {
+    0x00: "cotton",
+    0x01: "eco",
+    0x02: "fast_wash",
+    0x03: "mixed_wash",
+    0x04: "fiber",
+    0x05: "wool",
+    0x06: "enzyme",
+    0x07: "ssp",
+    0x08: "sport_clothes",
+    0x09: "single_dehytration",
+    0x0A: "rinsing_dehydration",
+    0x0B: "big",
+    0x0C: "baby_clothes",
+    0x0D: "underwear",
+    0x0E: "outdoor",
+    0x0F: "down_jacket",
+    0x10: "color",
+    0x11: "intelligent",
+    0x12: "quick_wash",
+    0x13: "kids",
+    0x14: "water_cotton",
+    0x15: "air_wash",
+    0x16: "single_drying",
+    0x17: "fast_wash_30",
+    0x18: "fast_wash_60",
+    0x19: "water_intelligent",
+    0x1A: "water_steep",
+    0x1B: "water_fast_wash_30",
+    0x1C: "shirt",
+    0x1D: "steep",
+    0x1E: "new_water_cotton",
+    0x1F: "water_mixed_wash",
+    0x20: "water_fiber",
+    0x21: "water_kids",
+    0x22: "water_underwear",
+    0x23: "specialist",
+    0x24: "water_eco",
+    0x25: "wash_drying_60",
+    0x26: "self_wash_5",
+    0x27: "fast_wash_min",
+    0x28: "mixed_wash_min",
+    0x29: "dehydration_min",
+    0x2A: "self_wash_min",
+    0x2B: "baby_clothes_min",
+    0x2C: "prevent_allergy",
+    0x2D: "cold_wash",
+    0x2E: "soft_wash",
+    0x2F: "remove_mite_wash",
+    0x30: "water_intense_wash",
+    0x31: "fast_dry",
+    0x32: "water_outdoor",
+    0x33: "spring_autumn_wash",
+    0x34: "summer_wash",
+    0x35: "winter_wash",
+    0x36: "jean",
+    0x37: "new_clothes_wash",
+    0x38: "silk",
+    0x39: "insight_wash",
+    0x3A: "fitness_clothes",
+    0x3B: "mink",
+    0x3C: "fresh_air",
+    0x3D: "bucket_dry",
+    0x3E: "jacket",
+    0x3F: "bath_towel",
+    0x40: "night_fresh_wash",
+    0x50: "diy0",
+    0x51: "diy1",
+    0x52: "diy2",
+    0x60: "heart_wash",
+    0x61: "water_cold_wash",
+    0x62: "water_prevent_allergy",
+    0x63: "water_remove_mite_wash",
+    0x64: "water_ssp",
+    0x65: "silk_wash",
+    0x66: "standard",
+    0x67: "green_wool",
+    0x68: "cook_wash",
+    0x69: "fresh_remove_wrinkle",
+    0x6A: "steam_sterilize_wash",
+    0x6B: "aromatherapy",
+    0x6C: "eco_40_60",
+    0x6D: "steam_care",
+    0x6E: "allergy_care",
+    0x6F: "greatwaves",
+    0x70: "sterilize_wash",
+    0x71: "wash45",
+    0x72: "quick12",
+    0x73: "bulky",
+    0x74: "whites",
+    0x75: "towels",
+    0x76: "delicates",
+    0x77: "drum_clean",
+    0x80: "wash_and_dry",
+    0x81: "auto_dry",
+    0x82: "time_dry",
+    0xFE: "love",
+}
+
+TOSHIBA_PROGRAMS = {
+    0x00: "none",
+    0x01: "standard",
+    0x02: "tub_clean",
+    0x03: "fast",
+    0x04: "careful",
+    0x05: "sixty_wash",
+    0x06: "blanket",
+    0x07: "delicate",
+    0x08: "tub_clean_dry",
+    0x09: "memory",
+    0x0A: "sterilization",
+    0x0B: "mute",
+    0x0C: "soft",
+    0x0D: "delicate_dryer",
+    0x0E: "soak",
+    0x0F: "odor_eliminating",
+    0x10: "empty",
+    0x11: "degerm",
+    0x12: "auto_care",
+    0x13: "auto_twice_wash",
+    0x14: "prewash_plus",
+    0x15: "uv_wash_and_dry",
+    0x16: "uv_dry_with_rotation",
+    0x17: "uv_dry_without_rotation",
+    0x18: "forty_five_wash",
+    0x1C: "fragrant_and_delicate",
+    0x1D: "tick_extermination",
+    0x1E: "pollen",
+    0x21: "app_course_1",
+    0x22: "app_course_2",
+    0x23: "app_course_3",
+    0x24: "app_course",
+    0x25: "uv_wash",
+    0x26: "uv_without_rotation",
+    0x27: "uv_with_rotation",
+    0x28: "uv_deodorize_without_rotation",
+    0x29: "uv_deodorize_with_rotation",
+    0x30: "60_tub_clean",
+    0x32: "tub_clean_wash_dry",
+    0x36: "tub_clean_2",
+    0x37: "tub_clean_tub_dry",
+    0x38: "tub_dry",
+    0x3A: "wrinkle_care",
+    0x3B: "60_tub_clean_2",
+    0x51: "sheets",
+    0x52: "lace_curtain",
+    0x53: "towel",
+    0x54: "fleece",
+    0x55: "school_uniform_or_washable",
+    0x56: "slacks_skirt",
+    0x57: "jeans",
+    0x58: "cap",
+    0x59: "down_jacket",
+    0x5A: "bet_putt",
+    0x5B: "functional_underwear",
+    0x5C: "reusable_bag",
+    0x5D: "duvet",
+    0x5E: "t_shirt_recovery",
+    0x5F: "sports_wear",
+    0x81: "light_dirt",
+    0x82: "wash_thoroughly_and_rinse",
+    0x83: "quick_wash_and_dry",
+    0x84: "yellowing_off",
+    0x85: "disinfection_clothing",
+    0x86: "keep_water_temperature",
+    0x87: "prewash",
+    0x88: "tick_care",
+    0x91: "super_concentrated_soak",
+    0x92: "no_rinse_and_delicate",
+    0x93: "t_shirt_recovery_pro",
+    0xA0: "customize",
 }
 
 TIME_FIELDS = {
@@ -349,6 +544,170 @@ class MessageParameters(MessageDBBase):
         return self._parameters
 
 
+def toshiba_crc16(data: bytes | bytearray) -> int:
+    """Calculate the CRC16-CCITT variant used by T_0008 Lua protocols."""
+    crc = 0
+    for value in data:
+        crc ^= value << 8
+        for _ in range(8):
+            crc = (
+                (crc << 1) ^ TOSHIBA_CRC_POLYNOMIAL
+                if crc & TOSHIBA_CRC_HIGH_BIT
+                else crc << 1
+            ) & TOSHIBA_CRC_MASK
+    return crc
+
+
+def toshiba_frame(body: bytes | bytearray, frame_type: int) -> bytearray:
+    """Wrap a Toshiba body in its 55AA UART header and little-endian CRC."""
+    frame = bytearray(
+        [
+            0x55,
+            0xAA,
+            0xCC,
+            0x33,
+            0x00,
+            0x00,
+            0x01,
+            DeviceType.DB,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            frame_type & 0xFF,
+            frame_type >> 8,
+        ],
+    )
+    frame.extend(body)
+    frame[4:6] = (len(frame) + TOSHIBA_TRAILER_LENGTH - 4).to_bytes(2, "little")
+    frame.extend(toshiba_crc16(frame).to_bytes(2, "little"))
+    return frame
+
+
+class MessageToshibaBase(MessageRequest):
+    """Build a Toshiba T_0008 request without the regular Midea AA frame."""
+
+    def __init__(
+        self,
+        protocol_version: int,
+        message_type: MessageType,
+        frame_type: int,
+        body: bytearray,
+    ) -> None:
+        """Store the UART frame type and protocol body."""
+        super().__init__(
+            device_type=DeviceType.DB,
+            protocol_version=protocol_version,
+            message_type=message_type,
+            body_type=ListTypes.X00,
+        )
+        self._frame_type = frame_type
+        self._parameters = body
+
+    @property
+    def _body(self) -> bytearray:
+        return self._parameters
+
+    @property
+    def body(self) -> bytearray:
+        """Return the Toshiba protocol body without a regular body-type byte."""
+        return self._parameters
+
+    def serialize(self) -> bytearray:
+        """Serialize the complete Toshiba inner UART frame."""
+        return toshiba_frame(self.body, self._frame_type)
+
+
+class MessageToshibaQuery(MessageToshibaBase):
+    """Query the common base status used by all known T_0008 DB Lua files."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Build the base subtype query."""
+        super().__init__(
+            protocol_version,
+            MessageType.query,
+            TOSHIBA_FRAME_QUERY,
+            bytearray([TOSHIBA_SUBTYPE_BASE]),
+        )
+
+
+TOSHIBA_MODES = {
+    0x00: "none",
+    0x01: "wash_dry",
+    0x02: "wash",
+    0x03: "dry",
+    0x04: "clean_care",
+    0x05: "care",
+}
+
+
+class MessageToshibaDBResponse:
+    """Decode the base status shared by Toshiba DB Lua versions 24 through 33."""
+
+    def __init__(self, message: bytes) -> None:
+        """Validate the complete UART frame and expose compatible DB attributes."""
+        self.body = bytearray()
+        if not self._valid_frame(message):
+            return
+        body = bytearray(message[TOSHIBA_HEADER_LENGTH:-TOSHIBA_TRAILER_LENGTH])
+        if len(body) < TOSHIBA_MINIMUM_STATUS_LENGTH or body[0] != TOSHIBA_SUBTYPE_BASE:
+            return
+        self.body = body
+        machine_status = body[TOSHIBA_STATUS_OFFSET]
+        self.power = machine_status != 0
+        self.start = machine_status == TOSHIBA_STATUS_RUNNING
+        self.status = machine_status
+        self.mode = TOSHIBA_MODES.get(body[2], body[2])
+        self.program = TOSHIBA_PROGRAMS.get(body[TOSHIBA_PROGRAM_OFFSET], body[3])
+        self.temperature = body[TOSHIBA_TEMPERATURE_OFFSET]
+        self.wash_time = self._wash_minutes(body[9])
+        self.dehydration_time = body[11]
+        self.washing_data = body
+        self.progress = self._progress(body[18])
+        self.time_remaining = int.from_bytes(
+            body[TOSHIBA_REMAINING_TIME_OFFSET:TOSHIBA_REMAINING_TIME_END],
+            "little",
+        )
+
+    @staticmethod
+    def _valid_frame(message: bytes) -> bool:
+        """Reject truncated, corrupt, non-DB and non-status UART frames."""
+        minimum_length = TOSHIBA_HEADER_LENGTH + TOSHIBA_TRAILER_LENGTH
+        if (
+            len(message) < minimum_length
+            or message[: len(TOSHIBA_FRAME_MAGIC)] != TOSHIBA_FRAME_MAGIC
+            or message[7] != DeviceType.DB
+            or int.from_bytes(message[4:6], "little") != len(message) - 4
+            or message[14] not in (0x02, 0x03)
+        ):
+            return False
+        expected_crc = int.from_bytes(message[-TOSHIBA_TRAILER_LENGTH:], "little")
+        return toshiba_crc16(message[:-TOSHIBA_TRAILER_LENGTH]) == expected_crc
+
+    @staticmethod
+    def _wash_minutes(value: int) -> int:
+        """Convert the Lua protocol's encoded one-to-twelve-hour values."""
+        if TOSHIBA_WASH_HOUR_MIN <= value <= TOSHIBA_WASH_HOUR_MAX:
+            return (value - TOSHIBA_WASH_HOUR_BASE) * MINUTES_PER_HOUR
+        return value
+
+    @staticmethod
+    def _progress(process_info: int) -> int:
+        """Translate Toshiba process flags to the existing DB progress index."""
+        for mask, progress in (
+            (0x02, 3),
+            (0x04, 2),
+            (0x08, 1),
+            (0x10, 5),
+            (0x20, 8),
+        ):
+            if process_info & mask:
+                return progress
+        return 0
+
+
 class DBControls:
     """Decode confirmed washer parameters and validate complete commands."""
 
@@ -388,6 +747,7 @@ class DBControls:
 
     def __init__(self) -> None:
         """Start without a fabricated parameter or operational state."""
+        self.programs = PROGRAMS
         self.body = b""
         self.attributes: dict[ControlAttributes, ControlValue] = dict.fromkeys(
             self.attribute_keys,
@@ -435,7 +795,7 @@ class DBControls:
         )
 
     def remaining_minutes(self) -> int:
-        """Read the verified profiles' little-endian program duration in minutes."""
+        """Read the verified profile's little-endian program duration in minutes."""
         return int.from_bytes(
             self.body[REMAINING_TIME_OFFSET:REMAINING_TIME_END],
             "little",

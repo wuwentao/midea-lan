@@ -7,16 +7,24 @@ from typing import Any, ClassVar, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueWrongType
+from midealan.message import MessageRequest
 
 from .message import (
     PROFILE_MODEL,
     PROFILE_SUBTYPE,
-    PROGRAMS,
+    PROFILE_V41_MODEL,
+    PROFILE_V41_SUBTYPE,
+    TOSHIBA_CLOUD_NAMES,
+    TOSHIBA_FRAME_MAGIC,
+    TOSHIBA_MANUFACTURER_CODE,
+    V41_PROGRAMS,
     DBControls,
     MessageDBResponse,
     MessagePower,
     MessageQuery,
     MessageStart,
+    MessageToshibaDBResponse,
+    MessageToshibaQuery,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -203,6 +211,8 @@ class MideaDBDevice(MideaDevice):
         0x05: "60",
         0x06: "95",
         0x07: "70",
+        0x08: "90",
+        0x09: "50",
         0xFF: "default",
     }
 
@@ -251,12 +261,27 @@ class MideaDBDevice(MideaDevice):
             },
         )
 
-        self._controls = (
-            DBControls()
-            if self.subtype == PROFILE_SUBTYPE
-            and PROFILE_MODEL in (self.model, self.sn8)
-            else None
+        self._toshiba_protocol = (
+            self.manufacturer_code == TOSHIBA_MANUFACTURER_CODE
+            or self.cloud_name in TOSHIBA_CLOUD_NAMES
         )
+        self._last_response_toshiba: bool | None = None
+        is_v41 = (
+            not self._toshiba_protocol
+            and self.subtype == PROFILE_V41_SUBTYPE
+            and PROFILE_V41_MODEL in (self.model, self.sn8)
+        )
+        self._profile_programs = V41_PROGRAMS if is_v41 else {}
+        self._controls: DBControls | None
+        if self._toshiba_protocol:
+            self._controls = None
+        elif self.subtype == PROFILE_SUBTYPE and PROFILE_MODEL in (
+            self.model,
+            self.sn8,
+        ):
+            self._controls = DBControls()
+        else:
+            self._controls = None
         if self._controls is not None:
             self._attributes.update(self._controls.attributes)
 
@@ -264,15 +289,55 @@ class MideaDBDevice(MideaDevice):
         """Return verified model options, including actual-minute time choices."""
         return self._controls.options(attr) if self._controls is not None else []
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageQuery | MessageToshibaQuery]:
         """Midea DB device build query."""
+        if self._toshiba_protocol:
+            return [MessageToshibaQuery(self._message_protocol_version)]
         return [MessageQuery(self._message_protocol_version)]
+
+    def build_query_fallback(self) -> list[MessageToshibaQuery]:
+        """Probe the Toshiba family when an unidentified DB ignores Midea query."""
+        if self._toshiba_protocol:
+            return []
+        return [MessageToshibaQuery(self._message_protocol_version)]
+
+    def _is_query_response_valid(
+        self,
+        cmd: MessageRequest,
+    ) -> bool:
+        """Require the checked response to match the queried DB frame family."""
+        if isinstance(cmd, MessageToshibaQuery):
+            return self._last_response_toshiba is True
+        return self._last_response_toshiba is False
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea DB device process message."""
-        message = MessageDBResponse(msg)
+        removed_controls: dict[str, None] = {}
+        is_toshiba_frame = msg.startswith(TOSHIBA_FRAME_MAGIC)
+        toshiba_message = (
+            MessageToshibaDBResponse(msg)
+            if is_toshiba_frame or self._toshiba_protocol
+            else None
+        )
+        if toshiba_message is not None and not toshiba_message.body:
+            self._last_response_toshiba = None
+            _LOGGER.debug("[%s] Ignored invalid Toshiba DB frame", self.device_id)
+            return {}
+        if toshiba_message is not None:
+            self._last_response_toshiba = True
+        else:
+            self._last_response_toshiba = False
+        if toshiba_message is not None and not self._toshiba_protocol:
+            self._toshiba_protocol = True
+            self._profile_programs = {}
+            if self._controls is not None:
+                for attr in self._controls.attributes:
+                    self._attributes.pop(attr, None)
+                    removed_controls[str(attr)] = None
+            self._controls = None
+        message = toshiba_message or MessageDBResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        new_status = {}
+        new_status: dict[str, Any] = removed_controls
 
         for attr in self._attributes:
             if hasattr(message, str(attr)):
@@ -301,9 +366,13 @@ class MideaDBDevice(MideaDevice):
                 # parse program
                 elif attr == DeviceAttributes.program:
                     self._attributes[DeviceAttributes.program] = (
-                        self._program | PROGRAMS
-                        if self._controls is not None
-                        else self._program
+                        self._program
+                        | self._profile_programs
+                        | (
+                            self._controls.programs
+                            if self._controls is not None
+                            else {}
+                        )
                     ).get(value, value)
                 # parse temperature
                 elif attr == DeviceAttributes.temperature:
@@ -331,8 +400,13 @@ class MideaDBDevice(MideaDevice):
                 self._message_protocol_version,
             )
             self.build_send(message_set)
-            self.build_send(MessageQuery(self._message_protocol_version))
+            self.build_send(self.build_query()[0])
             return
+        if self._toshiba_protocol and attr in (
+            DeviceAttributes.power,
+            DeviceAttributes.start,
+        ):
+            raise ValueError("Toshiba DB power/start writes need device verification")
         if not isinstance(value, bool):
             raise ValueWrongType("[db] Expected bool")
         message: MessagePower | MessageStart | None = None

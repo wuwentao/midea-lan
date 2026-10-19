@@ -13,6 +13,7 @@ from typing import Any, NamedTuple
 import ifaddr
 from defusedxml import ElementTree
 
+from .const import ProtocolVersion
 from .exceptions import ElementMissing, MideaLanError
 from .security import LocalSecurity
 
@@ -171,6 +172,9 @@ MODEL_START, MODEL_END = 17, 25
 CONNECTED_FLAG = 1
 # A device is the master gateway when exactly these bits are set.
 MASTER_GATEWAY_MASK = 0x81
+# Discovery protocol v4 replies use a bare 5a5a datagram even though their TCP
+# connection still requires the token-authenticated 8370 transport.
+SECURE_UDP_VERSION = 4
 # Datagram read size. The official app reads 1024-byte datagrams; keep parity so
 # a larger reply (e.g. a long SSID plus the identity tail) is never truncated.
 DISCOVERY_RECV_BUFFER = 1024
@@ -362,9 +366,9 @@ def _parse_discover_response(
         or data[8:10].hex() == "5a5a"
     ):
         if data[:2].hex() == "5a5a":
-            protocol = 2
+            protocol = ProtocolVersion.V2
         elif data[:2].hex() == "8370":
-            protocol = 3
+            protocol = ProtocolVersion.V3
             if data[8:10].hex() == "5a5a":
                 data = data[8:-16]
             else:
@@ -398,8 +402,19 @@ def _parse_discover_response(
         sn = _decode_ascii_or_hex(reply[SN_START:SN_END])
         mac = _extract_mac(reply, ssid_len, sn)
         extended = _parse_extended_fields(reply, ssid_len)
+        if extended.get("udp_version", 0) >= SECURE_UDP_VERSION:
+            # UDP discovery v4+ (TLS) devices broadcast a bare 5a5a datagram
+            # but still require the token-authenticated 8370 transport for TCP
+            # control, so drive them over V3 (mirrors the official app's
+            # MSDeviceScanResult.getConnectWiFiVersion() returning 3 when
+            # isTLS()). Their serial/model bytes are PBKDF2-encrypted and
+            # cannot be decoded without the app's AP private key, so drop the
+            # undecryptable identity and let callers use the cloud serial.
+            protocol = ProtocolVersion.V3
+            sn = ""
+            model = ""
     elif data[:6].hex() == "3c3f786d6c20":
-        protocol = 1
+        protocol = ProtocolVersion.V1
         root = ElementTree.fromstring(
             data.decode(encoding="utf-8", errors="replace"),
         )

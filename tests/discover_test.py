@@ -296,22 +296,28 @@ class TestParseDiscoverResponse:
         assert device["model"] == "12345678"
         assert device["sn"] == SN_TYPE1.decode()
 
-    def test_parse_plaintext_broadcast_binary_sn(self) -> None:
-        """Test a plaintext broadcast whose serial/model bytes are binary.
+    def test_parse_secure_udp_v4_device(self) -> None:
+        """Test a UDP discovery v4 (TLS) device.
 
-        Plaintext broadcasts carry an obfuscated binary serial number, so
-        the ASCII decode of the SN and model fields must fall back to hex
-        rather than raising.
+        A ``udp_version >= 4`` device broadcasts a bare 5a5a datagram, but its
+        serial/model bytes are PBKDF2-encrypted (undecryptable without the
+        app's AP private key) and its TCP control channel still needs the
+        token-authenticated V3 transport. So the identity is dropped and the
+        reported protocol is promoted from V2 to V3.
         """
-        binary_sn = bytes(range(0x80, 0xA0))  # non-ASCII serial bytes
-        reply = _build_reply(sn=binary_sn)
-        data = _build_v2_packet(encrypt_data=reply)
+        binary_sn = bytes(range(0x80, 0xA0))  # encrypted, non-ASCII serial bytes
+        reply = bytearray(_build_reply(sn=binary_sn))
+        tail_start = DISCOVERY_MIN_REPLY_LENGTH + len(SSID)
+        reply[tail_start + 4 : tail_start + 8] = (4).to_bytes(4, "little")
+        data = _build_v2_packet(encrypt_data=bytes(reply))
         device_id, device = _parse_discover_response(_mock_sock_with(data), {})
         assert device_id == DEVICE_ID
         assert device is not None
         assert device["type"] == 0xAC
-        assert device["sn"] == binary_sn.hex()
-        assert device["model"] == binary_sn[9:17].hex()
+        assert device["sn"] == ""
+        assert device["model"] == ""
+        assert device["udp_version"] == 4
+        assert device["protocol"] == 3
 
     def test_parse_garbage(self) -> None:
         """Test a datagram matching no known protocol."""

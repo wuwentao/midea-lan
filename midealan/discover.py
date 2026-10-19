@@ -413,6 +413,9 @@ def _parse_discover_response(
             protocol = ProtocolVersion.V3
             sn = ""
             model = ""
+            # Signal callers (CLI, HA) that an empty serial here is expected,
+            # not a decode failure: the real serial must come from the cloud.
+            extended["sn_encrypted"] = True
     elif data[:6].hex() == "3c3f786d6c20":
         protocol = ProtocolVersion.V1
         root = ElementTree.fromstring(

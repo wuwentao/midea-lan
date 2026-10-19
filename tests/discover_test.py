@@ -318,6 +318,7 @@ class TestParseDiscoverResponse:
         assert device["model"] == ""
         assert device["udp_version"] == 4
         assert device["protocol"] == 3
+        assert device["sn_encrypted"] is True
 
     def test_parse_garbage(self) -> None:
         """Test a datagram matching no known protocol."""

@@ -99,6 +99,15 @@ class MideaCLI:
         # get sn
         if getattr(self.namespace, "get_sn", False):
             _LOGGER.info("Found devices: %s", devices)
+            for device in devices.values():
+                if device.get("sn_encrypted"):
+                    _LOGGER.warning(
+                        "Device %s (%s) is a TLS device: its serial is "
+                        "encrypted on the LAN and cannot be read here. Use the "
+                        "cloud-provided serial instead.",
+                        device["device_id"],
+                        device["ip_address"],
+                    )
             return device_list
         for device in devices.values():
             keys = (

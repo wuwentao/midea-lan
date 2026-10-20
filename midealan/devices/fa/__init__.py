@@ -525,33 +525,6 @@ class MideaFADevice(MideaDevice):
             self._set_tilting_angle(message, str(value))
         return message
 
-    def _set_new_oscillate_toggle(
-        self,
-        message: MessageNewSet | MessageV6Set,
-        value: bool,
-        current_mode: str | None,
-    ) -> None:
-        """Encode a protocol v5/v6 oscillate on/off toggle."""
-        message.oscillate = value
-        if value:
-            message.oscillation_angle = (
-                V6_DEFAULT_SWING_ANGLE
-                if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
-                else DEFAULT_NEW_SWING_ANGLE
-            )
-            message.oscillation_mode = "oscillation"
-            return
-        message.oscillation_angle = 0
-        current_tilting = self._attributes[DeviceAttributes.tilting_angle]
-        if current_mode == "both" or self._is_active_angle(current_tilting):
-            # The device swings on both axes; the firmware only acts on the axis
-            # named by the direction byte, so clear the UD axis too and send the
-            # combined direction to stop both.
-            message.oscillation_mode = "both"
-            message.tilting_angle = 0
-        else:
-            message.oscillation_mode = "oscillation"
-
     def set_new_oscillation(
         self,
         attr: str,
@@ -565,7 +538,18 @@ class MideaFADevice(MideaDevice):
         is_v6 = self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
         current_mode = self._attributes[DeviceAttributes.oscillation_mode]
         if attr == DeviceAttributes.oscillate:
-            self._set_new_oscillate_toggle(message, bool(value), current_mode)
+            # `oscillate` is the horizontal-axis control. Vertical swing is an
+            # independent attribute and must remain unchanged when it is toggled.
+            message.oscillate = bool(value)
+            if value:
+                message.oscillation_angle = (
+                    V6_DEFAULT_SWING_ANGLE
+                    if self._effective_fa_protocol == FA_MESSAGE_PROTOCOL_V6
+                    else DEFAULT_NEW_SWING_ANGLE
+                )
+            else:
+                message.oscillation_angle = 0
+            message.oscillation_mode = "oscillation"
         elif attr == DeviceAttributes.oscillation_mode:
             if value in {"off", "", None}:
                 message.oscillate = False

@@ -1143,15 +1143,8 @@ class TestMideaFADevice:
             assert message._body[51] == 0xFF
             assert message._body[52] == 0xFF
 
-    def test_56011c99_swing_off_in_both_mode_stops_both_axes(self) -> None:
-        """Test swing-off clears both axes when the device swings in both mode.
-
-        Second regression for issue #1084: when the fan oscillates on both the
-        horizontal (LR) and vertical (UD) axes, a swing-off that only zeroed the
-        LR angle and sent the LR direction left the UD axis running because the
-        firmware acts solely on the axis named by the direction byte. The frame
-        must request the combined direction and zero the vertical angle too.
-        """
+    def test_56011c99_swing_off_in_both_mode_preserves_vertical_axis(self) -> None:
+        """Test horizontal swing-off leaves the independent vertical axis active."""
         self.device = _make_device("56011C99")
         self.device._attributes[DeviceAttributes.oscillate] = True
         self.device._attributes[DeviceAttributes.oscillation_mode] = "both"
@@ -1163,13 +1156,13 @@ class TestMideaFADevice:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageCB4Set)
             assert message.oscillate is False
-            assert message.oscillation_mode == "both"
+            assert message.oscillation_mode == "oscillation"
             assert message.oscillation_angle == 0
-            assert message.tilting_angle == 0
-            # swing byte carries the combined direction (6) and clears bit 7.
-            assert (message._body[7] >> 1) & 0x07 == 6
+            assert message.tilting_angle is None
+            # The direction selects only the horizontal axis, so the zero in
+            # the untouched vertical byte is not applied by the device.
+            assert (message._body[7] >> 1) & 0x07 == 1
             assert (message._body[7] >> 7) & 0x01 == 0
-            # both axis angles are zeroed on the wire.
             assert message._body[50] == 0
             assert message._body[24] == 0
 

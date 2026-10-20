@@ -536,6 +536,20 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_not_called()
 
+            # no user credentials: the preset fallback account cannot list the
+            # user's devices, so stop early with guidance and never query the
+            # cloud for appliances.
+            mock_cloud_instance.list_appliances.reset_mock()
+            self.namespace.username = ""
+            with self.assertLogs("cli", level="ERROR") as logs:
+                await self.cli.download()
+            assert any(
+                "--cloud-name" in line and "--username" in line for line in logs.output
+            )
+            mock_cloud_instance.list_appliances.assert_not_called()
+            mock_cloud_instance.download_lua.assert_not_called()
+            self.namespace.username = "user"
+
     async def test_download_not_supported(self) -> None:
         """Download on a cloud without lua/plugin support is handled cleanly."""
         cloud_sn = "0000FA00ABCD1234000000000000000A"

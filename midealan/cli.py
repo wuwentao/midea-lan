@@ -45,16 +45,26 @@ class MideaCLI:
     session: aiohttp.ClientSession
     namespace: Namespace
 
+    def _has_user_credentials(self) -> bool:
+        """Return whether the user supplied their own cloud account.
+
+        Without all three of ``--cloud-name``, ``--username`` and
+        ``--password``, :meth:`_get_cloud` silently falls back to the shared
+        preset account, which authenticates but does not list the user's own
+        devices.
+        """
+        return bool(
+            self.namespace.cloud_name
+            and self.namespace.username
+            and self.namespace.password,
+        )
+
     async def _get_cloud(self) -> MideaCloud:
         """Get cloud instance."""
         if not hasattr(self, "session"):
             self.session = aiohttp.ClientSession()
 
-        if (
-            not self.namespace.cloud_name
-            or not self.namespace.username
-            or not self.namespace.password
-        ):
+        if not self._has_user_credentials():
             default_cloud = get_preset_account_cloud()
             default_cloud_name = get_default_cloud()
             _LOGGER.info("Using preset account.")
@@ -306,6 +316,55 @@ class MideaCLI:
             )
         return None
 
+    async def _download_by_host(self, cloud: MideaCloud) -> None:
+        """Download for the single device discovered at ``--host``.
+
+        The device type and serial come from the LAN discovery reply, except
+        for TLS devices whose serial is PBKDF2-encrypted and so resolved from
+        the cloud account instead (see :meth:`_resolve_cloud_serial`).
+        """
+        devices = discover(ip_address=self.namespace.host)
+        if len(devices) == 0:
+            _LOGGER.error("No devices found.")
+            return
+        _, device = devices.popitem()
+        device_sn = device["sn"]
+        model = device["model"]
+        manufacturer_code = "0000"
+        # TLS (udp_version >= 4) devices expose no usable LAN serial/model: the
+        # bytes are PBKDF2-encrypted, so discover() returns them empty and flags
+        # the result. Resolve a real serial from the cloud account before
+        # downloading, otherwise both cloud methods receive an empty serial and
+        # derive an empty model.
+        if device.get("sn_encrypted"):
+            # The serial can only come from the user's own cloud account; the
+            # preset fallback account does not list their devices. Stop with
+            # guidance rather than querying an account that cannot contain this
+            # device.
+            if not self._has_user_credentials():
+                _LOGGER.error(
+                    "This device's serial is encrypted on the LAN and can only "
+                    "be resolved from your cloud account. Re-run with "
+                    "--cloud-name, --username and --password so the serial can "
+                    "be fetched from the cloud.",
+                )
+                return
+            resolved = await self._resolve_cloud_serial(
+                cloud,
+                device["device_id"],
+                device["type"],
+            )
+            if resolved is None:
+                return
+            device_sn, model, manufacturer_code = resolved
+        await self._download_device(
+            cloud,
+            device["type"],
+            device_sn,
+            model,
+            manufacturer_code,
+        )
+
     async def _download_by_sn(self, cloud: MideaCloud, device_sn: str) -> None:
         """Download for a single serial number.
 
@@ -378,35 +437,7 @@ class MideaCLI:
 
         # download with host ip: LAN discovery provides the device type
         if self.namespace.host:
-            devices = discover(ip_address=self.namespace.host)
-            if len(devices) == 0:
-                _LOGGER.error("No devices found.")
-                return
-            _, device = devices.popitem()
-            device_sn = device["sn"]
-            model = device["model"]
-            manufacturer_code = "0000"
-            # TLS (udp_version >= 4) devices expose no usable LAN serial/model:
-            # the bytes are PBKDF2-encrypted, so discover() returns them empty
-            # and flags the result. Resolve a real serial from the cloud account
-            # before downloading, otherwise both cloud methods receive an empty
-            # serial and derive an empty model.
-            if device.get("sn_encrypted"):
-                resolved = await self._resolve_cloud_serial(
-                    cloud,
-                    device["device_id"],
-                    device["type"],
-                )
-                if resolved is None:
-                    return
-                device_sn, model, manufacturer_code = resolved
-            await self._download_device(
-                cloud,
-                device["type"],
-                device_sn,
-                model,
-                manufacturer_code,
-            )
+            await self._download_by_host(cloud)
             return
 
         # download with SN

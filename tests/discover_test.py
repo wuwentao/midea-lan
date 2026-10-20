@@ -134,11 +134,26 @@ def test_decode_ascii_or_hex(raw: bytes, expected: str) -> None:
     [
         (_build_reply(), True),  # well-formed reply
         (b"\x00" * 10, False),  # too short to hold the SSID-length byte
-        (b"\x00" * 40 + b"\xff", False),  # SSID length overruns the buffer
+        (
+            b"\x00" * 40 + b"\xff" + b"\x00" * 10,
+            False,
+        ),  # SSID length overruns the buffer
+        (
+            _build_reply(ssid=b"\x80\x81_ac_x"),
+            False,
+        ),  # SSID is not ASCII-decodable
+        (
+            _build_reply(ssid=b"netac"),
+            False,
+        ),  # SSID has no underscore-delimited type field
+        (
+            _build_reply(ssid=b"net_zz_x"),
+            False,
+        ),  # SSID type field is not hexadecimal
     ],
 )
 def test_is_valid_reply(reply: bytes, expected: bool) -> None:
-    """Test _is_valid_reply structure checks."""
+    """Test _is_valid_reply structure and SSID-format checks."""
     assert _is_valid_reply(reply) is expected
 
 
@@ -453,15 +468,19 @@ class TestDiscover:
     ) -> None:
         """Test a malformed reply is skipped without aborting the scan.
 
-        A plaintext reply whose SSID has no ``_`` separator makes
-        ``ssid.split("_")[1]`` raise IndexError. The scan must swallow it
+        A V1 XML reply whose ``apc_type`` is not an integer makes
+        ``int(m["apc_type"])`` raise ValueError. The scan must swallow it
         and still return the valid device that arrives afterwards.
         """
-        bad_reply = _build_reply(ssid=b"no-separator")
+        bad_reply = (
+            b'<?xml version="1.0" encoding="utf-8"?><root><body>'
+            b'<device port="6444" apc_sn="0000AC00" apc_type="xyz"><pad/></device>'
+            b"</body></root>"
+        )
         good_device_id = DEVICE_ID + 1
         send_sock = MagicMock()
         send_sock.recvfrom.side_effect = [
-            (_build_v2_packet(encrypt_data=bad_reply), (DEVICE_IP, 6445)),
+            (bad_reply, (DEVICE_IP, 6445)),
             (_build_v2_packet(device_id=good_device_id), (DEVICE_IP, 6445)),
         ]
         with (

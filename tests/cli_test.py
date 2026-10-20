@@ -172,6 +172,16 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             self.namespace.get_sn = True
             await self.cli.discover()  # test V3 device get_sn
             mock_discover.assert_called()
+
+            # get_sn for a TLS device: the encrypted-serial warning is logged
+            mock_discover.return_value = {
+                2: {**mock_device, "device_id": 2, "sn": "", "sn_encrypted": True},
+            }
+            with self.assertLogs("cli", level="WARNING") as logs:
+                await self.cli.discover()
+            assert any("encrypted" in line for line in logs.output)
+            mock_discover.return_value = {1: mock_device}
+
             # set get_sn to default False after test done
             self.namespace.get_sn = False
 
@@ -438,6 +448,75 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
 
             # no host, no SN, and no devices on the account
             mock_cloud_instance.list_appliances.return_value = {}
+            await self.cli.download()
+            mock_cloud_instance.download_lua.assert_not_called()
+
+    async def test_download_host_encrypted_serial(self) -> None:
+        """Download via --host for a TLS device whose LAN serial is encrypted.
+
+        discover() returns an empty serial/model flagged ``sn_encrypted``; the
+        host path must resolve a real serial from the cloud account by device
+        type before downloading, and refuse when the match is missing or
+        ambiguous.
+        """
+        tls_device = {
+            "device_id": 1,
+            "protocol": ProtocolVersion.V3,
+            "type": 0xAC,
+            "ip_address": "192.168.0.2",
+            "port": 6444,
+            "model": "",
+            "sn": "",
+            "sn_encrypted": True,
+        }
+        cloud_sn = "00000051222270043261305102930000"
+        cloud_appliance = {
+            "name": "AC",
+            "type": 0xAC,
+            "sn": cloud_sn,
+            "model": "KFR-72L",
+            "manufacturer_code": "0000",
+        }
+        other_appliance = {**cloud_appliance, "type": 0xDB}
+        self.namespace.host = "192.168.0.1"
+        self.namespace.device_sn = ""
+        mock_cloud_instance = AsyncMock()
+        mock_cloud_instance.login.return_value = True
+        with (
+            patch(
+                "midealan.cli.discover",
+                # download() pops from the returned dict, so hand back a fresh
+                # copy for each of the three sub-cases below.
+                side_effect=lambda **_: {1: dict(tls_device)},
+            ),
+            patch.object(
+                self.cli,
+                "_get_cloud",
+                return_value=mock_cloud_instance,
+            ),
+        ):
+            # unique type match: the cloud serial/model is used for the download
+            mock_cloud_instance.list_appliances.return_value = {1: cloud_appliance}
+            await self.cli.download()
+            mock_cloud_instance.download_lua.assert_called_once_with(
+                str(Path()),
+                0xAC,
+                cloud_sn,
+                cloud_appliance["model"],
+                "0000",
+            )
+            mock_cloud_instance.download_lua.reset_mock()
+
+            # no device of that type on the account: stop without downloading
+            mock_cloud_instance.list_appliances.return_value = {1: other_appliance}
+            await self.cli.download()
+            mock_cloud_instance.download_lua.assert_not_called()
+
+            # ambiguous: more than one device of that type: stop and ask for --device-sn
+            mock_cloud_instance.list_appliances.return_value = {
+                1: cloud_appliance,
+                2: {**cloud_appliance, "sn": "00000051222270043261305102939999"},
+            }
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_not_called()
 

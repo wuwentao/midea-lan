@@ -166,8 +166,12 @@ DISCOVERY_MIN_REPLY_LENGTH = 41
 # Offset of the SSID-length byte inside a decrypted/plaintext reply.
 SSID_LENGTH_OFFSET = 40
 # Byte ranges inside a decrypted/plaintext reply.
+PORT_START, PORT_END = 4, 8
 SN_START, SN_END = 8, 40
 MODEL_START, MODEL_END = 17, 25
+# A valid SSID is shaped like ``net_<type>_<id>`` so the parser can read the
+# hex device-type from its second underscore-delimited field.
+SSID_MIN_PARTS = 2
 # A device reports it is connected to the Midea cloud when this byte equals 1.
 CONNECTED_FLAG = 1
 # A device is the master gateway when exactly these bits are set.
@@ -307,12 +311,31 @@ def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None
 def _is_valid_reply(reply: bytes | bytearray) -> bool:
     """Return whether ``reply`` is a well-formed decrypted discover reply.
 
-    A valid reply carries an SSID-length byte at ``SSID_LENGTH_OFFSET`` and
-    enough trailing bytes to hold that SSID.
+    A valid reply carries an SSID-length byte at ``SSID_LENGTH_OFFSET``, enough
+    trailing bytes to hold that SSID, and an SSID shaped like ``net_<type>_...``
+    where ``<type>`` is the hex device-type the parser later reads. Validating
+    the SSID here matters because AES decryption of an unrelated block-aligned
+    plaintext body can yield bytes with valid padding and a plausible length;
+    rejecting them lets ``_decrypt_or_plaintext_reply`` fall back to the raw
+    plaintext body instead of letting the parser raise on ``split("_")[1]``.
     """
-    return len(reply) > DISCOVERY_MIN_REPLY_LENGTH and reply[
-        SSID_LENGTH_OFFSET
-    ] + DISCOVERY_MIN_REPLY_LENGTH <= len(reply)
+    if len(reply) <= DISCOVERY_MIN_REPLY_LENGTH:
+        return False
+    ssid_len = reply[SSID_LENGTH_OFFSET]
+    if ssid_len + DISCOVERY_MIN_REPLY_LENGTH > len(reply):
+        return False
+    raw_ssid = reply[DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len]
+    try:
+        parts = raw_ssid.decode("ascii").split("_")
+    except UnicodeDecodeError:
+        return False
+    if len(parts) < SSID_MIN_PARTS:
+        return False
+    try:
+        int(parts[1], 16)
+    except ValueError:
+        return False
+    return True
 
 
 def _decrypt_or_plaintext_reply(
@@ -397,7 +420,7 @@ def _parse_discover_response(
             DISCOVERY_MIN_REPLY_LENGTH : DISCOVERY_MIN_REPLY_LENGTH + ssid_len
         ].decode("ascii")
         device_type = ssid.split("_")[1]
-        port = bytes2port(reply[4:8])
+        port = bytes2port(reply[PORT_START:PORT_END])
         model = _decode_ascii_or_hex(reply[MODEL_START:MODEL_END])
         sn = _decode_ascii_or_hex(reply[SN_START:SN_END])
         mac = _extract_mac(reply, ssid_len, sn)

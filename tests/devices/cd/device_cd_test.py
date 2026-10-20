@@ -676,7 +676,7 @@ class TestMideaCDDevice:
         assert self.device.attributes[DeviceAttributes.auto_sterilize_hour] == 8
         assert self.device.attributes[DeviceAttributes.auto_sterilize_minute] == 15
 
-    @pytest.mark.parametrize("model", ["RSJRAC06", "RSJRAC07"])
+    @pytest.mark.parametrize("model", ["RSJRAC06", "RSJRAC07", "2530001N"])
     @pytest.mark.parametrize(
         ("fahrenheit", "raw_current"),
         [(False, 110), (True, 104)],
@@ -688,7 +688,7 @@ class TestMideaCDDevice:
         fahrenheit: bool,
         raw_current: int,
     ) -> None:
-        """RSJRAC06/07 retain Fahrenheit precedence for current readings."""
+        """Mixed-protocol models retain their sensor decoding exceptions."""
         device = _make_device(model=model)
         assert device._lua_protocol == LuaProtocol.new
         body = _general_body()
@@ -698,6 +698,33 @@ class TestMideaCDDevice:
         status = device.process_message(_build_message(MessageType.query, body))
         assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
         assert status[DeviceAttributes.current_temperature.value] == 40
+
+    def test_2530001n_power_write_preserves_new_protocol_temperatures(self) -> None:
+        """A power write keeps the model's correctly decoded target and maximum."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[3] = 50
+        body[4] = 128
+        body[8] = 68
+        body[10] = 65
+        body[11] = 35
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.target_temperature.value] == 50
+        assert status[DeviceAttributes.current_temperature.value] == 49
+        assert status[DeviceAttributes.outdoor_temperature.value] == 20
+        assert status[DeviceAttributes.max_temperature.value] == 65
+        assert status[DeviceAttributes.min_temperature.value] == 35
+
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute(DeviceAttributes.power.value, False)
+
+        mock_send.assert_called_once()
+        message = mock_send.call_args[0][0]
+        assert message.use_old_protocol is False
+        assert message.body[4] == 50
+        assert message.body[23] == 65
 
     @pytest.mark.parametrize("message_type", [MessageType.query, MessageType.notify2])
     @pytest.mark.parametrize(
@@ -1027,9 +1054,13 @@ class TestMideaCDDevice:
         assert self.device.temperature_step == 1.0
         assert self.device._lua_protocol == LuaProtocol.old
 
-    def test_auto_lua_protocol_resolves_new_for_rsjrac01(self) -> None:
-        """RSJRAC01 resolves the auto lua protocol to new."""
-        device = _make_device(model="RSJRAC01")
+    @pytest.mark.parametrize(
+        "model",
+        ["RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"],
+    )
+    def test_auto_lua_protocol_resolves_new(self, model: str) -> None:
+        """Known new-protocol models resolve the auto Lua protocol to new."""
+        device = _make_device(model=model)
         assert device._lua_protocol == LuaProtocol.new
 
 

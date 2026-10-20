@@ -143,6 +143,12 @@ class DeviceAttributes(StrEnum):
 class MideaCDDevice(MideaDevice):
     """Midea CD device."""
 
+    _new_protocol_models: ClassVar[frozenset[str]] = frozenset(
+        {"RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"},
+    )
+    _forced_temperature_models: ClassVar[frozenset[str]] = frozenset(
+        {"RSJRAC06", "RSJRAC07", "2530001N"},
+    )
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
 
     _modes: ClassVar[dict[int, str]] = {
@@ -314,19 +320,13 @@ class MideaCDDevice(MideaDevice):
             return_value = LuaProtocol(value)
             # auto mode, use model to set value as old or new
             if return_value == LuaProtocol.auto:
-                # new protocol: models RSJRAC01, RSJRAC06, RSJRAC07
                 # old protocol: RSJ18RD2 (subtype 186), confirmed by
                 # real-device messages. Raw body[3]=148 decodes to 59C
                 # only with old protocol: (148-30)/2=59.
                 # subtype 186 was previously mapped to new protocol from
                 # an unverified RSJ000CB assumption; subtype alone cannot
                 # distinguish models with different protocol versions.
-                check_device = self.model in {
-                    "RSJ000CB",
-                    "RSJRAC01",
-                    "RSJRAC06",
-                    "RSJRAC07",
-                }
+                check_device = self.model in self._new_protocol_models
                 return_value = LuaProtocol.new if check_device else LuaProtocol.old
         if isinstance(value, bool | int):
             return_value = LuaProtocol.new if value else LuaProtocol.old
@@ -508,10 +508,12 @@ class MideaCDDevice(MideaDevice):
                     parsed = self._value_to_temperature(
                         raw_value,
                         force_fahrenheit=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_outdoor_temp
+                            self.model in self._forced_temperature_models
+                            and is_outdoor_temp
                         ),
                         force_old=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_current_temp
+                            self.model in self._forced_temperature_models
+                            and is_current_temp
                         ),
                     )
                     # Defensive: ignore invalid zeros for min/max/target/current

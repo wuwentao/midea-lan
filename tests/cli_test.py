@@ -455,12 +455,13 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         """Download via --host for a TLS device whose LAN serial is encrypted.
 
         discover() returns an empty serial/model flagged ``sn_encrypted``; the
-        host path must resolve a real serial from the cloud account by device
-        type before downloading, and refuse when the match is missing or
-        ambiguous.
+        host path must resolve a real serial from the cloud account -- by
+        device id first, then by a unique device type -- before downloading,
+        and refuse when neither matches or the type match is ambiguous.
         """
+        device_id = 42
         tls_device = {
-            "device_id": 1,
+            "device_id": device_id,
             "protocol": ProtocolVersion.V3,
             "type": 0xAC,
             "ip_address": "192.168.0.2",
@@ -475,7 +476,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             "type": 0xAC,
             "sn": cloud_sn,
             "model": "KFR-72L",
-            "manufacturer_code": "0000",
+            "manufacturer_code": "1234",
         }
         other_appliance = {**cloud_appliance, "type": 0xDB}
         self.namespace.host = "192.168.0.1"
@@ -486,8 +487,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             patch(
                 "midealan.cli.discover",
                 # download() pops from the returned dict, so hand back a fresh
-                # copy for each of the three sub-cases below.
-                side_effect=lambda **_: {1: dict(tls_device)},
+                # copy for each of the sub-cases below.
+                side_effect=lambda **_: {device_id: dict(tls_device)},
             ),
             patch.object(
                 self.cli,
@@ -495,27 +496,42 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 return_value=mock_cloud_instance,
             ),
         ):
-            # unique type match: the cloud serial/model is used for the download
-            mock_cloud_instance.list_appliances.return_value = {1: cloud_appliance}
+            # id match: the appliance keyed by device_id is used verbatim,
+            # including its non-default manufacturer code.
+            mock_cloud_instance.list_appliances.return_value = {
+                device_id: cloud_appliance,
+            }
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_called_once_with(
                 str(Path()),
                 0xAC,
                 cloud_sn,
                 cloud_appliance["model"],
-                "0000",
+                cloud_appliance["manufacturer_code"],
             )
             mock_cloud_instance.download_lua.reset_mock()
 
-            # no device of that type on the account: stop without downloading
-            mock_cloud_instance.list_appliances.return_value = {1: other_appliance}
+            # id absent, unique type match: fall back to the type match
+            mock_cloud_instance.list_appliances.return_value = {7: cloud_appliance}
+            await self.cli.download()
+            mock_cloud_instance.download_lua.assert_called_once_with(
+                str(Path()),
+                0xAC,
+                cloud_sn,
+                cloud_appliance["model"],
+                cloud_appliance["manufacturer_code"],
+            )
+            mock_cloud_instance.download_lua.reset_mock()
+
+            # id absent and no device of that type: stop without downloading
+            mock_cloud_instance.list_appliances.return_value = {7: other_appliance}
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_not_called()
 
-            # ambiguous: more than one device of that type: stop and ask for --device-sn
+            # id absent and ambiguous type match: stop and ask for --device-sn
             mock_cloud_instance.list_appliances.return_value = {
-                1: cloud_appliance,
-                2: {**cloud_appliance, "sn": "00000051222270043261305102939999"},
+                7: cloud_appliance,
+                8: {**cloud_appliance, "sn": "00000051222270043261305102939999"},
             }
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_not_called()

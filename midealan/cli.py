@@ -266,20 +266,30 @@ class MideaCLI:
     async def _resolve_cloud_serial(
         self,
         cloud: MideaCloud,
+        device_id: int,
         device_type: int,
-    ) -> tuple[str, str | None] | None:
-        """Resolve a unique (serial, model) from the cloud account by type.
+    ) -> tuple[str, str | None, str] | None:
+        """Resolve (serial, model, manufacturer_code) from the cloud account.
 
-        TLS devices report no usable LAN serial, so the only identity the
-        discovery result carries is the device type. Return the matching
-        account entry's serial and model when exactly one device of that type
-        exists; otherwise log an actionable error and return None so the caller
-        stops instead of downloading with an empty serial.
+        TLS devices report no usable LAN serial, so the discovery result only
+        carries the device id and type. Match the account entry by id first --
+        every cloud keys its appliance dict by the same id the discovery reply
+        reports (Meiju's ``applianceCode``; ``id`` for SmartHome, MideaAir and
+        Toshiba) -- so this pins the exact appliance. Fall back to a unique
+        device-type match when the id is absent from the account; if that is
+        missing or ambiguous, log an actionable error and return None so the
+        caller stops instead of downloading with an empty serial.
         """
         appliances = await cloud.list_appliances(home_id=None) or {}
+        if (appliance := appliances.get(device_id)) is not None:
+            return appliance["sn"], appliance["model"], appliance["manufacturer_code"]
         matches = [a for a in appliances.values() if a["type"] == device_type]
         if len(matches) == 1:
-            return matches[0]["sn"], matches[0]["model"]
+            return (
+                matches[0]["sn"],
+                matches[0]["model"],
+                matches[0]["manufacturer_code"],
+            )
         if not matches:
             _LOGGER.error(
                 "This device's serial is encrypted on the LAN and no device of "
@@ -290,7 +300,7 @@ class MideaCLI:
             _LOGGER.error(
                 "This device's serial is encrypted on the LAN and %d devices of "
                 "type %s exist in the cloud account; cannot pick one. Re-run with "
-                "--device-sn to choose the serial explicitly.",
+                "--device-sn instead of --host to choose the serial explicitly.",
                 len(matches),
                 hex(device_type),
             )
@@ -375,21 +385,27 @@ class MideaCLI:
             _, device = devices.popitem()
             device_sn = device["sn"]
             model = device["model"]
+            manufacturer_code = "0000"
             # TLS (udp_version >= 4) devices expose no usable LAN serial/model:
             # the bytes are PBKDF2-encrypted, so discover() returns them empty
             # and flags the result. Resolve a real serial from the cloud account
             # before downloading, otherwise both cloud methods receive an empty
             # serial and derive an empty model.
             if device.get("sn_encrypted"):
-                resolved = await self._resolve_cloud_serial(cloud, device["type"])
+                resolved = await self._resolve_cloud_serial(
+                    cloud,
+                    device["device_id"],
+                    device["type"],
+                )
                 if resolved is None:
                     return
-                device_sn, model = resolved
+                device_sn, model, manufacturer_code = resolved
             await self._download_device(
                 cloud,
                 device["type"],
                 device_sn,
                 model,
+                manufacturer_code,
             )
             return
 

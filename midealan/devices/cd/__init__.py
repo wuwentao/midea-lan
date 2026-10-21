@@ -36,6 +36,7 @@ OLD_PROTOCOL_TEMPERATURE_DIVISOR = 2.0
 MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0  # T5U/body[5], T5L/body[6], T3/body[7]
 MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0  # T4/body[8]
 MIXED_SENSOR_TEMPERATURE_DIVISOR = 2.0
+MODE_NONE = 0x00
 
 
 class CDSubType(IntEnum):
@@ -152,7 +153,7 @@ class MideaCDDevice(MideaDevice):
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
 
     _modes: ClassVar[dict[int, str]] = {
-        0x00: "none",
+        MODE_NONE: "none",
         0x01: "energy_save",
         0x02: "standard",
         0x03: "dual",
@@ -161,7 +162,7 @@ class MideaCDDevice(MideaDevice):
     }
     _vacation_mode_key: ClassVar[int] = 0x05
     _extended_modes: ClassVar[dict[int, str]] = {
-        0x00: "none",
+        MODE_NONE: "none",
         0x01: "economy",
         0x02: "hybrid",
         0x03: "e_heater",
@@ -879,14 +880,14 @@ class MideaCDDevice(MideaDevice):
             # which is NOT a valid modeValue for the device.  We handle that
             # explicitly in the vacation branches below.
             if current_mode is None or current_mode == "none":
-                message.mode = 0x00
+                message.mode = MODE_NONE
             elif current_mode == "vacation":
                 # Do not send 0x05 as modeValue; the device does not support it.
                 # Fall back to 0x00 (no explicit operating mode).
-                message.mode = 0x00
+                message.mode = MODE_NONE
             else:
                 mode_key = self._mode_key(str(current_mode))
-                message.mode = mode_key if mode_key is not None else 0x00
+                message.mode = mode_key if mode_key is not None else MODE_NONE
 
             # Update based on attribute being set
             if attr == DeviceAttributes.mode:
@@ -907,14 +908,10 @@ class MideaCDDevice(MideaDevice):
                     )
                     return  # Don't send invalid mode
                 message.mode = mode_key
-                self._attributes[DeviceAttributes.mode] = str(value)
-                if mode_key != 0x00:
+                if mode_key != MODE_NONE:
                     # Selecting an active operating mode also starts the
-                    # appliance. Keep the cache in sync immediately because
-                    # SET echoes have an untrusted power bit and a follow-up
-                    # write rebuilds the complete control frame from here.
+                    # appliance. The cache is updated after a successful send.
                     message.power = True
-                    self._attributes[DeviceAttributes.power] = True
 
             elif attr == DeviceAttributes.power:
                 message.power = bool(value)
@@ -978,6 +975,12 @@ class MideaCDDevice(MideaDevice):
             # Avoid replaying SET-echo junk into the next control frame
             message.fields = dict(self._fields)
             self.build_send(message)
+            if attr == DeviceAttributes.mode:
+                self._attributes[DeviceAttributes.mode] = str(value)
+                if mode_key != MODE_NONE:
+                    # SET echoes have an untrusted power bit; retain the sent
+                    # state for an immediate follow-up full-frame write.
+                    self._attributes[DeviceAttributes.power] = True
 
     @staticmethod
     def _sanitize_set_fields(fields: dict[Any, Any]) -> dict[Any, Any]:

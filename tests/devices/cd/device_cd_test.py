@@ -16,6 +16,7 @@ from midealan.devices.cd.message import (
     MessageSetSterilize,
     MessageSetWeekly,
 )
+from midealan.exceptions import SocketException
 from midealan.message import MessageType
 
 
@@ -1023,6 +1024,20 @@ class TestMideaCDDevice:
             assert msg.power is True
             assert self.device.attributes[DeviceAttributes.power] is True
             assert self.device.attributes[DeviceAttributes.mode] == "standard"
+
+    def test_set_mode_send_failure_preserves_cached_state(self) -> None:
+        """A failed active-mode send does not optimistically change the cache."""
+        self.device._attributes[DeviceAttributes.power] = False
+        self.device._attributes[DeviceAttributes.mode] = "energy_save"
+
+        with (
+            patch.object(self.device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            self.device.set_attribute(DeviceAttributes.mode.value, "standard")
+
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] == "energy_save"
 
     def test_set_mode_none_does_not_change_power(self) -> None:
         """Protocol mode None remains distinct from the power control."""

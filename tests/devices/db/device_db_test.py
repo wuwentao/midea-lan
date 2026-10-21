@@ -317,6 +317,13 @@ class TestMideaDBDevice:
         assert DeviceAttributes.forget_free not in device.attributes
         assert DeviceAttributes.appointment_control_supported not in device.attributes
         assert device.get_parameter_options(DeviceAttributes.program_control) == []
+        for attr in (DeviceAttributes.power, DeviceAttributes.start):
+            with (
+                patch.object(device, "build_send") as send,
+                pytest.raises(ValueWrongType, match="read-only"),
+            ):
+                device.set_attribute(attr, True)
+            send.assert_not_called()
         with (
             patch.object(device, "build_send") as send,
             pytest.raises(ValueWrongType),

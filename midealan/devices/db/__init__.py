@@ -259,6 +259,7 @@ class MideaDBDevice(MideaDevice):
             self.model,
             self.sn8,
         )
+        self._is_v41_profile = is_v41
         self._profile_programs = V41_PROGRAMS if is_v41 else {}
         self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
         self._controls = (
@@ -337,6 +338,11 @@ class MideaDBDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea DB device set attribute."""
+        if self._is_v41_profile and attr in (
+            DeviceAttributes.power,
+            DeviceAttributes.start,
+        ):
+            raise ValueWrongType("[db] v41 profile is read-only")
         if self._controls is not None and self._controls.supports(attr):
             message_set = self._controls.make_message(
                 attr,

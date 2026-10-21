@@ -69,6 +69,27 @@ ACQuery = (
 
 # AC mode constants
 DRY_MODE = 3
+# Both electric aux-heat modes run the unit in heat (vendor lua forces
+# modeValue=BYTE_MODE_HEAT for "single_elecheat" and "heat_elecheat").
+HEAT_MODE = 4
+
+# Electric auxiliary heat (PTC) is a tri-state, following the vendor lua which
+# distinguishes two independent flags:
+#   - PTCValue (aux_heating): ordinary electric aux-heat assisting the heat pump
+#     (vendor lua "heat_elecheat": modeValue=HEAT + PTCValue=0x08).
+#   - independent_ptc: "single" electric aux-heat, electric heating only
+#     (vendor lua "single_elecheat": modeValue=HEAT + independent_ptc=0x08).
+# These never make sense together, so they are exposed as one option attribute
+# rather than two overlapping booleans. The legacy aux_heating boolean stays for
+# backward compatibility; aux_heat_mode is the richer control.
+AUX_HEAT_MODE_OFF = "off"
+AUX_HEAT_MODE_AUX_HEAT = "aux_heat"  # heat_elecheat: heat pump + PTC
+AUX_HEAT_MODE_AUX_ONLY = "aux_only"  # single_elecheat: electric heat only
+AUX_HEAT_MODES = (
+    AUX_HEAT_MODE_OFF,
+    AUX_HEAT_MODE_AUX_HEAT,
+    AUX_HEAT_MODE_AUX_ONLY,
+)
 
 # Maps the reported mode value to the capabilities["temperature"] range key.
 # auto=1, cool=2, dry=3, heat=4, fan=5; dry and fan reuse the cool range.
@@ -95,6 +116,7 @@ class DeviceAttributes(StrEnum):
     dry = "dry"
     eco_mode = "eco_mode"
     aux_heating = "aux_heating"
+    aux_heat_mode = "aux_heat_mode"
     sleep_mode = "sleep_mode"
     natural_wind = "natural_wind"
     temp_fahrenheit = "temp_fahrenheit"
@@ -315,6 +337,7 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.smart_eye: False,
                 DeviceAttributes.dry: False,
                 DeviceAttributes.aux_heating: False,
+                DeviceAttributes.aux_heat_mode: AUX_HEAT_MODE_OFF,
                 DeviceAttributes.boost_mode: False,
                 DeviceAttributes.power_saving: False,
                 DeviceAttributes.sleep_mode: False,
@@ -829,6 +852,21 @@ class MideaACDevice(MideaDevice):
             self._fresh_air_version = DeviceAttributes.fresh_air_1
         elif self._attributes[DeviceAttributes.fresh_air_2] is not None:
             self._fresh_air_version = DeviceAttributes.fresh_air_2
+        # Derive the tri-state aux_heat_mode from the two independent electric
+        # aux-heat flags the status body carries (aux_heating / PTCValue and
+        # independent_ptc). independent_ptc ("single" electric heat) takes
+        # precedence when both are set, matching the vendor lua decode order.
+        if hasattr(message, "independent_ptc") or hasattr(message, "aux_heating"):
+            independent_ptc = bool(getattr(message, "independent_ptc", False))
+            aux_heating = bool(getattr(message, "aux_heating", False))
+            if independent_ptc:
+                aux_heat_mode = AUX_HEAT_MODE_AUX_ONLY
+            elif aux_heating:
+                aux_heat_mode = AUX_HEAT_MODE_AUX_HEAT
+            else:
+                aux_heat_mode = AUX_HEAT_MODE_OFF
+            self._attributes[DeviceAttributes.aux_heat_mode] = aux_heat_mode
+            new_status[DeviceAttributes.aux_heat_mode.value] = aux_heat_mode
         if hasattr(message, "ieco_number"):
             self._ieco_number = message.ieco_number
         if hasattr(message, "self_clean_active"):
@@ -1217,6 +1255,11 @@ class MideaACDevice(MideaDevice):
         message.dry = self._attributes[DeviceAttributes.dry]
         message.eco_mode = self._attributes[DeviceAttributes.eco_mode]
         message.aux_heating = self._attributes[DeviceAttributes.aux_heating]
+        # Carry the single electric aux-heat flag (independent_ptc) so a
+        # StateSet built for an unrelated change does not clear it.
+        message.independent_ptc = (
+            self._attributes[DeviceAttributes.aux_heat_mode] == AUX_HEAT_MODE_AUX_ONLY
+        )
         message.sleep_mode = self._attributes[DeviceAttributes.sleep_mode]
         message.natural_wind = self._attributes[DeviceAttributes.natural_wind]
         message.temp_fahrenheit = self._attributes[DeviceAttributes.temp_fahrenheit]
@@ -1465,6 +1508,44 @@ class MideaACDevice(MideaDevice):
         self._attributes[DeviceAttributes(attr)] = minutes
         self.update_all({str(attr): minutes})
 
+    def _make_aux_heat_mode_set(
+        self,
+        value: str,
+    ) -> MessageSubProtocolSet | StateSet | None:
+        """Build a StateSet for the tri-state electric aux-heat control.
+
+        Maps the option to the two vendor lua flags:
+          - "aux_heat"  -> PTCValue on, independent_ptc off  (heat_elecheat)
+          - "aux_only"  -> independent_ptc on, PTCValue off   (single_elecheat)
+          - "off"       -> both off
+        Both active modes force heat + power on, as the vendor app does; the
+        subprotocol (BB) family cannot express independent_ptc, so only the
+        legacy aux_heating flag is honored there.
+        """
+        if value not in AUX_HEAT_MODES:
+            _LOGGER.debug(
+                "[%s] Ignoring unknown aux_heat_mode %r",
+                self.device_id,
+                value,
+            )
+            return None
+        message = self.make_message_uniq_set()
+        aux_heat = value == AUX_HEAT_MODE_AUX_HEAT
+        aux_only = value == AUX_HEAT_MODE_AUX_ONLY
+        message.aux_heating = aux_heat
+        if isinstance(message, StateSet):
+            message.independent_ptc = aux_only
+        elif aux_only:
+            # BB subprotocol has no independent_ptc field; fall back to the
+            # ordinary PTC flag so "aux_only" still enables electric heat.
+            message.aux_heating = True
+        if aux_heat or aux_only:
+            message.power = True
+            message.mode = HEAT_MODE
+            self._attributes[DeviceAttributes.power] = True
+            self._attributes[DeviceAttributes.mode] = HEAT_MODE
+        return message
+
     def make_message_uniq_set(self) -> MessageSubProtocolSet | StateSet:
         """Midea AC device make message unique set."""
         message: MessageSubProtocolSet | StateSet
@@ -1499,6 +1580,34 @@ class MideaACDevice(MideaDevice):
         cleared = dict.fromkeys(TIMER_ATTRIBUTES, 0)
         self._attributes.update(cleared)
         self.update_all({str(key): value for key, value in cleared.items()})
+
+    @staticmethod
+    def _reset_exclusive_modes(
+        message: MessageSubProtocolSet | StateSet,
+        attr: str,
+    ) -> None:
+        """Clear modes that are mutually exclusive with the one being set.
+
+        boost/power-saving/sleep/frost-protect/comfort/eco cannot be active at
+        the same time, so setting one clears the others on the outgoing frame.
+        """
+        if attr not in [
+            DeviceAttributes.boost_mode,
+            DeviceAttributes.power_saving,
+            DeviceAttributes.sleep_mode,
+            DeviceAttributes.frost_protect,
+            DeviceAttributes.comfort_mode,
+            DeviceAttributes.eco_mode,
+        ]:
+            return
+        message.boost_mode = False
+        if isinstance(message, StateSet):
+            message.power_saving = False
+        message.sleep_mode = False
+        message.eco_mode = False
+        if not isinstance(message, MessageSubProtocolSet):
+            message.comfort_mode = False
+            message.frost_protect = False
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
@@ -1587,24 +1696,11 @@ class MideaACDevice(MideaDevice):
                     "[%s] Power saving is unsupported by the AC subprotocol",
                     self.device_id,
                 )
+            elif attr == DeviceAttributes.aux_heat_mode:
+                message = self._make_aux_heat_mode_set(str(value))
             elif attr in self._attributes:
                 message = self.make_message_uniq_set()
-                if attr in [
-                    DeviceAttributes.boost_mode,
-                    DeviceAttributes.power_saving,
-                    DeviceAttributes.sleep_mode,
-                    DeviceAttributes.frost_protect,
-                    DeviceAttributes.comfort_mode,
-                    DeviceAttributes.eco_mode,
-                ]:
-                    message.boost_mode = False
-                    if isinstance(message, StateSet):
-                        message.power_saving = False
-                    message.sleep_mode = False
-                    message.eco_mode = False
-                    if not isinstance(message, MessageSubProtocolSet):
-                        message.comfort_mode = False
-                        message.frost_protect = False
+                self._reset_exclusive_modes(message, attr)
                 setattr(message, str(attr), value)
                 self._clear_timers_on_power_change(message, attr, value)
                 if attr == DeviceAttributes.mode:

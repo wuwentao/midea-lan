@@ -1144,6 +1144,7 @@ class TestMessageSet:
         msg.natural_wind = True
         msg.frost_protect = True
         msg.comfort_mode = True
+        msg.independent_ptc = True
         expected_body[1] = 0x01
         expected_body[2] = (
             (0x02 << 5) & 0xE0 | (24 & 0xF) | (0x10 if 24 % 2 != 0 else 0)
@@ -1155,7 +1156,8 @@ class TestMessageSet:
         expected_body[10] = 0x04 | 0x01 | 0x02
         expected_body[17] = 0x40
         expected_body[21] = 0x80
-        expected_body[22] = 0x01
+        # byte 22: comfort_mode (0x01) | independent_ptc (0x08)
+        expected_body[22] = 0x01 | 0x08
         assert msg.body[:-2] == expected_body
 
     @pytest.mark.parametrize(
@@ -1211,6 +1213,7 @@ class TestMessageACResponse:
         body[8] = 0b00101000  # Boost mode, power saving
         body[9] = 0b00011101  # Smart eye, dry, aux heating, eco mode
         body[10] = 0b01000011  # Sleep mode, natural wind
+        body[11] = 0b00001000  # independent_ptc (bit 0x08); high nibble = pmv
         body[13] = 0b00100000  # Full dust
         body[14] = 0b00000001  # Comfort mode
 
@@ -1230,6 +1233,10 @@ class TestMessageACResponse:
         assert hasattr(response, "smart_eye")
         assert hasattr(response, "dry")
         assert hasattr(response, "aux_heating")
+        # A0 decodes both smart_eye (byte 9 bit 0x01) and independent_ptc
+        # (byte 11 bit 0x08) independently. See #1127.
+        assert hasattr(response, "independent_ptc")
+        assert response.independent_ptc is True
         assert hasattr(response, "eco_mode")
         assert hasattr(response, "sleep_mode")
         assert hasattr(response, "natural_wind")
@@ -2245,7 +2252,7 @@ class TestMessageACResponse:
         body[2] = 0b10101110  # Mode (5), target temperature (14), 0.5 increment
         body[3] = 0b01111111  # Fan speed
         body[7] = 0b00001111  # Swing vertical and horizontal
-        body[8] = 0b01101000  # Boost mode, smart eye, power saving
+        body[8] = 0b01101000  # Boost mode, independent_ptc (bit 0x40), power saving
         body[9] = 0b00011110  # Natural wind, dry, eco mode, aux heating
         body[10] = 0b01000111  # Sleep mode, temp Fahrenheit, boost mode (alternative)
         body[11] = 0x64  # Indoor temperature byte
@@ -2254,7 +2261,7 @@ class TestMessageACResponse:
         body[14] = 0b01110000  # Screen display
         body[15] = 0b00110010  # Decimal parts for temperature
         body[21] = 0b10000000  # Frost protect
-        body[22] = 0b00000001  # Comfort mode
+        body[22] = 0b00001001  # Comfort mode (0x01) + independent_ptc (0x08)
 
         response = MessageACResponse(self.header + body)
         assert hasattr(response, "power")
@@ -2269,7 +2276,10 @@ class TestMessageACResponse:
         assert hasattr(response, "boost_mode")
         assert hasattr(response, "power_saving")
         assert response.power_saving is True
-        assert hasattr(response, "smart_eye")
+        # C0 byte 8 bit 0x40 is independent_ptc (single electric aux-heat), not
+        # smart_eye; smart_eye is decoded from the A0 body instead. See #1127.
+        assert hasattr(response, "independent_ptc")
+        assert response.independent_ptc is True
         assert hasattr(response, "natural_wind")
         assert hasattr(response, "dry")
         assert hasattr(response, "eco_mode")

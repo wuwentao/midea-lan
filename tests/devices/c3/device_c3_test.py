@@ -10,6 +10,7 @@ from midealan.devices.c3 import (
     MideaC3Device,
 )
 from midealan.devices.c3.message import (
+    C3_X00_TELEMETRY_MODEL,
     C3DeviceMode,
     MessageQueryBasic,
     MessageQueryDisinfect,
@@ -135,6 +136,10 @@ class TestMideaC3Device:
         assert self.device.attributes[DeviceAttributes.instant_renew_power0] is None
         assert self.device.attributes[DeviceAttributes.dc_bus_voltage] is None
         assert self.device.attributes[DeviceAttributes.compressor_on] is None
+        assert self.device.attributes[DeviceAttributes.comp_run_time] is None
+        assert self.device.attributes[DeviceAttributes.fan_total_run_time] is None
+        assert self.device.attributes[DeviceAttributes.pump_i_total_run_time] is None
+        assert self.device.attributes[DeviceAttributes.pump_i_pwm] is None
         assert self.device.temperature_step == 1
         assert len(self.device.silent_modes) == 3
 
@@ -248,6 +253,7 @@ class TestMideaC3Device:
             assert result[DeviceAttributes.total_produced_energy.value] == 200
             assert result[DeviceAttributes.outdoor_temperature.value] == 18
             assert result[DeviceAttributes.error_code.value] == 0
+            mock_message_response.assert_called_with(b"", model="test_model")
 
             mock_message.zone2_power = True
             mock_message.zone_temp_type = [False, True]
@@ -448,3 +454,130 @@ class TestMideaC3Device:
         for name, value in expected.items():
             assert new_status[name] == value, name
             assert self.device.attributes[DeviceAttributes[name]] == value, name
+
+    def test_process_message_x00_exposes_model_17100007_telemetry(self) -> None:
+        """Test confirmed 0x2F10 telemetry reaches the device attributes."""
+        self.device._model = C3_X00_TELEMETRY_MODEL
+        message = bytes.fromhex(
+            "aac0c300000000000004002f10ff1cffff00ffff1b01ea003c00500186010401"
+            "16000100da0116ffff01160169012cffff00bb000a003c1c00b4015e7fff00ba"
+            "018900000000000000510000012b000000510000012b0000005e000001450000"
+            "00f4000000380003130000000000000000000000000000000000000000000000"
+            "000300010c000000380128000000000000ffffffffffff01f402580100000100"
+            "0000000000000000000039000000920000000000000000000000000000000001"
+            "f8",
+        )
+
+        new_status = self.device.process_message(message)
+
+        expected = {
+            "comp_run_freq": 27,
+            "compressor_on": True,
+            "fan_speed": 490,
+            "odu_comp_current": 1,
+            "odu_voltage": 218,
+            "temp_t3": 6.0,
+            "temp_t4": 8.0,
+            "outdoor_temperature": 8.0,
+            "temp_tp": 39.0,
+            "temp_tw_in": 26.0,
+            "temp_tw_out": 27.8,
+            "temp_t1": 27.8,
+            "temp_t2": 27.8,
+            "temp_t2b": 36.1,
+            "temp_t5": 30.0,
+            "pressure_high": 1870,
+            "temp_th": 6.0,
+            "temp_tf": 18.0,
+            "idu_t1s1": 35.0,
+            "water_flower": 1.86,
+            "current_unit_capacity": 3.93,
+            "total_energy_consumption": 81,
+            "comp_run_time": 3,
+            "comp_total_run_time": 56,
+            "pump_i_pwm": 0,
+            "odu_model": 12,
+            "exv_current": 296,
+            "dc_bus_voltage": 500,
+            "dc_current": 6.0,
+            "sv1_open": True,
+            "sv2_open": False,
+            "pump_i_running": True,
+            "pump_o_running": False,
+            "pump_d_running": False,
+            "fan_total_run_time": 57,
+            "pump_i_total_run_time": 146,
+        }
+        for name, value in expected.items():
+            assert new_status[name] == value, name
+            assert self.device.attributes[DeviceAttributes[name]] == value, name
+
+    def test_process_message_legacy_query_preserves_notify_pump_pwm(self) -> None:
+        """Test unpopulated X10 PWM cannot overwrite an X05 push reading."""
+        self.device._model = "171H120F"
+        notify_header = bytes.fromhex("aa00c300000000000304")
+        notify_body = bytes.fromhex(
+            "05213f24264d0d0b0400e10b1909081919041000640b2237ffff0000000000000000"
+            "002fa000000000000000000000000001010000000000000b94630200000000000000",
+        )
+        self.device.process_message(notify_header + notify_body + bytes(1))
+        assert self.device.attributes[DeviceAttributes.pump_i_pwm] == 99
+
+        query_header = bytes.fromhex("aa00c300000000000303")
+        query_body = bytes.fromhex(
+            "1021023f0205002426500d0b7f070000000300e200881e0100000000040081482048"
+            "0b190a0919197f7f64042400640f03220c3536ffff00000000000000000000006300"
+            "002fa000000000000008c90000000000e60000000000000000001517",
+        )
+        new_status = self.device.process_message(
+            query_header + query_body + bytes(1),
+        )
+        assert "pump_i_pwm" not in new_status
+        assert self.device.attributes[DeviceAttributes.pump_i_pwm] == 99
+        assert new_status["fan_speed"] == 630
+
+    @pytest.mark.parametrize(
+        ("command", "length", "temperature_offset", "tail_attribute"),
+        [
+            ("20b0", 144, 24, DeviceAttributes.total_energy_consumption),
+            ("2f10", 165, 21, DeviceAttributes.pump_i_total_run_time),
+        ],
+    )
+    def test_process_message_x00_truncated_tail_preserves_previous_value(
+        self,
+        command: str,
+        length: int,
+        temperature_offset: int,
+        tail_attribute: DeviceAttributes,
+    ) -> None:
+        """Test incomplete trailing counters never overwrite last known state."""
+        self.device._model = "17100007"
+        header = bytes.fromhex("aa00c300000000000004")
+        body = bytearray(length)
+        body[1:3] = bytes.fromhex(command)
+        body[temperature_offset : temperature_offset + 2] = bytes.fromhex("0123")
+        body[-4:] = bytes.fromhex("12345678")
+        self.device.process_message(header + body + bytes([0x00]))
+
+        body[temperature_offset : temperature_offset + 2] = bytes.fromhex("0134")
+        new_status = self.device.process_message(header + body[:-1] + bytes([0x00]))
+
+        assert new_status["temp_tw_out"] == 30.8
+        assert self.device.attributes[DeviceAttributes.temp_tw_out] == 30.8
+        assert tail_attribute not in new_status
+        assert self.device.attributes[tail_attribute] == 0x12345678
+
+    @pytest.mark.parametrize("model", ["17100003", "171000AU", "171H120F"])
+    def test_process_message_x00_does_not_update_other_models(
+        self,
+        model: str,
+    ) -> None:
+        """Test unverified X00 layouts do not alter another model's state."""
+        self.device._model = model
+        header = bytes.fromhex("aa00c300000000000004")
+        body = bytearray(165)
+        body[1:3] = bytes.fromhex("2f10")
+
+        assert self.device.process_message(header + body + bytes([0x00])) == {}
+        assert self.device.attributes[DeviceAttributes.temp_tw_out] is None
+        assert self.device.attributes[DeviceAttributes.comp_run_time] is None

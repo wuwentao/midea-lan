@@ -16,6 +16,7 @@ from midealan.devices.cd.message import (
     MessageSetSterilize,
     MessageSetWeekly,
 )
+from midealan.exceptions import SocketException
 from midealan.message import MessageType
 
 
@@ -676,7 +677,7 @@ class TestMideaCDDevice:
         assert self.device.attributes[DeviceAttributes.auto_sterilize_hour] == 8
         assert self.device.attributes[DeviceAttributes.auto_sterilize_minute] == 15
 
-    @pytest.mark.parametrize("model", ["RSJRAC06", "RSJRAC07"])
+    @pytest.mark.parametrize("model", ["RSJRAC06", "RSJRAC07", "2530001N"])
     @pytest.mark.parametrize(
         ("fahrenheit", "raw_current"),
         [(False, 110), (True, 104)],
@@ -688,7 +689,7 @@ class TestMideaCDDevice:
         fahrenheit: bool,
         raw_current: int,
     ) -> None:
-        """RSJRAC06/07 retain Fahrenheit precedence for current readings."""
+        """Mixed-protocol models retain their sensor decoding exceptions."""
         device = _make_device(model=model)
         assert device._lua_protocol == LuaProtocol.new
         body = _general_body()
@@ -698,6 +699,61 @@ class TestMideaCDDevice:
         status = device.process_message(_build_message(MessageType.query, body))
         assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
         assert status[DeviceAttributes.current_temperature.value] == 40
+
+    def test_2530001n_power_write_preserves_new_protocol_temperatures(self) -> None:
+        """A power write keeps the model's correctly decoded target and maximum."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[3] = 50
+        body[4] = 128
+        body[8] = 68
+        body[10] = 65
+        body[11] = 35
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.target_temperature.value] == 50
+        assert status[DeviceAttributes.current_temperature.value] == 49
+        assert status[DeviceAttributes.outdoor_temperature.value] == 20
+        assert status[DeviceAttributes.max_temperature.value] == 65
+        assert status[DeviceAttributes.min_temperature.value] == 35
+
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute(DeviceAttributes.power.value, False)
+
+        mock_send.assert_called_once()
+        message = mock_send.call_args[0][0]
+        assert message.use_old_protocol is False
+        assert message.body[4] == 50
+        assert message.body[23] == 65
+
+    def test_2530001n_active_mode_powers_on_and_updates_cached_state(self) -> None:
+        """Selecting an active mode starts the heater and prevents stale writes."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.max_temperature_lower_limit] = 38.0
+        device._attributes[DeviceAttributes.max_temperature_upper_limit] = 70.0
+        device._attributes[DeviceAttributes.power] = False
+        device._attributes[DeviceAttributes.mode] = "economy"
+        device._attributes[DeviceAttributes.target_temperature] = 50.0
+        device._attributes[DeviceAttributes.max_temperature] = 65.0
+
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute(DeviceAttributes.mode.value, "hybrid")
+            device.set_attribute(DeviceAttributes.target_temperature.value, 60.0)
+
+        assert mock_send.call_count == 2
+        mode_message = mock_send.call_args_list[0].args[0]
+        assert mode_message.body[2] == 0x01
+        assert mode_message.body[3] == 0x02
+        assert mode_message.body[4] == 50
+        assert mode_message.body[23] == 65
+        assert device.attributes[DeviceAttributes.power] is True
+        assert device.attributes[DeviceAttributes.mode] == "hybrid"
+
+        temperature_message = mock_send.call_args_list[1].args[0]
+        assert temperature_message.body[2] == 0x01
+        assert temperature_message.body[3] == 0x02
+        assert temperature_message.body[4] == 60
 
     @pytest.mark.parametrize("message_type", [MessageType.query, MessageType.notify2])
     @pytest.mark.parametrize(
@@ -959,12 +1015,48 @@ class TestMideaCDDevice:
             )
 
     def test_set_mode_standard(self) -> None:
-        """A valid mode value is mapped to its key and sent."""
+        """A valid mode value is mapped, starts the heater, and is cached."""
         with patch.object(self.device, "build_send") as mock_send:
             self.device.set_attribute(DeviceAttributes.mode.value, "standard")
             mock_send.assert_called_once()
             msg = mock_send.call_args[0][0]
             assert msg.mode == 0x02
+            assert msg.power is True
+            assert self.device.attributes[DeviceAttributes.power] is True
+            assert self.device.attributes[DeviceAttributes.mode] == "standard"
+
+    def test_set_mode_send_failure_preserves_cached_state(self) -> None:
+        """A failed active-mode send does not optimistically change the cache."""
+        self.device._attributes[DeviceAttributes.power] = False
+        self.device._attributes[DeviceAttributes.mode] = "energy_save"
+
+        with (
+            patch.object(self.device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            self.device.set_attribute(DeviceAttributes.mode.value, "standard")
+
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] == "energy_save"
+
+    def test_set_mode_none_does_not_change_power(self) -> None:
+        """Protocol mode None remains distinct from the power control."""
+        self.device._attributes[DeviceAttributes.power] = True
+        self.device._attributes[DeviceAttributes.mode] = "standard"
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "none")
+            self.device.set_attribute(DeviceAttributes.target_temperature.value, 42.0)
+
+        assert mock_send.call_count == 2
+        mode_message = mock_send.call_args_list[0].args[0]
+        assert mode_message.mode == 0x00
+        assert mode_message.power is True
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == "none"
+
+        temperature_message = mock_send.call_args_list[1].args[0]
+        assert temperature_message.mode == 0x00
+        assert temperature_message.power is True
 
     def test_set_target_temperature_attribute(self) -> None:
         """Setting the target temperature places the value in the message."""
@@ -1027,9 +1119,13 @@ class TestMideaCDDevice:
         assert self.device.temperature_step == 1.0
         assert self.device._lua_protocol == LuaProtocol.old
 
-    def test_auto_lua_protocol_resolves_new_for_rsjrac01(self) -> None:
-        """RSJRAC01 resolves the auto lua protocol to new."""
-        device = _make_device(model="RSJRAC01")
+    @pytest.mark.parametrize(
+        "model",
+        ["RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"],
+    )
+    def test_auto_lua_protocol_resolves_new(self, model: str) -> None:
+        """Known new-protocol models resolve the auto Lua protocol to new."""
+        device = _make_device(model=model)
         assert device._lua_protocol == LuaProtocol.new
 
 

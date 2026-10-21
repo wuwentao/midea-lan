@@ -53,6 +53,10 @@ FRESH_AIR_LENGTH = 2
 FROST_PROTECT_MIN_LENGTH = 24
 INDIRECT_WIND_VALUE = 0x02
 MAX_MSG_SERIAL_NUM = 254
+# Outdoor Silent uses a model-specific activation value and 0x00 to deactivate:
+# - 0x02: https://github.com/wuwentao/midea_ac_lan/issues/1128
+# - 0x03: https://github.com/wuwentao/midea_ac_lan/issues/779
+# Keep 0x03 as the fallback for devices without a numeric B5 capability value.
 DEFAULT_OUT_SILENT_VALUE = 0x03
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07

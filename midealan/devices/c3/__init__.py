@@ -34,6 +34,7 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+C3_SHORT_PROTOCOL_MODELS = ("17100003", "171000AU")
 
 
 class DeviceAttributes(StrEnum):
@@ -123,7 +124,11 @@ class DeviceAttributes(StrEnum):
     dhw_run = "dhw_run"
     fact_req_ther_heat_on = "fact_req_ther_heat_on"
     edge_version_type = "edge_version_type"
+    comp_run_time = "comp_run_time"
     comp_total_run_time = "comp_total_run_time"
+    fan_total_run_time = "fan_total_run_time"
+    pump_i_total_run_time = "pump_i_total_run_time"
+    pump_i_pwm = "pump_i_pwm"
     hmi_sn_code = "hmi_sn_code"
     idu_software_version_str = "idu_software_version_str"
     odu_software_version_str = "odu_software_version_str"
@@ -282,7 +287,11 @@ class MideaC3Device(MideaDevice):
                 DeviceAttributes.dhw_run: None,
                 DeviceAttributes.fact_req_ther_heat_on: None,
                 DeviceAttributes.edge_version_type: None,
+                DeviceAttributes.comp_run_time: None,
                 DeviceAttributes.comp_total_run_time: None,
+                DeviceAttributes.fan_total_run_time: None,
+                DeviceAttributes.pump_i_total_run_time: None,
+                DeviceAttributes.pump_i_pwm: None,
                 DeviceAttributes.hmi_sn_code: None,
                 DeviceAttributes.idu_software_version_str: None,
                 DeviceAttributes.odu_software_version_str: None,
@@ -335,7 +344,7 @@ class MideaC3Device(MideaDevice):
         )
         self._default_temperature_step: float = 0.5
         self._temperature_step: float = 0.5
-        self._short_protocol = str(self.model).startswith("171000")
+        self._short_protocol = str(self.model) in C3_SHORT_PROTOCOL_MODELS
         self._last_short_x01_body: bytes | None = None
         if self._short_protocol:
             self._default_temperature_step = 1.0
@@ -422,7 +431,7 @@ class MideaC3Device(MideaDevice):
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea C3 device process message."""
-        message = MessageC3Response(msg)
+        message = MessageC3Response(msg, model=self.model)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         if self._short_protocol:
             self._cache_short_x01_body(message)

@@ -42,6 +42,7 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+CAPABILITY_QUERY_RETRY_INTERVAL = 60.0
 
 ACQuery = (
     SubProtocolQuery
@@ -381,15 +382,16 @@ class MideaACDevice(MideaDevice):
         # B5-parsed values (see the capabilities property), so a user can force
         # a feature the B5 query missed, or disable one it reported in error.
         self._customize_capabilities: dict[str, CapabilityValue] = {}
-        # B5 capability query control. Both queries run once, like the appliance
-        # query: on success the flag is cleared so it is never re-sent (the reply
-        # never changes); on timeout the device layer records it in
-        # _unsupported_protocol so it is skipped too. The additional query is
-        # only armed after the basic frame advertises a second frame.
+        # B5 capability query control. A successful reply clears its flag because
+        # the capability data is stable. A timeout leaves the flag armed and
+        # schedules a bounded retry; the additional query is only armed after
+        # the basic frame advertises a second frame.
         self._capability_query = True
         self._capability_addition_query = False
         self._support_capability = False
         self._support_capability_addition = False
+        self._capability_query_retry_at: float | None = None
+        self._capability_addition_query_retry_at: float | None = None
         # manual setpoint limits from customize (highest priority)
         self._customize_min_temperature: float | None = None
         self._customize_max_temperature: float | None = None
@@ -458,11 +460,7 @@ class MideaACDevice(MideaDevice):
             # BB responses are independent status groups. Query each group with
             # its own identity so an unsupported response for one group does not
             # suppress later status groups.
-            return [
-                SubProtocolQuery10(self._message_protocol_version),
-                SubProtocolQuery11(self._message_protocol_version),
-                SubProtocolQuery30(self._message_protocol_version),
-            ]
+            return self._subprotocol_queries()
 
         # Split new-protocol queries into independent batches.
         default_query = PropertiesDefaultQuery(self._message_protocol_version)
@@ -548,21 +546,66 @@ class MideaACDevice(MideaDevice):
 
         return queries
 
+    def _subprotocol_queries(self) -> list[ACQuery]:
+        """Build the independent BB subprotocol status queries."""
+        return [
+            SubProtocolQuery10(self._message_protocol_version),
+            SubProtocolQuery11(self._message_protocol_version),
+            SubProtocolQuery30(self._message_protocol_version),
+        ]
+
+    def build_query_fallback(self) -> list[ACQuery]:
+        """Probe the BB family when the primary B5 family is silent."""
+        if self._used_subprotocol:
+            return []
+        return self._subprotocol_queries()
+
+    def _is_query_response_valid(self, cmd: object) -> bool:
+        """Accept a BB response only after it identifies the BB family."""
+        if isinstance(cmd, SubProtocolQuery):
+            return self._used_subprotocol
+        return True
+
+    def _should_defer_query(self, cmd: object) -> bool:
+        """Retry B5 capability probes instead of blacklisting them."""
+        return isinstance(cmd, CapabilitiesQuery)
+
+    def _defer_query(self, cmd: object) -> None:
+        """Schedule a timed-out B5 capability probe for a later refresh."""
+        retry_at = time.monotonic() + CAPABILITY_QUERY_RETRY_INTERVAL
+        if isinstance(cmd, CapabilitiesAdditionalQuery):
+            self._capability_addition_query_retry_at = retry_at
+        elif isinstance(cmd, CapabilitiesQuery):
+            self._capability_query_retry_at = retry_at
+
     def build_init_query(self) -> list[ACQuery]:
         """Return the B5 capability probes that are still due.
 
-        Both probes are one-shot. The basic query is armed at construction; the
-        additional query is armed only after the basic reply advertises a second
-        frame (see _update_capabilities). Each flag is cleared once its reply is
-        parsed, so a fully-probed device returns an empty list and stops sending
-        capability queries. The subprotocol (BB) devices do not use B5.
+        The basic query is armed at construction; the additional query is armed
+        only after the basic reply advertises a second frame. Each flag is
+        cleared once its reply is parsed. A deferred retry advances its next
+        deadline when queued, so a silent device is not probed every refresh.
+        The subprotocol (BB) devices do not use B5.
         """
         if self._used_subprotocol:
             return []
         queries: list[ACQuery] = []
-        if self._capability_query:
+        now = time.monotonic()
+        if self._capability_query and (
+            self._capability_query_retry_at is None
+            or now >= self._capability_query_retry_at
+        ):
+            if self._capability_query_retry_at is not None:
+                self._capability_query_retry_at = now + CAPABILITY_QUERY_RETRY_INTERVAL
             queries.append(CapabilitiesQuery(self._message_protocol_version))
-        if self._capability_addition_query:
+        if self._capability_addition_query and (
+            self._capability_addition_query_retry_at is None
+            or now >= self._capability_addition_query_retry_at
+        ):
+            if self._capability_addition_query_retry_at is not None:
+                self._capability_addition_query_retry_at = (
+                    now + CAPABILITY_QUERY_RETRY_INTERVAL
+                )
             queries.append(
                 CapabilitiesAdditionalQuery(self._message_protocol_version),
             )
@@ -581,6 +624,8 @@ class MideaACDevice(MideaDevice):
         self._capability_addition_query = False
         self._support_capability = False
         self._support_capability_addition = False
+        self._capability_query_retry_at = None
+        self._capability_addition_query_retry_at = None
 
     def _fix_c0_temperature(self, message: MessageACResponse) -> None:
         """Correct C0 temperature encoding for verified model/subtype pairs."""
@@ -796,8 +841,8 @@ class MideaACDevice(MideaDevice):
         A B5 reply resolves the query it answered: the basic frame clears
         _capability_query (and arms the additional query when the device
         advertises a second frame), while the additional frame clears
-        _capability_addition_query. Both are one-shot, so once cleared here the
-        query is never re-sent.
+        _capability_addition_query. Once cleared here, the successful query is
+        never re-sent.
 
         Returns a status update carrying the merged ``capabilities`` dict so the
         consumer (e.g. the HA integration, which reads ``device.capabilities``)
@@ -813,10 +858,12 @@ class MideaACDevice(MideaDevice):
             # This reply answers the additional (all_second_frame) query.
             self._support_capability_addition = True
             self._capability_addition_query = False
+            self._capability_addition_query_retry_at = None
         else:
             # This reply answers the basic (all_first_frame) query.
             self._support_capability = True
             self._capability_query = False
+            self._capability_query_retry_at = None
             if getattr(message, "additional_capabilities", False):
                 # Device advertises a second frame; arm the additional query so
                 # the next refresh_status() prepends it.
@@ -1069,10 +1116,16 @@ class MideaACDevice(MideaDevice):
         return (limits["min"], limits["max"])
 
     def _refresh_temperature_limits(self) -> dict[str, Any]:
-        """Resolve min/max setpoint limits.
+        """Resolve min/max setpoint limits, returning only changed values.
 
         Priority: customize option > capability response > None (the consumer
         then falls back to its own default range).
+
+        The limits depend on the merged capabilities and the current mode, so
+        they are re-evaluated for every message. Only the keys whose value
+        actually changed are returned, so an unrelated status frame (power,
+        humidity, compressor power, ...) does not carry redundant min/max
+        entries in its update.
         """
         capability_limits = self._capability_temperature_limits()
         minimum = self._customize_min_temperature
@@ -1081,12 +1134,14 @@ class MideaACDevice(MideaDevice):
         maximum = self._customize_max_temperature
         if maximum is None and capability_limits is not None:
             maximum = capability_limits[1]
-        self._attributes[DeviceAttributes.min_temperature] = minimum
-        self._attributes[DeviceAttributes.max_temperature] = maximum
-        return {
-            DeviceAttributes.min_temperature.value: minimum,
-            DeviceAttributes.max_temperature.value: maximum,
-        }
+        changed: dict[str, Any] = {}
+        if minimum != self._attributes[DeviceAttributes.min_temperature]:
+            self._attributes[DeviceAttributes.min_temperature] = minimum
+            changed[DeviceAttributes.min_temperature.value] = minimum
+        if maximum != self._attributes[DeviceAttributes.max_temperature]:
+            self._attributes[DeviceAttributes.max_temperature] = maximum
+            changed[DeviceAttributes.max_temperature.value] = maximum
+        return changed
 
     def make_message_set(self) -> StateSet:
         """Midea AC device make message set."""

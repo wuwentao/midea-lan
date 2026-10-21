@@ -1,8 +1,11 @@
 """Midea lan discover."""
 
+import contextlib
 import logging
 import re
+import select
 import socket
+import time
 from ipaddress import IPv4Network
 from typing import Any
 
@@ -158,6 +161,20 @@ MAX_NETWORK_PREFIX_LENGHT = 32
 SERIAL_TYPE1_LENGTH = 32
 SERIAL_TYPE2_LENGTH = 22
 DISCOVERY_MIN_REPLY_LENGTH = 41
+# Datagram read size. The official app reads 1024-byte datagrams; keep parity so
+# a larger reply (e.g. a long SSID plus the identity tail) is never truncated.
+DISCOVERY_RECV_BUFFER = 1024
+# Ports the scan probe is broadcast to. 6445 is the current port; 20086 is a
+# legacy port kept for older devices that still listen there.
+SEND_BROADCAST_PORTS = (6445, 20086)
+# Fixed ports some devices announce / reply to instead of our ephemeral send
+# socket. The official app binds both in addition to its send socket
+# (DeviceBroadcastManager: RECEIVE_BROADCAST_PORT=7083,
+# RECEIVE_BROADCAST_NEW_PORT=15000); without binding them those devices are
+# never received and silently fail discovery.
+RECEIVE_BROADCAST_PORTS = (7083, 15000)
+# Overall time budget for one discover() scan.
+DISCOVERY_TIMEOUT = 5.0
 
 
 def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None:
@@ -169,7 +186,7 @@ def _extract_mac(reply: bytes | bytearray, ssid_len: int, sn: str) -> str | None
     the serial number, which also may contain the MAC address.
     Otherwise return None.
     """
-    # Based on https://github.com/nbogojevic/midea-beautiful-air/blob/db3622e784891af0a522d70a626fb54e5c3e5e6f/midea_beautiful/lan.py#L264  # noqa: E501
+    # Based on https://github.com/nbogojevic/midea-beautiful-air/blob/db3622e784891af0a522d70a626fb54e5c3e5e6f/midea_beautiful/lan.py#L264
     mac = None
     mac_start = 63 + ssid_len
     mac_ends = mac_start + 6
@@ -194,7 +211,7 @@ def _parse_discover_response(
     found_devices: dict[int, dict[str, Any]],
 ) -> tuple[int, dict[str, Any] | None]:
     security = LocalSecurity()
-    data, addr = sock.recvfrom(512)
+    data, addr = sock.recvfrom(DISCOVERY_RECV_BUFFER)
     ip = addr[0]
     _LOGGER.debug("Received response from %s: %s", addr, data.hex())
     if len(data) >= DISCOVERY_MIN_RESPONSE_LENGTH and (
@@ -278,11 +295,47 @@ def _parse_discover_response(
     }
 
 
+def _open_broadcast_send_socket(stack: contextlib.ExitStack) -> socket.socket:
+    """Open the ephemeral socket used to send the scan probe and read replies."""
+    sock = stack.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    return sock
+
+
+def _open_receive_socket(
+    stack: contextlib.ExitStack,
+    port: int,
+) -> socket.socket | None:
+    """Bind a UDP socket to a fixed receive port, or None if it can't be bound.
+
+    The official app binds 7083 and 15000 alongside its send socket to catch
+    devices that announce there. Binding may fail (port already in use, or no
+    permission); that is non-fatal -- discovery continues on the sockets that
+    did open -- so a bind error is logged and None is returned.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("", port))
+    except OSError as e:
+        _LOGGER.warning("Can't bind discovery receive port %s: %s", port, repr(e))
+        sock.close()
+        return None
+    return stack.enter_context(sock)
+
+
 def discover(
     discover_type: list | None = None,
     ip_address: list | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """Discover devices."""
+    """Discover devices.
+
+    Sends the scan probe to the broadcast ports and listens for replies on the
+    ephemeral send socket plus the fixed broadcast-receive ports (7083/15000),
+    mirroring the official app so devices that announce on those fixed ports are
+    discovered too.
+    """
     if discover_type is None:
         discover_type = []
 
@@ -290,16 +343,49 @@ def discover(
     addrs = enum_all_broadcast() if ip_address is None else [ip_address]
 
     _LOGGER.debug("All addresses for broadcast: %s", addrs)
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.settimeout(5)
+    with contextlib.ExitStack() as stack:
+        send_sock = _open_broadcast_send_socket(stack)
+        # Bind the fixed receive ports too; keep only the ones that bound.
+        recv_socks = [
+            sock
+            for port in RECEIVE_BROADCAST_PORTS
+            if (sock := _open_receive_socket(stack, port)) is not None
+        ]
+        read_socks = [send_sock, *recv_socks]
         for addr in addrs:
-            try:
-                sock.sendto(BROADCAST_MSG, (addr, 6445))
-                sock.sendto(BROADCAST_MSG, (addr, 20086))
-            except OSError as e:
-                _LOGGER.warning("Can't access network %s: %s", addrs, repr(e))
-        while True:
+            for port in SEND_BROADCAST_PORTS:
+                try:
+                    send_sock.sendto(BROADCAST_MSG, (addr, port))
+                except OSError as e:
+                    _LOGGER.warning("Can't access network %s: %s", addrs, repr(e))
+        _discover_receive_loop(read_socks, discover_type, found_devices)
+    return found_devices
+
+
+def _discover_receive_loop(
+    read_socks: list[socket.socket],
+    discover_type: list,
+    found_devices: dict[int, dict[str, Any]],
+) -> None:
+    """Read replies from every open socket until the time budget elapses.
+
+    select() multiplexes the send socket and the fixed receive ports so a slow
+    device on one port never starves another. The overall DISCOVERY_TIMEOUT is
+    the same budget the single-socket loop used.
+    """
+    deadline = time.monotonic() + DISCOVERY_TIMEOUT
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            readable, _, _ = select.select(read_socks, [], [], remaining)
+        except OSError:
+            _LOGGER.exception("Socket error")
+            break
+        if not readable:
+            break
+        for sock in readable:
             try:
                 device_id, device = _parse_discover_response(sock, found_devices)
                 if device is None:
@@ -309,11 +395,8 @@ def discover(
                     _LOGGER.debug("Found a supported device: %s", device)
                 else:
                     _LOGGER.debug("Found a unsupported device: %s", device)
-            except TimeoutError:
-                break
             except OSError:
                 _LOGGER.exception("Socket error")
-    return found_devices
 
 
 def get_id_from_response(response: bytearray) -> int:

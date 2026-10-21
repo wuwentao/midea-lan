@@ -181,6 +181,549 @@ class TestMessageC3Response:
             ],
         )
 
+    @pytest.mark.parametrize(
+        ("message", "tank_actual_temperature", "outdoor_temperature"),
+        [
+            (
+                (
+                    "aa7cc300000000000004002010ff1cffff00ffff01ff0103015e7fff00f001fe"
+                    "01ff00000000010101000000000000000000010202028a015e00fa0032022600"
+                    "fa00fa0032012c00aa025800c801fe00010105ff010130000000002f00000000"
+                    "0000000000000000000001005a0001ffff001a0a0c1437ffffffff0009"
+                ),
+                51.0,
+                9.0,
+            ),
+            (
+                (
+                    "aa7cc300000000000004002010ff1cffff00ffff01ff0103015e7fff00f001fe"
+                    "01ff00000000010101000000000000000000010202028a015e00fa0032022600"
+                    "fa00fa0032012c00aa025800c801fd00010105ff010130000000002f00000000"
+                    "0000000000000000000001005a0001ffff001a0a0c143bffffffff0006"
+                ),
+                50.9,
+                9.0,
+            ),
+            (
+                (
+                    "aa7cc300000000000004002010ff1cffff00ffff01ff0103015e7fff00f001fe"
+                    "01ff00000000010101000000000000000000010202028a015e00fa0032022600"
+                    "fa00fa0032012c00aa025800c801fc00010105ff010130000000002f00000000"
+                    "000000000000000000000100500001ffff001a0a0c150fffffffff003c"
+                ),
+                50.8,
+                8.0,
+            ),
+        ],
+    )
+    def test_message_2010_response(
+        self,
+        message: str,
+        tank_actual_temperature: float,
+        outdoor_temperature: float,
+    ) -> None:
+        """Test the read-only basic state used by C3 model 17100007."""
+        response = MessageC3Response(
+            bytes.fromhex(message),
+            model="17100007",
+        )
+
+        assert response.body_type == ListTypes.X00
+        assert response.idu_t1s1 == 35.0
+        assert response.dhw_target_temp == 51.0
+        assert response.tank_actual_temperature == tank_actual_temperature
+        assert response.temp_t4 == outdoor_temperature
+        assert response.outdoor_temperature == outdoor_temperature
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            (
+                (
+                    "aabac3000000000000040020b0ff1cffff00ffff00130000020000550050"
+                    "00dc013b013bffff0700000000000000d801e00c010000000000000100"
+                    "00000000000000000000000001000000ff010100010000000000000000"
+                    "0000000000000001010001000000013affff011801230183ffffffffff"
+                    "ff28006a000a00a002000037008c015e7fff0052000000000000005000"
+                    "0000003c000000510000012b000000510000012b000000060000000000"
+                    "0000f4000000000000000014"
+                ),
+                {
+                    "comp_run_freq": 0,
+                    "compressor_on": False,
+                    "fan_speed": 0,
+                    "odu_comp_current": 0,
+                    "odu_voltage": 216,
+                    "temp_t3": 8.5,
+                    "temp_t4": 8.0,
+                    "outdoor_temperature": 8.0,
+                    "temp_tp": 22.0,
+                    "temp_tw_in": 31.5,
+                    "temp_tw_out": 31.5,
+                    "temp_t1": 31.4,
+                    "temp_t2": 28.0,
+                    "temp_t2b": 29.1,
+                    "temp_t5": 38.7,
+                    "pressure_high": 1060,
+                    "temp_th": 16.0,
+                    "temp_tf": 14.0,
+                    "idu_t1s1": 35.0,
+                    "water_flower": 0.82,
+                    "current_unit_capacity": 0.0,
+                    "total_energy_consumption": 81,
+                    "pump_i_pwm": 60,
+                    "odu_model": 12,
+                    "exv_current": 480,
+                },
+            ),
+            (
+                (
+                    "aabac3000000000000040020b0ff1cffff00ffff1b1301ea0203003c0050"
+                    "018601040116ffff0700000000000100da01280c010000000000000000"
+                    "00000000000000000000000001000000ff010100010100000000000000"
+                    "01000000000000000001010000000116ffff01160169012cffffffffffff"
+                    "2800bb000a003c021c3c3200b4015e7fff00ba00000189000000500000"
+                    "000000000000510000012b000000510000012b0000005e000001450000"
+                    "00f4000000000000000005"
+                ),
+                {
+                    "comp_run_freq": 27,
+                    "compressor_on": True,
+                    "fan_speed": 490,
+                    "odu_comp_current": 1,
+                    "odu_voltage": 218,
+                    "temp_t3": 6.0,
+                    "temp_t4": 8.0,
+                    "outdoor_temperature": 8.0,
+                    "temp_tp": 39.0,
+                    "temp_tw_in": 26.0,
+                    "temp_tw_out": 27.8,
+                    "temp_t1": 27.8,
+                    "temp_t2": 27.8,
+                    "temp_t2b": 36.1,
+                    "temp_t5": 30.0,
+                    "pressure_high": 1870,
+                    "temp_th": 6.0,
+                    "temp_tf": 18.0,
+                    "idu_t1s1": 35.0,
+                    "water_flower": 1.86,
+                    "current_unit_capacity": 3.93,
+                    "total_energy_consumption": 81,
+                    "pump_i_pwm": 0,
+                    "odu_model": 12,
+                    "exv_current": 296,
+                },
+            ),
+            (
+                (
+                    "aac0c300000000000004002f10ff1cffff00ffff0000000055005000dc"
+                    "013b013b000000d8013affff011801230184ffff006a000a00a000008c"
+                    "015e7fff0052000000000000000000510000012b000000510000012b00"
+                    "00000600000000000000f4000000373c03130000000000000000000000"
+                    "000000000000000000000000000000010c0000003701e0000000000000"
+                    "ffffffffffff022600000001000101000000000000000000003900000091"
+                    "0000000000000000000000000000000001f8"
+                ),
+                {
+                    "comp_run_freq": 0,
+                    "compressor_on": False,
+                    "fan_speed": 0,
+                    "odu_comp_current": 0,
+                    "odu_voltage": 216,
+                    "temp_t3": 8.5,
+                    "temp_t4": 8.0,
+                    "outdoor_temperature": 8.0,
+                    "temp_tp": 22.0,
+                    "temp_tw_in": 31.5,
+                    "temp_tw_out": 31.5,
+                    "temp_t1": 31.4,
+                    "temp_t2": 28.0,
+                    "temp_t2b": 29.1,
+                    "temp_t5": 38.8,
+                    "pressure_high": 1060,
+                    "temp_th": 16.0,
+                    "temp_tf": 14.0,
+                    "idu_t1s1": 35.0,
+                    "water_flower": 0.82,
+                    "current_unit_capacity": 0.0,
+                    "total_energy_consumption": 81,
+                    "comp_run_time": 0,
+                    "comp_total_run_time": 55,
+                    "pump_i_pwm": 60,
+                    "odu_model": 12,
+                    "exv_current": 480,
+                    "dc_bus_voltage": 550,
+                    "dc_current": 0.0,
+                    "sv1_open": False,
+                    "sv2_open": True,
+                    "pump_i_running": True,
+                    "pump_o_running": True,
+                    "pump_d_running": False,
+                    "fan_total_run_time": 57,
+                    "pump_i_total_run_time": 145,
+                },
+            ),
+            (
+                (
+                    "aac0c300000000000004002f10ff1cffff00ffff1b01ea003c00500186010401"
+                    "16000100da0116ffff01160169012cffff00bb000a003c1c00b4015e7fff00ba"
+                    "018900000000000000510000012b000000510000012b0000005e000001450000"
+                    "00f4000000380003130000000000000000000000000000000000000000000000"
+                    "000300010c000000380128000000000000ffffffffffff01f402580100000100"
+                    "0000000000000000000039000000920000000000000000000000000000000001"
+                    "f8"
+                ),
+                {
+                    "comp_run_freq": 27,
+                    "compressor_on": True,
+                    "fan_speed": 490,
+                    "odu_comp_current": 1,
+                    "odu_voltage": 218,
+                    "temp_t3": 6.0,
+                    "temp_t4": 8.0,
+                    "outdoor_temperature": 8.0,
+                    "temp_tp": 39.0,
+                    "temp_tw_in": 26.0,
+                    "temp_tw_out": 27.8,
+                    "temp_t1": 27.8,
+                    "temp_t2": 27.8,
+                    "temp_t2b": 36.1,
+                    "temp_t5": 30.0,
+                    "pressure_high": 1870,
+                    "temp_th": 6.0,
+                    "temp_tf": 18.0,
+                    "idu_t1s1": 35.0,
+                    "water_flower": 1.86,
+                    "current_unit_capacity": 3.93,
+                    "total_energy_consumption": 81,
+                    "comp_run_time": 3,
+                    "comp_total_run_time": 56,
+                    "pump_i_pwm": 0,
+                    "odu_model": 12,
+                    "exv_current": 296,
+                    "dc_bus_voltage": 500,
+                    "dc_current": 6.0,
+                    "sv1_open": True,
+                    "sv2_open": False,
+                    "pump_i_running": True,
+                    "pump_o_running": False,
+                    "pump_d_running": False,
+                    "fan_total_run_time": 57,
+                    "pump_i_total_run_time": 146,
+                },
+            ),
+        ],
+        ids=["20b0_idle", "20b0_running", "2f10_idle", "2f10_running"],
+    )
+    def test_message_x00_sensor_telemetry_response(
+        self,
+        message: str,
+        expected: dict[str, object],
+    ) -> None:
+        """Test sensor telemetry used by C3 model 17100007."""
+        response = MessageC3Response(
+            bytes.fromhex(message),
+            model="17100007",
+        )
+
+        assert response.body_type == ListTypes.X00
+        for name, value in expected.items():
+            assert getattr(response, name) == value, name
+
+    @pytest.mark.parametrize(
+        ("command", "body_length", "temperature_offset"),
+        [("20b0", 26, 16), ("2f10", 23, 13)],
+    )
+    def test_message_x00_sensor_telemetry_handles_signed_and_invalid_temps(
+        self,
+        command: str,
+        body_length: int,
+        temperature_offset: int,
+    ) -> None:
+        """Test C3 X00 sensor telemetry temperature edge values."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(body_length)
+        body[1:3] = bytes.fromhex(command)
+        body[temperature_offset : temperature_offset + 10] = bytes.fromhex(
+            "800cffff000000110022",
+        )
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert response.temp_t3 == -1.2
+        assert response.temp_t4 is None
+        assert response.outdoor_temperature is None
+        assert response.temp_tp == 0.0
+        assert response.temp_tw_in == 1.7
+        assert response.temp_tw_out == 3.4
+
+    @pytest.mark.parametrize(
+        ("command", "body_length", "temperature_offset"),
+        [("20b0", 26, 24), ("2f10", 23, 21)],
+        ids=["20b0", "2f10"],
+    )
+    def test_message_x00_telemetry_exact_minimum_length(
+        self,
+        command: str,
+        body_length: int,
+        temperature_offset: int,
+    ) -> None:
+        """Test literal minimum lengths include the complete last temperature."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(body_length)
+        body[1:3] = bytes.fromhex(command)
+        body[temperature_offset : temperature_offset + 2] = bytes.fromhex("0123")
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert response.temp_tw_out == 29.1
+        assert not hasattr(response, "odu_comp_current")
+        assert not hasattr(response, "total_energy_consumption")
+
+    @pytest.mark.parametrize(
+        ("command", "body_length"),
+        [("20b0", 25), ("2f10", 22)],
+        ids=["20b0", "2f10"],
+    )
+    def test_message_x00_telemetry_one_byte_short_is_not_decoded(
+        self,
+        command: str,
+        body_length: int,
+    ) -> None:
+        """Test truncated X00 telemetry does not expose partial attributes."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(body_length)
+        body[1:3] = bytes.fromhex(command)
+        body[-1] = 0x01
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        for attribute in (
+            "temp_t3",
+            "temp_t4",
+            "temp_tp",
+            "temp_tw_in",
+            "temp_tw_out",
+            "comp_run_freq",
+        ):
+            assert not hasattr(response, attribute)
+
+    @pytest.mark.parametrize(
+        ("command", "body_length"),
+        [("20b0", 144), ("2f10", 165)],
+        ids=["20b0", "2f10"],
+    )
+    @pytest.mark.parametrize("model", [None, "17100003", "171000AU", "171H120F"])
+    def test_message_x00_telemetry_is_scoped_to_model_17100007(
+        self,
+        command: str,
+        body_length: int,
+        model: str | None,
+    ) -> None:
+        """Test X00 telemetry is not decoded for other C3 protocol layouts."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(body_length)
+        body[1:3] = bytes.fromhex(command)
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model=model,
+        )
+
+        assert not hasattr(response, "idu_t1s1")
+        assert not hasattr(response, "temp_t3")
+        assert not hasattr(response, "comp_run_freq")
+
+    @pytest.mark.parametrize(
+        "model",
+        [None, "17100003", "17100007"],
+    )
+    def test_message_2010_exact_minimum_length(
+        self,
+        model: str | None,
+    ) -> None:
+        """Test 99-byte 0x2010 bodies retain legacy fields for every model."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(99)
+        body[1:3] = bytes.fromhex("2010")
+        body[14:16] = bytes.fromhex("015e")
+        body[20:22] = bytes.fromhex("01fe")
+        body[67:69] = bytes.fromhex("0184")
+        body[97:99] = bytes.fromhex("0050")
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model=model,
+        )
+
+        assert response.dhw_target_temp == 51.0
+        assert response.tank_actual_temperature == 38.8
+        assert response.temp_t4 == 8.0
+        assert response.outdoor_temperature == 8.0
+        if model == "17100007":
+            assert response.idu_t1s1 == 35.0
+        else:
+            assert not hasattr(response, "idu_t1s1")
+
+    @pytest.mark.parametrize("model", [None, "17100007"])
+    def test_message_2010_one_byte_short_is_not_decoded(
+        self,
+        model: str | None,
+    ) -> None:
+        """Test a truncated 0x2010 body does not expose partial state."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(98)
+        body[1:3] = bytes.fromhex("2010")
+        body[-1] = 0x01
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model=model,
+        )
+
+        assert not hasattr(response, "idu_t1s1")
+        assert not hasattr(response, "outdoor_temperature")
+        assert not hasattr(response, "tank_actual_temperature")
+
+    @pytest.mark.parametrize(
+        ("command", "offset", "raw", "attribute", "expected"),
+        [
+            ("20b0", 33, "1234", "odu_comp_current", 0x1234),
+            ("20b0", 35, "1234", "odu_voltage", 0x1234),
+            ("20b0", 37, "1234", "exv_current", 0x1234),
+            ("20b0", 39, "0c", "odu_model", 12),
+            ("20b0", 92, "0123", "temp_t1", 29.1),
+            ("20b0", 96, "0123", "temp_t2", 29.1),
+            ("20b0", 98, "0123", "temp_t2b", 29.1),
+            ("20b0", 100, "0123", "temp_t5", 29.1),
+            ("20b0", 109, "1234", "pressure_high", 46600),
+            ("20b0", 113, "0123", "temp_th", 29.1),
+            ("20b0", 119, "0123", "temp_tf", 29.1),
+            ("20b0", 121, "015e", "idu_t1s1", 35.0),
+            ("20b0", 125, "0123", "water_flower", 2.91),
+            ("20b0", 129, "0123", "current_unit_capacity", 2.91),
+            ("20b0", 139, "3c", "pump_i_pwm", 60),
+            ("20b0", 139, "3c", "pwm_pump_out", 60),
+            ("20b0", 140, "12345678", "total_energy_consumption", 0x12345678),
+            ("2f10", 23, "1234", "odu_comp_current", 0x1234),
+            ("2f10", 25, "1234", "odu_voltage", 0x1234),
+            ("2f10", 27, "0123", "temp_t1", 29.1),
+            ("2f10", 31, "0123", "temp_t2", 29.1),
+            ("2f10", 33, "0123", "temp_t2b", 29.1),
+            ("2f10", 35, "0123", "temp_t5", 29.1),
+            ("2f10", 39, "1234", "pressure_high", 46600),
+            ("2f10", 43, "0123", "temp_th", 29.1),
+            ("2f10", 46, "0123", "temp_tf", 29.1),
+            ("2f10", 48, "015e", "idu_t1s1", 35.0),
+            ("2f10", 52, "0123", "water_flower", 2.91),
+            ("2f10", 54, "0123", "current_unit_capacity", 2.91),
+            ("2f10", 60, "23456789", "total_energy_consumption", 0x23456789),
+            ("2f10", 88, "3456789a", "comp_total_run_time", 0x3456789A),
+            ("2f10", 92, "3c", "pump_i_pwm", 60),
+            ("2f10", 92, "3c", "pwm_pump_out", 60),
+            ("2f10", 118, "1234", "comp_run_time", 0x1234),
+            ("2f10", 122, "0c", "odu_model", 12),
+            ("2f10", 127, "1234", "exv_current", 0x1234),
+            ("2f10", 141, "1234", "dc_bus_voltage", 0x1234),
+            ("2f10", 143, "0258", "dc_current", 6.0),
+            ("2f10", 145, "01", "sv1_open", True),
+            ("2f10", 146, "01", "sv2_open", True),
+            ("2f10", 148, "01", "pump_i_running", True),
+            ("2f10", 149, "01", "pump_o_running", True),
+            ("2f10", 150, "01", "pump_d_running", True),
+            ("2f10", 157, "456789ab", "fan_total_run_time", 0x456789AB),
+            ("2f10", 161, "56789abc", "pump_i_total_run_time", 0x56789ABC),
+        ],
+    )
+    @pytest.mark.parametrize("complete", [False, True], ids=["short", "complete"])
+    def test_message_x00_optional_field_boundaries(
+        self,
+        command: str,
+        offset: int,
+        raw: str,
+        attribute: str,
+        expected: object,
+        *,
+        complete: bool,
+    ) -> None:
+        """Test each optional field requires its full bytes, not the frame tail."""
+        self.header[-1] = MessageType.notify1
+        value = bytes.fromhex(raw)
+        body = bytearray(offset + len(value))
+        body[1:3] = bytes.fromhex(command)
+        body[offset:] = value
+        if not complete:
+            body = body[:-1]
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert response.temp_tw_out == 0.0
+        if complete:
+            assert getattr(response, attribute) == expected
+        else:
+            assert not hasattr(response, attribute)
+
+    @pytest.mark.parametrize("body_hex", ["00", "0020", "002f"])
+    def test_message_x00_incomplete_command_is_not_decoded(
+        self,
+        body_hex: str,
+    ) -> None:
+        """Test missing inner-command bytes do not accidentally match a decoder."""
+        self.header[-1] = MessageType.notify1
+        response = MessageC3Response(
+            bytes(self.header + bytes.fromhex(body_hex) + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert not hasattr(response, "temp_t3")
+        assert not hasattr(response, "dhw_target_temp")
+
+    @pytest.mark.parametrize("command", ["20b1", "2f11", "2f12", "ffff"])
+    def test_message_x00_unknown_command_is_not_decoded(self, command: str) -> None:
+        """Test unverified push layouts cannot update mapped telemetry."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(165)
+        body[1:3] = bytes.fromhex(command)
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert not hasattr(response, "temp_t3")
+        assert not hasattr(response, "comp_run_freq")
+        assert not hasattr(response, "total_energy_consumption")
+
+    @pytest.mark.parametrize("command", ["2010", "20b0", "2f10"])
+    @pytest.mark.parametrize("message_type", [MessageType.set, MessageType.query])
+    def test_message_x00_wrong_message_type_is_not_decoded(
+        self,
+        command: str,
+        message_type: MessageType,
+    ) -> None:
+        """Test the new layouts are restricted to unsolicited notify1 frames."""
+        self.header[-1] = message_type
+        body = bytearray(165)
+        body[1:3] = bytes.fromhex(command)
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert not hasattr(response, "temp_t3")
+        assert not hasattr(response, "dhw_target_temp")
+
     def test_message_generic_response(self) -> None:
         """Test message generic response."""
         body = bytearray(
@@ -858,6 +1401,8 @@ class TestC3UnitParaNotify:
         assert hasattr(response, "odu_target_fre")
         assert hasattr(response, "temp_tf")
         assert hasattr(response, "total_electricity0")
+        assert hasattr(response, "pump_i_pwm")
+        assert hasattr(response, "pwm_pump_out")
         assert hasattr(response, "compressor_on")
         assert response.compressor_on is True
         assert response.comp_run_freq == 33
@@ -878,6 +1423,8 @@ class TestC3UnitParaNotify:
         assert response.odu_target_fre == 34
         assert response.temp_tf == 55
         assert response.total_electricity0 == 12192
+        assert response.pump_i_pwm == 99
+        assert response.pwm_pump_out == 99
 
     def test_comp_total_run_time_from_captured_frame(self) -> None:
         """Test the compressor hour counter decodes from the real capture."""
@@ -885,6 +1432,16 @@ class TestC3UnitParaNotify:
 
         assert hasattr(response, "comp_total_run_time")
         assert response.comp_total_run_time == 2964
+
+    def test_notify_flow_and_capacity_keep_raw_u16_values(self) -> None:
+        """Test legacy notify fields retain both bytes without X00 scaling."""
+        body = bytearray(self.BODY)
+        body[26:28] = bytes.fromhex("012c")
+        body[28:30] = bytes.fromhex("022c")
+        response = MessageC3Response(bytes(self.HEADER + body + bytes([0x00])))
+
+        assert response.water_flower == 300
+        assert response.current_unit_capacity == 556
 
     def test_comp_total_run_time_is_16_bit_big_endian(self) -> None:
         """Test the counter is lua _bodyBytes[57..58], not a single byte."""
@@ -1075,7 +1632,7 @@ class TestC3UnitParaLuaOffsets:
         assert response.fg_capacity_need == 9
 
     def test_current_unit_capacity_is_16_bit(self) -> None:
-        """Test current_unit_capacity is lua _bodyBytes[58] * 256 + [59]."""
+        """Test current_unit_capacity uses both lua bytes 58-59."""
         response = self._build_response({58: 2, 59: 44})
         assert hasattr(response, "current_unit_capacity")
         assert response.current_unit_capacity == 556
@@ -1084,6 +1641,7 @@ class TestC3UnitParaLuaOffsets:
         """Test pwm_pump_out is lua _bodyBytes[65], decoded independently."""
         response = self._build_response({64: 46, 65: 80, 66: 99})
         assert hasattr(response, "room_rel_hum")
+        assert not hasattr(response, "pump_i_pwm")
         assert hasattr(response, "pwm_pump_out")
         assert response.room_rel_hum == 46
         assert response.pwm_pump_out == 80

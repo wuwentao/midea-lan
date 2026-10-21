@@ -21,7 +21,19 @@ from midealan.security import (
     MeijuCloudSecurity,
     MideaAirSecurity,
     MSmartCloudSecurity,
+    ToshibaIOLifeSecurity,
 )
+
+_TOSHIBA_APP_KEY = "09c4d09f0da1513bb62dc7b6b0af9c11"
+_TOSHIBA_ACCESS_TOKEN = (
+    "bd18a46bb4d681f5142bca381d56924a86aad13f1f9870157f22b7c924ddb431"
+)
+_TOSHIBA_ENCRYPTED_SN = (
+    "e1f17526c18d049e4862e19f5d6cd269"
+    "df9b09edd41d4b2627b35dbb2d47b963"
+    "a433df71998b41d4dc354e9bdf78902a"
+)
+_TOSHIBA_EXPECTED_SN = "0008AC0000000000000000000000BEEF"
 
 
 class TestCloudSecurity:
@@ -101,6 +113,15 @@ class TestCloudSecurity:
         security.set_aes_keys("0123456789abcdef", "fedcba9876543210")
         encrypted = security.aes_encrypt(b"hello world")
         assert security.aes_decrypt(encrypted) == "hello world"
+        assert security.aes_decrypt_bytes(encrypted) == b"hello world"
+
+    def test_aes_decrypt_bytes_preserves_binary_data(self) -> None:
+        """Test raw AES decryption preserves non-text bytes."""
+        security = CloudSecurity("login_key", None, None)
+        security.set_aes_keys(b"0123456789abcdef", b"fedcba9876543210")
+        raw = bytes(range(256))
+        encrypted = security.aes_encrypt(raw)
+        assert security.aes_decrypt_bytes(encrypted) == raw
 
     def test_set_aes_keys_with_bytes(self) -> None:
         """Test AES keys can be provided as bytes."""
@@ -189,7 +210,7 @@ class TestMSmartCloudSecurity:
 
 
 class TestMideaAirSecurity:
-    """Test MideaAirSecurity."""
+    """Test Midea Air security."""
 
     def test_sign_wrong_type(self) -> None:
         """Test sign raises with a string payload."""
@@ -214,6 +235,58 @@ class TestMideaAirSecurity:
         assert (
             security.decrypt_appliance_lua(encrypted) == "function test() return 1 end"
         )
+
+    def test_decrypt_appliance_lua_cbc(self) -> None:
+        """Test the current lua blob decrypts with the sha256(app_key) CBC key."""
+        security = MideaAirSecurity("login_key")
+        digest = sha256(b"login_key").hexdigest()
+        key = digest[:16].encode("ascii")
+        iv = digest[16:32].encode("ascii")
+        encrypted = security.aes_encrypt(
+            b"function test() return 1 end",
+            key,
+            iv,
+        ).hex()
+        assert (
+            security.decrypt_appliance_lua_cbc(encrypted)
+            == "function test() return 1 end"
+        )
+
+
+class TestToshibaIOLifeSecurity:
+    """Test Toshiba IOLife security."""
+
+    def test_decrypt_appliance_sn(self) -> None:
+        """Test Toshiba SN decryption through the security helper."""
+        security = ToshibaIOLifeSecurity(_TOSHIBA_APP_KEY)
+        assert (
+            security.decrypt_appliance_sn(
+                _TOSHIBA_ENCRYPTED_SN,
+                _TOSHIBA_ACCESS_TOKEN,
+            )
+            == _TOSHIBA_EXPECTED_SN
+        )
+
+    @pytest.mark.parametrize(
+        ("encrypted_sn", "access_token"),
+        [
+            ("deadbeef" * 4, _TOSHIBA_ACCESS_TOKEN),
+            ("nothexatall", _TOSHIBA_ACCESS_TOKEN),
+            (_TOSHIBA_ENCRYPTED_SN, "nothexatall"),
+        ],
+    )
+    def test_decrypt_appliance_sn_invalid_data(
+        self,
+        encrypted_sn: str,
+        access_token: str,
+    ) -> None:
+        """Test Toshiba SN decryption raises for invalid inputs."""
+        security = ToshibaIOLifeSecurity(_TOSHIBA_APP_KEY)
+        with pytest.raises(
+            ValueError,
+            match=r"Data must be padded|Padding is incorrect|non-hexadecimal",
+        ):
+            security.decrypt_appliance_sn(encrypted_sn, access_token)
 
 
 class TestLocalSecurity:

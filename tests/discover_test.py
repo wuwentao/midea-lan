@@ -1,5 +1,6 @@
 """Midea lan discover test."""
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,54 +219,162 @@ class TestParseDiscoverResponse:
         assert device["sn"] == SN_TYPE1.decode()
 
 
+def _patch_discover_sockets(
+    send_sock: MagicMock,
+    recv_socks: list[MagicMock] | None = None,
+) -> Any:  # noqa: ANN401
+    """Patch socket.socket so discover() gets its send + fixed receive sockets.
+
+    discover() creates one ephemeral send socket (via a context manager) and one
+    bound socket per RECEIVE_BROADCAST_PORTS entry. Returning ``send_sock`` first
+    (as a context manager) and then the receive sockets reproduces that order.
+    """
+    recv_socks = recv_socks or [MagicMock() for _ in range(2)]
+    send_ctx = MagicMock()
+    send_ctx.__enter__.return_value = send_sock
+    return patch(
+        "midealan.discover.socket.socket",
+        side_effect=[send_ctx, *recv_socks],
+    )
+
+
 class TestDiscover:
     """discover test case."""
 
     def test_discover_found_devices(self) -> None:
         """Test discovery finding one supported device then timing out."""
-        sock = MagicMock()
-        sock.recvfrom.side_effect = [
+        send_sock = MagicMock()
+        send_sock.recvfrom.side_effect = [
             (_build_v2_packet(), (DEVICE_IP, 6445)),
             (_build_v2_packet(), (DEVICE_IP, 6445)),  # duplicate: parsed as None
-            TimeoutError,
         ]
-        mock_socket = MagicMock()
-        mock_socket.__enter__.return_value = sock
         with (
-            patch("midealan.discover.socket.socket", return_value=mock_socket),
+            _patch_discover_sockets(send_sock),
             patch(
                 "midealan.discover.enum_all_broadcast",
                 return_value=["192.168.1.255"],
+            ),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[
+                    ([send_sock], [], []),
+                    ([send_sock], [], []),
+                    ([], [], []),
+                ],
             ),
         ):
             result = discover()
         assert list(result) == [DEVICE_ID]
         assert result[DEVICE_ID]["type"] == 0xAC
-        assert sock.sendto.call_count == 2
+        # 2 broadcast ports (6445, 20086) on the single send socket.
+        assert send_sock.sendto.call_count == 2
 
     def test_discover_type_filter(self) -> None:
         """Test a device with a non-matching type is not returned."""
-        sock = MagicMock()
-        sock.recvfrom.side_effect = [
-            (_build_v2_packet(), (DEVICE_IP, 6445)),
-            TimeoutError,
-        ]
-        mock_socket = MagicMock()
-        mock_socket.__enter__.return_value = sock
-        with patch("midealan.discover.socket.socket", return_value=mock_socket):
+        send_sock = MagicMock()
+        send_sock.recvfrom.side_effect = [(_build_v2_packet(), (DEVICE_IP, 6445))]
+        with (
+            _patch_discover_sockets(send_sock),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[([send_sock], [], []), ([], [], [])],
+            ),
+        ):
             result = discover(discover_type=[0xFF], ip_address=["192.168.1.255"])
         assert result == {}
 
+    def test_discover_receives_on_fixed_ports(self) -> None:
+        """Test devices answering on the fixed 7083/15000 ports are found."""
+        recv_7083 = MagicMock()
+        recv_7083.recvfrom.side_effect = [(_build_v2_packet(), (DEVICE_IP, 7083))]
+        recv_15000 = MagicMock()
+        recv_15000.recvfrom.side_effect = [
+            (_build_v2_packet(device_id=DEVICE_ID + 1), (DEVICE_IP, 15000)),
+        ]
+        send_sock = MagicMock()
+        with (
+            _patch_discover_sockets(send_sock, [recv_7083, recv_15000]),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[
+                    ([recv_7083], [], []),
+                    ([recv_15000], [], []),
+                    ([], [], []),
+                ],
+            ),
+        ):
+            result = discover(ip_address=["192.168.1.255"])
+        assert sorted(result) == [DEVICE_ID, DEVICE_ID + 1]
+        # Both fixed ports were bound.
+        recv_7083.bind.assert_called_once_with(("", 7083))
+        recv_15000.bind.assert_called_once_with(("", 15000))
+
+    def test_discover_survives_bind_failure(self) -> None:
+        """Test a receive port that can't be bound is skipped, not fatal."""
+        recv_7083 = MagicMock()
+        recv_7083.bind.side_effect = OSError("port in use")
+        recv_15000 = MagicMock()
+        recv_15000.recvfrom.side_effect = [(_build_v2_packet(), (DEVICE_IP, 15000))]
+        send_sock = MagicMock()
+        with (
+            _patch_discover_sockets(send_sock, [recv_7083, recv_15000]),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[([recv_15000], [], []), ([], [], [])],
+            ),
+        ):
+            result = discover(ip_address=["192.168.1.255"])
+        assert list(result) == [DEVICE_ID]
+        # The failed socket is closed, not leaked.
+        recv_7083.close.assert_called_once()
+
     def test_discover_send_and_socket_errors(self) -> None:
-        """Test sendto OSError and recvfrom OSError are survived."""
-        sock = MagicMock()
-        sock.sendto.side_effect = OSError("network unreachable")
-        sock.recvfrom.side_effect = [OSError("bad recv"), TimeoutError]
-        mock_socket = MagicMock()
-        mock_socket.__enter__.return_value = sock
-        with patch("midealan.discover.socket.socket", return_value=mock_socket):
+        """Test sendto OSError and a select OSError are both survived."""
+        send_sock = MagicMock()
+        send_sock.sendto.side_effect = OSError("network unreachable")
+        with (
+            _patch_discover_sockets(send_sock),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=OSError("bad select"),
+            ),
+        ):
             result = discover(ip_address=["192.168.1.255"])
         assert result == {}
+
+    def test_discover_stops_when_time_budget_elapsed(self) -> None:
+        """Test the receive loop exits once the overall time budget is spent."""
+        send_sock = MagicMock()
+        with (
+            _patch_discover_sockets(send_sock),
+            patch("midealan.discover.DISCOVERY_TIMEOUT", 0.0),
+            patch("midealan.discover.select.select") as mock_select,
+        ):
+            result = discover(ip_address=["192.168.1.255"])
+        assert result == {}
+        # Budget already elapsed, so select is never consulted.
+        mock_select.assert_not_called()
+
+    def test_discover_parse_oserror_is_survived(self) -> None:
+        """Test an OSError from one recvfrom doesn't abort the scan."""
+        send_sock = MagicMock()
+        send_sock.recvfrom.side_effect = [
+            OSError("bad recv"),
+            (_build_v2_packet(), (DEVICE_IP, 6445)),
+        ]
+        with (
+            _patch_discover_sockets(send_sock),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[
+                    ([send_sock], [], []),
+                    ([send_sock], [], []),
+                    ([], [], []),
+                ],
+            ),
+        ):
+            result = discover(ip_address=["192.168.1.255"])
+        assert list(result) == [DEVICE_ID]
 
 
 class TestGetIdFromResponse:

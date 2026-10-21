@@ -122,6 +122,7 @@ class MideaCLI:
                     customize="",
                     mac=device["mac"],
                     serial_number=device["sn"],
+                    cloud_name=getattr(self.namespace, "cloud_name", None),
                 )
                 _LOGGER.debug("Opening socket for device.")
                 if dev.connect():

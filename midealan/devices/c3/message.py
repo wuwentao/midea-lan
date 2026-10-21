@@ -124,6 +124,131 @@ def _parse_sn_block(
 # Outdoor fan speed is transmitted as RPM / 10.
 FAN_SPEED_FACTOR = 10
 
+# Newer C3 controllers report state in an unsolicited X00 envelope whose
+# first byte is 0x00 and whose next two bytes are the inner command.
+C3_X00_COMMAND_OFFSET = 1
+C3_X00_COMMAND_LENGTH = 2
+C3_X00_U16_LENGTH = 2
+C3_X00_U32_LENGTH = 4
+C3_X00_TEMPERATURE_SCALE = 10
+C3_X00_PRESSURE_SCALE = 10
+C3_X00_WATER_FLOW_SCALE = 100
+C3_X00_CURRENT_UNIT_CAPACITY_SCALE = 100
+C3_X00_DC_CURRENT_SCALE = 100
+C3_X00_SIGN_BIT = 0x8000
+C3_X00_SIGN_VALUE_MASK = 0x7FFF
+C3_X00_INVALID_U16 = 0xFFFF
+C3_X00_TELEMETRY_MODEL = "17100007"
+
+# Basic state command used by model 17100007. Temperatures in this frame are
+# unsigned 16-bit big-endian values in tenths of a degree Celsius.
+C3_2010_COMMAND = bytes((0x20, 0x10))
+C3_2010_IDU_T1S1_OFFSET = 14
+C3_2010_DHW_TARGET_TEMP_OFFSET = 20
+C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
+C3_2010_OUTDOOR_TEMP_OFFSET = 97
+C3_2010_MIN_LENGTH = C3_2010_OUTDOOR_TEMP_OFFSET + C3_X00_U16_LENGTH
+
+# Sensor telemetry commands observed on model 17100007. Offsets are zero-based
+# within the X00 body, including its leading 0x00 byte.
+C3_20B0_COMMAND = bytes((0x20, 0xB0))
+C3_2F10_COMMAND = bytes((0x2F, 0x10))
+
+C3_20B0_COMP_RUN_FREQ_OFFSET = 10
+C3_20B0_FAN_SPEED_OFFSET = 12
+C3_20B0_TEMP_T3_OFFSET = 16
+C3_20B0_TEMP_T4_OFFSET = 18
+C3_20B0_TEMP_TP_OFFSET = 20
+C3_20B0_TEMP_TW_IN_OFFSET = 22
+C3_20B0_TEMP_TW_OUT_OFFSET = 24
+C3_20B0_ODU_COMP_CURRENT_OFFSET = 33
+C3_20B0_ODU_VOLTAGE_OFFSET = 35
+C3_20B0_EXV_CURRENT_OFFSET = 37
+C3_20B0_ODU_MODEL_OFFSET = 39
+C3_20B0_TEMP_T1_OFFSET = 92
+C3_20B0_TEMP_T2_OFFSET = 96
+C3_20B0_TEMP_T2B_OFFSET = 98
+C3_20B0_TEMP_T5_OFFSET = 100
+C3_20B0_PRESSURE_HIGH_OFFSET = 109
+C3_20B0_TEMP_TH_OFFSET = 113
+C3_20B0_TEMP_TF_OFFSET = 119
+C3_20B0_IDU_T1S1_OFFSET = 121
+C3_20B0_WATER_FLOW_OFFSET = 125
+C3_20B0_CURRENT_UNIT_CAPACITY_OFFSET = 129
+C3_20B0_PUMP_I_PWM_OFFSET = 139
+C3_20B0_TOTAL_ENERGY_CONSUMPTION_OFFSET = 140
+C3_20B0_MIN_LENGTH = C3_20B0_TEMP_TW_OUT_OFFSET + C3_X00_U16_LENGTH
+
+C3_2F10_COMP_RUN_FREQ_OFFSET = 10
+C3_2F10_FAN_SPEED_OFFSET = 11
+C3_2F10_TEMP_T3_OFFSET = 13
+C3_2F10_TEMP_T4_OFFSET = 15
+C3_2F10_TEMP_TP_OFFSET = 17
+C3_2F10_TEMP_TW_IN_OFFSET = 19
+C3_2F10_TEMP_TW_OUT_OFFSET = 21
+C3_2F10_ODU_COMP_CURRENT_OFFSET = 23
+C3_2F10_ODU_VOLTAGE_OFFSET = 25
+C3_2F10_TEMP_T1_OFFSET = 27
+C3_2F10_TEMP_T2_OFFSET = 31
+C3_2F10_TEMP_T2B_OFFSET = 33
+C3_2F10_TEMP_T5_OFFSET = 35
+C3_2F10_PRESSURE_HIGH_OFFSET = 39
+C3_2F10_TEMP_TH_OFFSET = 43
+C3_2F10_TEMP_TF_OFFSET = 46
+C3_2F10_IDU_T1S1_OFFSET = 48
+C3_2F10_WATER_FLOW_OFFSET = 52
+C3_2F10_CURRENT_UNIT_CAPACITY_OFFSET = 54
+C3_2F10_TOTAL_ENERGY_CONSUMPTION_OFFSET = 60
+C3_2F10_COMP_TOTAL_RUN_TIME_OFFSET = 88
+C3_2F10_PUMP_I_PWM_OFFSET = 92
+C3_2F10_COMP_RUN_TIME_OFFSET = 118
+C3_2F10_ODU_MODEL_OFFSET = 122
+C3_2F10_EXV_CURRENT_OFFSET = 127
+C3_2F10_DC_BUS_VOLTAGE_OFFSET = 141
+C3_2F10_DC_CURRENT_OFFSET = 143
+C3_2F10_SV1_OPEN_OFFSET = 145
+C3_2F10_SV2_OPEN_OFFSET = 146
+C3_2F10_PUMP_I_RUNNING_OFFSET = 148
+C3_2F10_PUMP_O_RUNNING_OFFSET = 149
+C3_2F10_PUMP_D_RUNNING_OFFSET = 150
+C3_2F10_FAN_TOTAL_RUN_TIME_OFFSET = 157
+C3_2F10_PUMP_I_TOTAL_RUN_TIME_OFFSET = 161
+C3_2F10_MIN_LENGTH = C3_2F10_TEMP_TW_OUT_OFFSET + C3_X00_U16_LENGTH
+
+
+def _read_u16_be(body: bytearray, offset: int) -> int:
+    """Read an unsigned big-endian 16-bit value."""
+    return int.from_bytes(body[offset : offset + C3_X00_U16_LENGTH], byteorder="big")
+
+
+def _read_u32_be(body: bytearray, offset: int) -> int:
+    """Read an unsigned big-endian 32-bit value."""
+    return int.from_bytes(body[offset : offset + C3_X00_U32_LENGTH], byteorder="big")
+
+
+def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
+    """Decode a C3 0x2010 temperature stored as unsigned tenths of a degree."""
+    return _read_u16_be(body, offset) / C3_X00_TEMPERATURE_SCALE
+
+
+def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | None:
+    """Decode a signed C3 X00 temperature stored as tenths of a degree."""
+    raw = _read_u16_be(body, offset)
+    if raw == C3_X00_INVALID_U16:
+        return None
+    magnitude = raw & C3_X00_SIGN_VALUE_MASK
+    if raw & C3_X00_SIGN_BIT:
+        magnitude = -magnitude
+    return magnitude / C3_X00_TEMPERATURE_SCALE
+
+
+def _c3_x00_inner_command(body: bytearray) -> bytes:
+    """Return the two-byte inner command carried by a C3 X00 message."""
+    return bytes(
+        body[C3_X00_COMMAND_OFFSET : C3_X00_COMMAND_OFFSET + C3_X00_COMMAND_LENGTH],
+    )
+
+
 # Error code lookup (source: Midea Modbus documentation V4.7,
 # 0052003044313 V.E, "Error code table 1", page 11).
 # Format: raw_value -> (display_code, human_description).
@@ -585,6 +710,273 @@ class C3DiagnosticBody(MessageBody):
         )
 
 
+class C3Basic2010Body(MessageBody):
+    """C3 basic state carried by the newer 0x2010 inner protocol."""
+
+    def __init__(
+        self,
+        body: bytearray,
+        *,
+        include_idu_t1s1: bool = False,
+    ) -> None:
+        """Initialize a C3 0x2010 basic-state message body."""
+        super().__init__(body)
+        if include_idu_t1s1:
+            self.idu_t1s1 = _parse_c3_2010_temperature(
+                body,
+                C3_2010_IDU_T1S1_OFFSET,
+            )
+        self.dhw_target_temp = _parse_c3_2010_temperature(
+            body,
+            C3_2010_DHW_TARGET_TEMP_OFFSET,
+        )
+        self.tank_actual_temperature = _parse_c3_2010_temperature(
+            body,
+            C3_2010_TANK_ACTUAL_TEMP_OFFSET,
+        )
+        self.temp_t4 = _parse_c3_2010_temperature(
+            body,
+            C3_2010_OUTDOOR_TEMP_OFFSET,
+        )
+        self.outdoor_temperature = self.temp_t4
+
+
+class C3X0020B0TelemetryBody(MessageBody):
+    """C3 telemetry carried by the model 17100007 0x20B0 push."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize a C3 0x20B0 telemetry message body."""
+        super().__init__(body)
+        self.comp_run_freq = body[C3_20B0_COMP_RUN_FREQ_OFFSET]
+        self.compressor_on = self.comp_run_freq > 0
+        self.fan_speed = _read_u16_be(body, C3_20B0_FAN_SPEED_OFFSET)
+        self.temp_t3 = _parse_c3_x00_signed_temperature(
+            body,
+            C3_20B0_TEMP_T3_OFFSET,
+        )
+        self.temp_t4 = _parse_c3_x00_signed_temperature(
+            body,
+            C3_20B0_TEMP_T4_OFFSET,
+        )
+        self.outdoor_temperature = self.temp_t4
+        self.temp_tp = _parse_c3_x00_signed_temperature(
+            body,
+            C3_20B0_TEMP_TP_OFFSET,
+        )
+        self.temp_tw_in = _parse_c3_x00_signed_temperature(
+            body,
+            C3_20B0_TEMP_TW_IN_OFFSET,
+        )
+        self.temp_tw_out = _parse_c3_x00_signed_temperature(
+            body,
+            C3_20B0_TEMP_TW_OUT_OFFSET,
+        )
+        # Later telemetry is optional; never turn an incomplete value into zero.
+        if len(body) >= C3_20B0_ODU_COMP_CURRENT_OFFSET + C3_X00_U16_LENGTH:
+            self.odu_comp_current = _read_u16_be(body, C3_20B0_ODU_COMP_CURRENT_OFFSET)
+        if len(body) >= C3_20B0_ODU_VOLTAGE_OFFSET + C3_X00_U16_LENGTH:
+            self.odu_voltage = _read_u16_be(body, C3_20B0_ODU_VOLTAGE_OFFSET)
+        if len(body) >= C3_20B0_EXV_CURRENT_OFFSET + C3_X00_U16_LENGTH:
+            self.exv_current = _read_u16_be(body, C3_20B0_EXV_CURRENT_OFFSET)
+        if len(body) > C3_20B0_ODU_MODEL_OFFSET:
+            self.odu_model = body[C3_20B0_ODU_MODEL_OFFSET]
+        if len(body) >= C3_20B0_TEMP_T1_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t1 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_T1_OFFSET,
+            )
+        if len(body) >= C3_20B0_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t2 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_T2_OFFSET,
+            )
+        if len(body) >= C3_20B0_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t2b = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_T2B_OFFSET,
+            )
+        if len(body) >= C3_20B0_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t5 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_T5_OFFSET,
+            )
+        if len(body) >= C3_20B0_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
+            self.pressure_high = (
+                _read_u16_be(body, C3_20B0_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE
+            )
+        if len(body) >= C3_20B0_TEMP_TH_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_th = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_TH_OFFSET,
+            )
+        if len(body) >= C3_20B0_TEMP_TF_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_tf = _parse_c3_x00_signed_temperature(
+                body,
+                C3_20B0_TEMP_TF_OFFSET,
+            )
+        if len(body) >= C3_20B0_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
+            self.idu_t1s1 = (
+                _read_u16_be(body, C3_20B0_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
+            )
+        if len(body) >= C3_20B0_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
+            self.water_flower = (
+                _read_u16_be(body, C3_20B0_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE
+            )
+        if len(body) >= C3_20B0_CURRENT_UNIT_CAPACITY_OFFSET + C3_X00_U16_LENGTH:
+            # The /100 capacity scale still needs a steady-running sample.
+            self.current_unit_capacity = (
+                _read_u16_be(body, C3_20B0_CURRENT_UNIT_CAPACITY_OFFSET)
+                / C3_X00_CURRENT_UNIT_CAPACITY_SCALE
+            )
+        if len(body) > C3_20B0_PUMP_I_PWM_OFFSET:
+            self.pump_i_pwm = body[C3_20B0_PUMP_I_PWM_OFFSET]
+            self.pwm_pump_out = self.pump_i_pwm
+        if len(body) >= C3_20B0_TOTAL_ENERGY_CONSUMPTION_OFFSET + C3_X00_U32_LENGTH:
+            self.total_energy_consumption = _read_u32_be(
+                body,
+                C3_20B0_TOTAL_ENERGY_CONSUMPTION_OFFSET,
+            )
+
+
+class C3X002F10TelemetryBody(MessageBody):
+    """C3 telemetry carried by the model 17100007 0x2F10 push."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize a C3 0x2F10 telemetry message body."""
+        super().__init__(body)
+        self.comp_run_freq = body[C3_2F10_COMP_RUN_FREQ_OFFSET]
+        self.compressor_on = self.comp_run_freq > 0
+        self.fan_speed = _read_u16_be(body, C3_2F10_FAN_SPEED_OFFSET)
+        self.temp_t3 = _parse_c3_x00_signed_temperature(
+            body,
+            C3_2F10_TEMP_T3_OFFSET,
+        )
+        self.temp_t4 = _parse_c3_x00_signed_temperature(
+            body,
+            C3_2F10_TEMP_T4_OFFSET,
+        )
+        self.outdoor_temperature = self.temp_t4
+        self.temp_tp = _parse_c3_x00_signed_temperature(
+            body,
+            C3_2F10_TEMP_TP_OFFSET,
+        )
+        self.temp_tw_in = _parse_c3_x00_signed_temperature(
+            body,
+            C3_2F10_TEMP_TW_IN_OFFSET,
+        )
+        self.temp_tw_out = _parse_c3_x00_signed_temperature(
+            body,
+            C3_2F10_TEMP_TW_OUT_OFFSET,
+        )
+        self._parse_optional_sensors(body)
+        self._parse_operation(body)
+
+    def _parse_optional_sensors(self, body: bytearray) -> None:
+        """Decode complete trailing sensor, capacity, and energy fields."""
+        if len(body) >= C3_2F10_ODU_COMP_CURRENT_OFFSET + C3_X00_U16_LENGTH:
+            self.odu_comp_current = _read_u16_be(body, C3_2F10_ODU_COMP_CURRENT_OFFSET)
+        if len(body) >= C3_2F10_ODU_VOLTAGE_OFFSET + C3_X00_U16_LENGTH:
+            self.odu_voltage = _read_u16_be(body, C3_2F10_ODU_VOLTAGE_OFFSET)
+        if len(body) >= C3_2F10_TEMP_T1_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t1 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_T1_OFFSET,
+            )
+        if len(body) >= C3_2F10_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t2 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_T2_OFFSET,
+            )
+        if len(body) >= C3_2F10_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t2b = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_T2B_OFFSET,
+            )
+        if len(body) >= C3_2F10_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_t5 = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_T5_OFFSET,
+            )
+        if len(body) >= C3_2F10_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
+            self.pressure_high = (
+                _read_u16_be(body, C3_2F10_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE
+            )
+        if len(body) >= C3_2F10_TEMP_TH_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_th = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_TH_OFFSET,
+            )
+        if len(body) >= C3_2F10_TEMP_TF_OFFSET + C3_X00_U16_LENGTH:
+            self.temp_tf = _parse_c3_x00_signed_temperature(
+                body,
+                C3_2F10_TEMP_TF_OFFSET,
+            )
+        if len(body) >= C3_2F10_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
+            self.idu_t1s1 = (
+                _read_u16_be(body, C3_2F10_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
+            )
+        if len(body) >= C3_2F10_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
+            self.water_flower = (
+                _read_u16_be(body, C3_2F10_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE
+            )
+        if len(body) >= C3_2F10_CURRENT_UNIT_CAPACITY_OFFSET + C3_X00_U16_LENGTH:
+            # The /100 capacity scale still needs a steady-running sample.
+            self.current_unit_capacity = (
+                _read_u16_be(body, C3_2F10_CURRENT_UNIT_CAPACITY_OFFSET)
+                / C3_X00_CURRENT_UNIT_CAPACITY_SCALE
+            )
+        if len(body) >= C3_2F10_TOTAL_ENERGY_CONSUMPTION_OFFSET + C3_X00_U32_LENGTH:
+            self.total_energy_consumption = _read_u32_be(
+                body,
+                C3_2F10_TOTAL_ENERGY_CONSUMPTION_OFFSET,
+            )
+
+    def _parse_operation(self, body: bytearray) -> None:
+        """Decode complete runtime, electrical, and relay fields."""
+        if len(body) >= C3_2F10_COMP_TOTAL_RUN_TIME_OFFSET + C3_X00_U32_LENGTH:
+            self.comp_total_run_time = _read_u32_be(
+                body,
+                C3_2F10_COMP_TOTAL_RUN_TIME_OFFSET,
+            )
+        if len(body) > C3_2F10_PUMP_I_PWM_OFFSET:
+            self.pump_i_pwm = body[C3_2F10_PUMP_I_PWM_OFFSET]
+            self.pwm_pump_out = self.pump_i_pwm
+        if len(body) >= C3_2F10_COMP_RUN_TIME_OFFSET + C3_X00_U16_LENGTH:
+            # Minute count confirmed; the high byte awaits a >255 min capture.
+            self.comp_run_time = _read_u16_be(body, C3_2F10_COMP_RUN_TIME_OFFSET)
+        if len(body) > C3_2F10_ODU_MODEL_OFFSET:
+            self.odu_model = body[C3_2F10_ODU_MODEL_OFFSET]
+        if len(body) >= C3_2F10_EXV_CURRENT_OFFSET + C3_X00_U16_LENGTH:
+            self.exv_current = _read_u16_be(body, C3_2F10_EXV_CURRENT_OFFSET)
+        if len(body) >= C3_2F10_DC_BUS_VOLTAGE_OFFSET + C3_X00_U16_LENGTH:
+            self.dc_bus_voltage = _read_u16_be(body, C3_2F10_DC_BUS_VOLTAGE_OFFSET)
+        if len(body) >= C3_2F10_DC_CURRENT_OFFSET + C3_X00_U16_LENGTH:
+            # /100 matches the only nonzero sample; request live confirmation.
+            self.dc_current = (
+                _read_u16_be(body, C3_2F10_DC_CURRENT_OFFSET) / C3_X00_DC_CURRENT_SCALE
+            )
+        if len(body) > C3_2F10_SV1_OPEN_OFFSET:
+            self.sv1_open = bool(body[C3_2F10_SV1_OPEN_OFFSET])
+        if len(body) > C3_2F10_SV2_OPEN_OFFSET:
+            self.sv2_open = bool(body[C3_2F10_SV2_OPEN_OFFSET])
+        if len(body) > C3_2F10_PUMP_I_RUNNING_OFFSET:
+            self.pump_i_running = bool(body[C3_2F10_PUMP_I_RUNNING_OFFSET])
+        if len(body) > C3_2F10_PUMP_O_RUNNING_OFFSET:
+            self.pump_o_running = bool(body[C3_2F10_PUMP_O_RUNNING_OFFSET])
+        if len(body) > C3_2F10_PUMP_D_RUNNING_OFFSET:
+            self.pump_d_running = bool(body[C3_2F10_PUMP_D_RUNNING_OFFSET])
+        if len(body) >= C3_2F10_FAN_TOTAL_RUN_TIME_OFFSET + C3_X00_U32_LENGTH:
+            self.fan_total_run_time = _read_u32_be(
+                body,
+                C3_2F10_FAN_TOTAL_RUN_TIME_OFFSET,
+            )
+        if len(body) >= C3_2F10_PUMP_I_TOTAL_RUN_TIME_OFFSET + C3_X00_U32_LENGTH:
+            self.pump_i_total_run_time = _read_u32_be(
+                body,
+                C3_2F10_PUMP_I_TOTAL_RUN_TIME_OFFSET,
+            )
+
+
 class C3EnergyBody(MessageBody):
     """C3 Energy MSG_TYPE_UP_POWER4 message body."""
 
@@ -777,12 +1169,10 @@ class C3UnitParaBody(MessageBody):
         self.temp_tf = body[data_offset + 51]
         self.idu_t1s1 = _setpoint_or_none(body[data_offset + 52])
         self.idu_t1s2 = _setpoint_or_none(body[data_offset + 53])
-        self.water_flower = body[data_offset + 54] * 256 + body[data_offset + 55]
+        self.water_flower = _read_u16_be(body, data_offset + 54)
         self.odu_plan_vol_lmt = body[data_offset + 56]
         # lua _bodyBytes[58] * 256 + _bodyBytes[59]; the low byte was dropped.
-        self.current_unit_capacity = (
-            body[data_offset + 57] * 256 + body[data_offset + 58]
-        )
+        self.current_unit_capacity = _read_u16_be(body, data_offset + 57)
         self.sphera_ahs_voltage = body[data_offset + 59]
         self.temp_t4a_ver = body[data_offset + 60]
         self.water_pressure = body[data_offset + 61] * 256 + body[data_offset + 62]
@@ -793,6 +1183,7 @@ class C3UnitParaBody(MessageBody):
         # populate it in the query response. _bodyBytes[66], which happens
         # to hold a constant 99, is marked reserved by the lua and is not
         # used here.
+        # Keep the legacy field, but do not overwrite push-only pump_i_pwm.
         self.pwm_pump_out = body[data_offset + 64]
         self.total_electricity0 = (
             (body[data_offset + 66] << 24)
@@ -908,10 +1299,8 @@ class C3UnitParaUpBody(MessageBody):
         self.temp_tf = body[data_offset + 22]
         self.idu_t1s1 = _setpoint_or_none(body[data_offset + 23])
         self.idu_t1s2 = _setpoint_or_none(body[data_offset + 24])
-        self.water_flower = body[data_offset + 25] * 256 + body[data_offset + 26]
-        self.current_unit_capacity = (
-            body[data_offset + 27] * 256 + body[data_offset + 28]
-        )
+        self.water_flower = _read_u16_be(body, data_offset + 25)
+        self.current_unit_capacity = _read_u16_be(body, data_offset + 27)
         self.water_pressure = body[data_offset + 29] * 256 + body[data_offset + 30]
         self.room_rel_hum = body[data_offset + 31]
         self.total_electricity0 = (
@@ -949,6 +1338,8 @@ class C3UnitParaUpBody(MessageBody):
         # response does not carry this counter, so this notify is the
         # only source for it.
         self.comp_total_run_time = body[data_offset + 56] * 256 + body[data_offset + 57]
+        self.pump_i_pwm = body[data_offset + 58]
+        self.pwm_pump_out = self.pump_i_pwm
 
 
 class MessageC3Response(MessageResponse):
@@ -960,7 +1351,7 @@ class MessageC3Response(MessageResponse):
     # class-level annotations has no effect on runtime behaviour (set_attr()
     # remains the only place that assigns them) and only gives mypy the
     # static type it needs for the accesses in message_c3_test.py.
-    temp_t1: int
+    temp_t1: int | float | None
     ibh1_on: bool
     ibh2_on: bool
     load_output_tbh: bool
@@ -984,7 +1375,10 @@ class MessageC3Response(MessageResponse):
     dhw_run: bool
     fact_req_ther_heat_on: bool
     edge_version_type: bool
+    comp_run_time: int
     comp_total_run_time: int
+    fan_total_run_time: int
+    pump_i_total_run_time: int
     unit_mode_run: int
     error_code: int
     error_code_description: str
@@ -993,7 +1387,7 @@ class MessageC3Response(MessageResponse):
     idu_software_version_str: str | None
     odu_software_version_str: str | None
     fg_capacity_need: int
-    current_unit_capacity: int
+    current_unit_capacity: int | float
     total_energy_consumption: int
     total_produced_energy: int
     mode: C3DeviceMode
@@ -1006,14 +1400,37 @@ class MessageC3Response(MessageResponse):
     status_heating: bool
     compressor_on: bool
     tbh: bool
-    temp_tw_out: float
+    temp_tw_out: int | float | None
     tank_actual_temperature: float
     instant_power0: int
+    temp_t3: int | float | None
+    temp_t4: int | float | None
+    temp_tp: int | float | None
+    temp_tw_in: int | float | None
+    outdoor_temperature: float | None
+    fan_speed: int
+    odu_comp_current: int
+    odu_voltage: int
+    exv_current: int
+    odu_model: int
+    temp_t2: int | float | None
+    temp_t2b: int | float | None
+    temp_t5: int | float | None
+    pressure_high: int
+    temp_th: int | float | None
+    temp_tf: int | float | None
+    idu_t1s1: int | float | None
+    water_flower: int | float
+    pump_i_pwm: int
+    pwm_pump_out: int
+    dc_bus_voltage: int
+    dc_current: int | float
 
-    def __init__(self, message: bytes) -> None:
+    def __init__(self, message: bytes, model: str | None = None) -> None:
         """Initialize C3 message response."""
         super().__init__(bytearray(message))
         body = super().body
+        x00_command = _c3_x00_inner_command(body)
         if (
             self.message_type
             in [MessageType.set, MessageType.notify1, MessageType.query]
@@ -1044,6 +1461,34 @@ class MessageC3Response(MessageResponse):
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
         ):
             self.set_body(C3UnitParaUpBody(body, data_offset=1))
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and len(body) >= C3_2010_MIN_LENGTH
+            and x00_command == C3_2010_COMMAND
+        ):
+            self.set_body(
+                C3Basic2010Body(
+                    body,
+                    include_idu_t1s1=model == C3_X00_TELEMETRY_MODEL,
+                ),
+            )
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and model == C3_X00_TELEMETRY_MODEL
+            and len(body) >= C3_20B0_MIN_LENGTH
+            and x00_command == C3_20B0_COMMAND
+        ):
+            self.set_body(C3X0020B0TelemetryBody(body))
+        elif (
+            self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.X00
+            and model == C3_X00_TELEMETRY_MODEL
+            and len(body) >= C3_2F10_MIN_LENGTH
+            and x00_command == C3_2F10_COMMAND
+        ):
+            self.set_body(C3X002F10TelemetryBody(body))
         elif self.body_type == ListTypes.X07:
             self.set_body(C3ECOBody(body, data_offset=1))
         elif self.body_type == ListTypes.X09:

@@ -24,6 +24,7 @@ from midealan.devices.ac.message import (
     GroupZeroQuery,
     HumidityQuery,
     MessageACResponse,
+    MessageSubProtocolSet,
     PowerFormats,
     PowerQuery,
     PropertiesCapsQuery,
@@ -425,6 +426,23 @@ class TestMideaACDevice:
             assert message.aux_heating is False
         # The cache follows the legacy command, so aux_only is cleared.
         assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "off"
+
+    def test_set_aux_heat_mode_aux_only_subprotocol_fallback(self) -> None:
+        """The BB subprotocol has no independent_ptc, so aux_only uses PTC."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSubProtocolSet)
+            # No independent_ptc field on the subprotocol frame; the ordinary
+            # PTC flag is enabled instead so electric heat still turns on.
+            assert message.aux_heating is True
+            assert not hasattr(message, "independent_ptc")
+            assert message.power is True
+            assert message.mode == 4  # HEAT_MODE
 
     def test_process_message_derives_aux_heat_mode(self) -> None:
         """aux_heat_mode is derived from the two status flags, aux_only wins."""

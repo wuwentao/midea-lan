@@ -58,6 +58,7 @@ MAX_MSG_SERIAL_NUM = 254
 # - 0x03: https://github.com/wuwentao/midea_ac_lan/issues/779
 # Keep 0x03 as the fallback for devices without a numeric B5 capability value.
 DEFAULT_OUT_SILENT_VALUE = 0x03
+OUT_SILENT_OFF_VALUE = 0x00
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
 SUB_PROTOCOL_BODY_TEMP_CHECK = 0x80
@@ -1304,7 +1305,11 @@ class PropertiesSet(MessageACBase):
                 NewProtocolMessageBody.pack(
                     param=CapabilityTag.out_silent,
                     value=bytearray(
-                        [self.out_silent_on_value if self.out_silent else 0x00],
+                        [
+                            self.out_silent_on_value
+                            if self.out_silent
+                            else OUT_SILENT_OFF_VALUE,
+                        ],
                     ),
                 ),
             )

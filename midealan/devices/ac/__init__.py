@@ -1542,9 +1542,43 @@ class MideaACDevice(MideaDevice):
         if aux_heat or aux_only:
             message.power = True
             message.mode = HEAT_MODE
-            self._attributes[DeviceAttributes.power] = True
-            self._attributes[DeviceAttributes.mode] = HEAT_MODE
+        # The cache is synchronized by _sync_aux_heat_cache after a successful
+        # send, so a failed build_send does not leave power/mode committed.
         return message
+
+    def _sync_aux_heat_cache(
+        self,
+        message: MessageSubProtocolSet | StateSet,
+        *,
+        force_heat: bool,
+    ) -> None:
+        """Mirror the commanded electric aux-heat state into the cache.
+
+        make_message_set rebuilds aux_heating/independent_ptc from the cache, so
+        a follow-up write (set_target_temperature, set_swing, ...) sent before
+        the next status reply must see the heater state just commanded, not the
+        stale last-confirmed value. Call this only after build_send succeeds.
+        """
+        aux_heating = bool(getattr(message, "aux_heating", False))
+        independent_ptc = bool(getattr(message, "independent_ptc", False))
+        if independent_ptc:
+            aux_heat_mode = AUX_HEAT_MODE_AUX_ONLY
+        elif aux_heating:
+            aux_heat_mode = AUX_HEAT_MODE_AUX_HEAT
+        else:
+            aux_heat_mode = AUX_HEAT_MODE_OFF
+        updates: dict[str, Any] = {
+            DeviceAttributes.aux_heating.value: aux_heating,
+            DeviceAttributes.aux_heat_mode.value: aux_heat_mode,
+        }
+        # Only the aux_heat_mode control forces heat + power on; the legacy
+        # aux_heating switch leaves power/mode untouched (force_heat=False).
+        if force_heat and aux_heat_mode != AUX_HEAT_MODE_OFF:
+            updates[DeviceAttributes.power.value] = True
+            updates[DeviceAttributes.mode.value] = HEAT_MODE
+        for key, cached in updates.items():
+            self._attributes[DeviceAttributes(key)] = cached
+        self.update_all(updates)
 
     def make_message_uniq_set(self) -> MessageSubProtocolSet | StateSet:
         """Midea AC device make message unique set."""
@@ -1609,6 +1643,25 @@ class MideaACDevice(MideaDevice):
             message.comfort_mode = False
             message.frost_protect = False
 
+    @staticmethod
+    def _apply_legacy_aux_heating(
+        message: MessageSubProtocolSet | StateSet,
+        attr: str,
+    ) -> bool:
+        """Reconcile an explicit legacy aux_heating command with aux-only mode.
+
+        Electric-only heat (independent_ptc) and the ordinary PTC flag are the
+        two mutually exclusive heater sources, so an explicit aux_heating
+        command clears independent_ptc on the outgoing frame and overrides a
+        cached "aux_only" status. Returns whether the aux-heat cache must be
+        resynced from this frame after a successful send.
+        """
+        if attr != DeviceAttributes.aux_heating:
+            return False
+        if isinstance(message, StateSet):
+            message.independent_ptc = False
+        return True
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
         self.reject_toshiba_write()
@@ -1622,6 +1675,11 @@ class MideaACDevice(MideaDevice):
             | None
         ) = None
         optimistic_self_clean: bool | None = None
+        # Resync the electric aux-heat cache from the outgoing frame after a
+        # successful send; force_heat mirrors the power/mode forced by the
+        # aux_heat_mode control but not by the plain aux_heating switch.
+        aux_heat_cache_sync = False
+        force_heat = False
         if attr not in [
             DeviceAttributes.indoor_temperature,
             DeviceAttributes.outdoor_temperature,
@@ -1698,10 +1756,12 @@ class MideaACDevice(MideaDevice):
                 )
             elif attr == DeviceAttributes.aux_heat_mode:
                 message = self._make_aux_heat_mode_set(str(value))
+                aux_heat_cache_sync = force_heat = message is not None
             elif attr in self._attributes:
                 message = self.make_message_uniq_set()
                 self._reset_exclusive_modes(message, attr)
                 setattr(message, str(attr), value)
+                aux_heat_cache_sync = self._apply_legacy_aux_heating(message, attr)
                 self._clear_timers_on_power_change(message, attr, value)
                 if attr == DeviceAttributes.mode:
                     setattr(message, str(DeviceAttributes.power.value), True)
@@ -1723,6 +1783,11 @@ class MideaACDevice(MideaDevice):
                     self._attributes[DeviceAttributes.mode] = value
         if message is not None:
             self.build_send(message)
+            if aux_heat_cache_sync and isinstance(
+                message,
+                MessageSubProtocolSet | StateSet,
+            ):
+                self._sync_aux_heat_cache(message, force_heat=force_heat)
             if optimistic_self_clean is not None:
                 self._pending_self_clean = (optimistic_self_clean, time.monotonic())
                 self._attributes[DeviceAttributes.self_clean] = optimistic_self_clean

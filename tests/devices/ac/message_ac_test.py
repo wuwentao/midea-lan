@@ -2261,7 +2261,11 @@ class TestMessageACResponse:
         body[14] = 0b01110000  # Screen display
         body[15] = 0b00110010  # Decimal parts for temperature
         body[21] = 0b10000000  # Frost protect
-        body[22] = 0b00001001  # Comfort mode (0x01) + independent_ptc (0x08)
+        # Comfort mode only (0x01). independent_ptc is decoded from the C0
+        # status bit at byte 8 (0x40), never from byte 22, so byte 22 bit 0x08
+        # is left clear here to prove the decoder reads the status bit. See
+        # test_message_query_c0_independent_ptc_reads_status_bit below.
+        body[22] = 0b00000001  # Comfort mode (0x01)
 
         response = MessageACResponse(self.header + body)
         assert hasattr(response, "power")
@@ -2308,6 +2312,33 @@ class TestMessageACResponse:
         response = MessageACResponse(self.header + body)
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature is None
+
+    def test_message_query_c0_independent_ptc_reads_status_bit(self) -> None:
+        """Decode C0 independent_ptc from byte 8 bit 0x40, never byte 22.
+
+        Byte 22 also carries an independent_ptc bit (0x08) on the *set* frame,
+        so a decoder that mistakenly read byte 22 for the C0 status could pass
+        the primary test. Prove the status bit at byte 8 is authoritative:
+        byte 22 bit 0x08 set alone must not report independent_ptc, and byte 8
+        bit 0x40 set alone must. See #1127.
+        """
+        self.header[9] = 0x03
+        base = bytearray(24)
+        base[0] = 0xC0  # Body type
+
+        # Only byte 22 bit 0x08 set -> independent_ptc must stay False.
+        byte22_only = bytearray(base)
+        byte22_only[22] = 0x08
+        response = MessageACResponse(self.header + byte22_only)
+        assert hasattr(response, "independent_ptc")
+        assert response.independent_ptc is False
+
+        # Only byte 8 bit 0x40 set -> independent_ptc must be True.
+        byte8_only = bytearray(base)
+        byte8_only[8] = 0x40
+        response = MessageACResponse(self.header + byte8_only)
+        assert hasattr(response, "independent_ptc")
+        assert response.independent_ptc is True
 
     def test_message_query_c0_short_body(self) -> None:
         """Skip Message parse query C0 when the body is too short."""

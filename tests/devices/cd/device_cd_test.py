@@ -726,6 +726,34 @@ class TestMideaCDDevice:
         assert message.body[4] == 50
         assert message.body[23] == 65
 
+    def test_2530001n_active_mode_powers_on_and_updates_cached_state(self) -> None:
+        """Selecting an active mode starts the heater and prevents stale writes."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.max_temperature_lower_limit] = 38.0
+        device._attributes[DeviceAttributes.max_temperature_upper_limit] = 70.0
+        device._attributes[DeviceAttributes.power] = False
+        device._attributes[DeviceAttributes.mode] = "economy"
+        device._attributes[DeviceAttributes.target_temperature] = 50.0
+        device._attributes[DeviceAttributes.max_temperature] = 65.0
+
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute(DeviceAttributes.mode.value, "hybrid")
+            device.set_attribute(DeviceAttributes.target_temperature.value, 60.0)
+
+        assert mock_send.call_count == 2
+        mode_message = mock_send.call_args_list[0].args[0]
+        assert mode_message.body[2] == 0x01
+        assert mode_message.body[3] == 0x02
+        assert mode_message.body[4] == 50
+        assert mode_message.body[23] == 65
+        assert device.attributes[DeviceAttributes.power] is True
+        assert device.attributes[DeviceAttributes.mode] == "hybrid"
+
+        temperature_message = mock_send.call_args_list[1].args[0]
+        assert temperature_message.body[2] == 0x01
+        assert temperature_message.body[3] == 0x02
+        assert temperature_message.body[4] == 60
+
     @pytest.mark.parametrize("message_type", [MessageType.query, MessageType.notify2])
     @pytest.mark.parametrize(
         ("body_hex", "current", "top", "bottom", "outdoor", "condenser", "compressor"),
@@ -986,12 +1014,34 @@ class TestMideaCDDevice:
             )
 
     def test_set_mode_standard(self) -> None:
-        """A valid mode value is mapped to its key and sent."""
+        """A valid mode value is mapped, starts the heater, and is cached."""
         with patch.object(self.device, "build_send") as mock_send:
             self.device.set_attribute(DeviceAttributes.mode.value, "standard")
             mock_send.assert_called_once()
             msg = mock_send.call_args[0][0]
             assert msg.mode == 0x02
+            assert msg.power is True
+            assert self.device.attributes[DeviceAttributes.power] is True
+            assert self.device.attributes[DeviceAttributes.mode] == "standard"
+
+    def test_set_mode_none_does_not_change_power(self) -> None:
+        """Protocol mode None remains distinct from the power control."""
+        self.device._attributes[DeviceAttributes.power] = True
+        self.device._attributes[DeviceAttributes.mode] = "standard"
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.mode.value, "none")
+            self.device.set_attribute(DeviceAttributes.target_temperature.value, 42.0)
+
+        assert mock_send.call_count == 2
+        mode_message = mock_send.call_args_list[0].args[0]
+        assert mode_message.mode == 0x00
+        assert mode_message.power is True
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == "none"
+
+        temperature_message = mock_send.call_args_list[1].args[0]
+        assert temperature_message.mode == 0x00
+        assert temperature_message.power is True
 
     def test_set_target_temperature_attribute(self) -> None:
         """Setting the target temperature places the value in the message."""

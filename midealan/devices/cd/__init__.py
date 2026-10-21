@@ -729,7 +729,7 @@ class MideaCDDevice(MideaDevice):
             for timers in timer_groups
         )
 
-    def set_attribute(  # noqa: C901, PLR0911
+    def set_attribute(  # noqa: C901, PLR0911, PLR0915
         self,
         attr: str,
         value: bool | float | str | dict[Any, Any],
@@ -907,6 +907,14 @@ class MideaCDDevice(MideaDevice):
                     )
                     return  # Don't send invalid mode
                 message.mode = mode_key
+                self._attributes[DeviceAttributes.mode] = str(value)
+                if mode_key != 0x00:
+                    # Selecting an active operating mode also starts the
+                    # appliance. Keep the cache in sync immediately because
+                    # SET echoes have an untrusted power bit and a follow-up
+                    # write rebuilds the complete control frame from here.
+                    message.power = True
+                    self._attributes[DeviceAttributes.power] = True
 
             elif attr == DeviceAttributes.power:
                 message.power = bool(value)

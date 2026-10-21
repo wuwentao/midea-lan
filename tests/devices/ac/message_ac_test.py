@@ -637,6 +637,22 @@ class TestCollectCapabilityProperties:
 class TestCapabilityBodyParsing:
     """Test B5 capability body parsing does not poison subsequent queries."""
 
+    @pytest.mark.parametrize("raw_value", [0x00, 0x01, 0x02, 0x03])
+    def test_b5_out_silent_preserves_activation_value(self, raw_value: int) -> None:
+        """Test B5 preserves the model-specific out_silent activation value."""
+        body = bytearray(
+            [
+                0xB5,
+                0x01,
+                CapabilityTag.out_silent & 0xFF,
+                CapabilityTag.out_silent >> 8,
+                0x01,
+                raw_value,
+            ],
+        )
+
+        assert CapabilityBody(body).capabilities["out_silent"] == raw_value
+
     def test_b5_capability_only_tags_do_not_leak_into_query(self) -> None:
         """Test B5 tags auto-parsed as capability keys don't poison next query.
 
@@ -717,6 +733,15 @@ class TestNewProtocolSetOutSilent:
         assert body[3] == CapabilityTag.out_silent >> 8  # 0x00
         assert body[4] == 0x01  # length byte
         assert body[5] == expected_byte
+
+    @pytest.mark.parametrize("on_value", [0x01, 0x02, 0x03])
+    def test_out_silent_uses_device_on_value(self, on_value: int) -> None:
+        """Test out_silent uses the activation value advertised by the device."""
+        msg = PropertiesSet(protocol_version=ProtocolVersion.V1)
+        msg.out_silent = True
+        msg.out_silent_on_value = on_value
+
+        assert msg.body[5] == on_value
 
     def test_out_silent_none_not_packed(self) -> None:
         """Test out_silent None does not add to payload."""
@@ -2020,7 +2045,7 @@ class TestMessageACResponse:
 
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
-        [(0x03, True), (0x00, False)],
+        [(0x03, True), (0x02, True), (0x01, True), (0x00, False)],
     )
     def test_message_notify2_b0_out_silent(
         self,

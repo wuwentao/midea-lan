@@ -229,6 +229,29 @@ class TestMideaACDevice:
             message = mock_build_send.call_args[0][0]
             assert message.rate_select is None
 
+    @pytest.mark.parametrize(
+        ("capability_value", "expected_byte"),
+        [(0x01, 0x01), (0x02, 0x02), (0x03, 0x03), (True, 0x03), (None, 0x03)],
+    )
+    def test_out_silent_uses_capability_activation_value(
+        self,
+        capability_value: int | bool | None,
+        expected_byte: int,
+    ) -> None:
+        """Test out_silent uses a numeric B5 value and keeps the legacy fallback."""
+        if capability_value is not None:
+            self.device._capabilities[DeviceAttributes.out_silent.value] = (
+                capability_value
+            )
+
+        message = self.device.make_newprotocol_message_set(
+            DeviceAttributes.out_silent,
+            True,
+        )
+
+        # prompt_tone is packed first; the 0xCD value is the second property.
+        assert message.body[9] == expected_byte
+
     def test_set_attribute_fresh_air_mode_named_speed(self) -> None:
         """Test set attribute for fresh air mode with a named fan speed."""
         self.device._fresh_air_version = DeviceAttributes.fresh_air_1

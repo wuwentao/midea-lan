@@ -53,7 +53,7 @@ FRESH_AIR_LENGTH = 2
 FROST_PROTECT_MIN_LENGTH = 24
 INDIRECT_WIND_VALUE = 0x02
 MAX_MSG_SERIAL_NUM = 254
-OUT_SILENT_VALUE = 0x03
+DEFAULT_OUT_SILENT_VALUE = 0x03
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
 SUB_PROTOCOL_BODY_TEMP_CHECK = 0x80
@@ -1196,6 +1196,7 @@ class PropertiesSet(MessageACBase):
         self.wind_ud_angle: bytes | None = None
         self.rate_select: int | None = None
         self.out_silent: bool | None = None
+        self.out_silent_on_value: int = DEFAULT_OUT_SILENT_VALUE
         self.sound: bool | None = None
         self.self_clean: bool | None = None
         self.degerming: bool | None = None
@@ -1298,9 +1299,9 @@ class PropertiesSet(MessageACBase):
             payload.extend(
                 NewProtocolMessageBody.pack(
                     param=CapabilityTag.out_silent,
-                    # Device requires 0x03 to activate, 0x00 to deactivate
-                    # Sending 0x01 results in an error from the firmware
-                    value=bytearray([OUT_SILENT_VALUE if self.out_silent else 0x00]),
+                    value=bytearray(
+                        [self.out_silent_on_value if self.out_silent else 0x00],
+                    ),
                 ),
             )
         if self.sound is not None:
@@ -1578,7 +1579,7 @@ class PropertiesBody(NewProtocolMessageBody):
         if CapabilityTag.rate_select in params:
             self.rate_select = params[CapabilityTag.rate_select][0]
         if CapabilityTag.out_silent in params:
-            self.out_silent = params[CapabilityTag.out_silent][0] == OUT_SILENT_VALUE
+            self.out_silent = params[CapabilityTag.out_silent][0] > 0
         if CapabilityTag.sound in params:
             self.sound = params[CapabilityTag.sound][0] > 0
         if CapabilityTag.error_code in params:

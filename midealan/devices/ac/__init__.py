@@ -1251,6 +1251,15 @@ class MideaACDevice(MideaDevice):
         elif attr == DeviceAttributes.ieco:
             message.ieco = bool(value)
             message.ieco_number = self._ieco_number
+        elif attr == DeviceAttributes.out_silent:
+            message.out_silent = bool(value)
+            capability_value = self.capabilities.get(DeviceAttributes.out_silent.value)
+            if (
+                isinstance(capability_value, int)
+                and not isinstance(capability_value, bool)
+                and 0 < capability_value <= MAX_BYTE_VALUE
+            ):
+                message.out_silent_on_value = capability_value
         # indirect_wind, screen_display_alternate, breezeless
         else:
             setattr(message, str(attr), value)

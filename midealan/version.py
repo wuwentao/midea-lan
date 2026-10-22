@@ -1,3 +1,3 @@
 """Midea Lan Version."""
 
-__version__ = "2026.9.2"
+__version__ = "2026.10.0"

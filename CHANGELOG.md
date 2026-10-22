@@ -4,6 +4,59 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+## [2026.10.0](https://github.com/wuwentao/midea-lan/compare/v2026.9.2...v2026.10.0) (2026-10-22)
+
+### Features
+- **ac:** Expose defrost state from group 5 data [#170](https://github.com/wuwentao/midea-lan/pull/170) ([a708fd8](https://github.com/wuwentao/midea-lan/commit/a708fd84d6cb0b38ec03be135afcb70951469959))
+- **ac:** Set countdown timers over LAN and keep them on routine commands [#186](https://github.com/wuwentao/midea-lan/pull/186) ([4626bc9](https://github.com/wuwentao/midea-lan/commit/4626bc928afa10cb08f6517c7d0cdadb6e2ee134))
+- **d9:** Add combined washer/dryer device support [#175](https://github.com/wuwentao/midea-lan/pull/175) ([8819a49](https://github.com/wuwentao/midea-lan/commit/8819a49d010d7200981add7318e3b36068f6aea0))
+- **x9b:** Add 0x9B microwave-steam-convection oven support [#181](https://github.com/wuwentao/midea-lan/pull/181) ([873994d](https://github.com/wuwentao/midea-lan/commit/873994d93a91e047f2179f1843eac6526164b22f))
+- **ca:** Expose read-only general status diagnostic flags [#187](https://github.com/wuwentao/midea-lan/pull/187) ([4fb36e1](https://github.com/wuwentao/midea-lan/commit/4fb36e1ad143f60135f4b3ce894421965ba6cb16))
+- **x9c:** Add 0x9C integrated kitchen appliance support [#179](https://github.com/wuwentao/midea-lan/pull/179) ([5473e98](https://github.com/wuwentao/midea-lan/commit/5473e989326e112b424f6c87202cefc64984c145))
+- **ac:** Read live state and dual-path temperatures from the 0x7e payload [#191](https://github.com/wuwentao/midea-lan/pull/191) ([27b0312](https://github.com/wuwentao/midea-lan/commit/27b0312ee3ad79ea8ba0304be258cbb5f0238e9e))
+- **ed:** Expand water purifier state parsing and add heat control [#193](https://github.com/wuwentao/midea-lan/pull/193) ([c666b4d](https://github.com/wuwentao/midea-lan/commit/c666b4d669f11fe34a6e42b95a572692193b61e1))
+- **device:** Expose sn8, manufacturer_code and cloud_name [#204](https://github.com/wuwentao/midea-lan/pull/204) ([88128a0](https://github.com/wuwentao/midea-lan/commit/88128a0ec788e27eb34b19a8dd7499e98fa1b41b))
+- **cloud:** Add Toshiba IOLife support [#205](https://github.com/wuwentao/midea-lan/pull/205) ([6ebfd68](https://github.com/wuwentao/midea-lan/commit/6ebfd685cdf5e0abc0beb98dc0243afd49e7ef2b))
+- **ed:** Add faucet gear writes for Midea MRO1012-R (632009EN) [#201](https://github.com/wuwentao/midea-lan/pull/201) ([2c09489](https://github.com/wuwentao/midea-lan/commit/2c09489fed84078d0590c28907c5a0bf9d3be933))
+- **e1:** Add cancel, delayed start and door auto-open [#207](https://github.com/wuwentao/midea-lan/pull/207) ([2ac5fbe](https://github.com/wuwentao/midea-lan/commit/2ac5fbec6c5207ac7b090f756d9468a51da5845d))
+- **e1:** Expose readable settings for the wash parameters [#213](https://github.com/wuwentao/midea-lan/pull/213) ([da17976](https://github.com/wuwentao/midea-lan/commit/da17976948dabeaed8caf22f727609cf9382ea5c))
+- **cloud:** Add TSmartLife support for Toshiba appliances [#198](https://github.com/wuwentao/midea-lan/pull/198) ([6748eb6](https://github.com/wuwentao/midea-lan/commit/6748eb6266eb756e038faf5d9024428aa94820ab))
+- **discover:** Also receive device broadcasts on fixed ports 7083/15000 [#222](https://github.com/wuwentao/midea-lan/pull/222) ([ff20599](https://github.com/wuwentao/midea-lan/commit/ff20599d9d85524a073484a6895cd5ec1e04d283))
+- **db:** Add verified washer controls and completion reservations [#206](https://github.com/wuwentao/midea-lan/pull/206) ([44a6b83](https://github.com/wuwentao/midea-lan/commit/44a6b83d0921b09cf062a72c2fa345f0d204a5bc))
+- **dc:** Add verified dryer controls and completion reservations [#214](https://github.com/wuwentao/midea-lan/pull/214) ([41e4431](https://github.com/wuwentao/midea-lan/commit/41e4431149f3af7b48ffd3cdcc125880310a3a4f))
+- **db:** Support v41 status profile [#223](https://github.com/wuwentao/midea-lan/pull/223) ([23e9447](https://github.com/wuwentao/midea-lan/commit/23e9447013f425bbd0076764e2ed792154f46e21))
+
+### Bug Fixes
+- **cloud:** Redact token/key from getToken debug logs [#173](https://github.com/wuwentao/midea-lan/pull/173) ([626ec18](https://github.com/wuwentao/midea-lan/commit/626ec18a6f46133cd100ef42d5bbe24d4cf1cf5e))
+- **cloud:** Encode account password as UTF-8 to allow non-ASCII passwords [#174](https://github.com/wuwentao/midea-lan/pull/174) ([7248c66](https://github.com/wuwentao/midea-lan/commit/7248c6669058375f842e9545fd3d2d3c9d0c57df))
+- **device:** Publish availability when the active socket closes [#188](https://github.com/wuwentao/midea-lan/pull/188) ([09f4374](https://github.com/wuwentao/midea-lan/commit/09f4374551f3037912a7e2b1cff236f028212f58))
+- **ca:** Derive 310A2111 flex-zone mode in attributes [#190](https://github.com/wuwentao/midea-lan/pull/190) ([93a5834](https://github.com/wuwentao/midea-lan/commit/93a58347c0590e32d986657c4cc3065dd396b1de))
+- **ac:** Only publish temperature limits when they change [#203](https://github.com/wuwentao/midea-lan/pull/203) ([3e47fff](https://github.com/wuwentao/midea-lan/commit/3e47fff3aaec7e38c40898130ba8dc8f01792fd3))
+- **cd:** Decode RSJ000CB mixed sensor temperatures [#197](https://github.com/wuwentao/midea-lan/pull/197) ([1539bc2](https://github.com/wuwentao/midea-lan/commit/1539bc2a72e0c619dd456babe85bcc4fc2a7f443))
+- **c3:** Parse 2010 temperature telemetry ([7bf6517](https://github.com/wuwentao/midea-lan/commit/7bf65176cdfc8dbd68f3c1483dcfc30af8d8d39e))
+- **device:** Pace periodic status queries [#209](https://github.com/wuwentao/midea-lan/pull/209) ([f2b8394](https://github.com/wuwentao/midea-lan/commit/f2b8394ffd97bdb7d3d55cce374e31e606b4ce88))
+- **cloud:** Log MideaAirCloud getToken errors with warnging message [#216](https://github.com/wuwentao/midea-lan/pull/216) ([30eefb9](https://github.com/wuwentao/midea-lan/commit/30eefb94df778661666aec3811e4bc36d3964752))
+- **cloud:** Download MideaAirCloud lua via luaGetCbc with legacy fallback [#218](https://github.com/wuwentao/midea-lan/pull/218) ([a751b23](https://github.com/wuwentao/midea-lan/commit/a751b232b3f1eb59a2f9fbff79b21732bf9c2fc6))
+- **ac:** Probe an alternative query family before giving up [#658](https://github.com/wuwentao/midea-lan/pull/658) [#113](https://github.com/wuwentao/midea-lan/pull/113) ([9d7543d](https://github.com/wuwentao/midea-lan/commit/9d7543d3510b8f2d9bcbf478c655de21ccc680a0))
+- **cd:** Support 2530001N temperatures and active modes [#225](https://github.com/wuwentao/midea-lan/pull/225) ([41c9f32](https://github.com/wuwentao/midea-lan/commit/41c9f327e4d5e11fa4e20b67a649750cd8ca0c95))
+- **c3:** Parse x00 sensor telemetry for c3 17100007  model [#211](https://github.com/wuwentao/midea-lan/pull/211) ([192d86c](https://github.com/wuwentao/midea-lan/commit/192d86c44d34570bd61c1ea02bdcf48c4f954d7e))
+- **discover:** Parse plaintext LAN broadcasts from newer devices [#220](https://github.com/wuwentao/midea-lan/pull/220) ([f111d56](https://github.com/wuwentao/midea-lan/commit/f111d5612d836c94db709022709851fbc87ab5ea))
+- **c3:** Support 171000AU short protocol [#199](https://github.com/wuwentao/midea-lan/pull/199) ([dd14b53](https://github.com/wuwentao/midea-lan/commit/dd14b538f3be9e1d2454c1b0199b146283493f1b))
+- **ac:** Use advertised outdoor silent value [#228](https://github.com/wuwentao/midea-lan/pull/228) ([f9b8c82](https://github.com/wuwentao/midea-lan/commit/f9b8c82d9632d28c9293dc6bb577b12b6f410903))
+- **fa:** Support model 56011C99 swing control via CB4 frame [#221](https://github.com/wuwentao/midea-lan/pull/221) ([e036569](https://github.com/wuwentao/midea-lan/commit/e0365697c12f5e825dce3fa43583b214f087db62))
+- **fa:** Support BGF10000 preset submodes [#226](https://github.com/wuwentao/midea-lan/pull/226) ([b516fa2](https://github.com/wuwentao/midea-lan/commit/b516fa2b53ab756edb9e4743b8d523af16fcc626))
+
+### Documentation
+- Rename leftover "Midea local" docstrings to "Midea lan" [#177](https://github.com/wuwentao/midea-lan/pull/177) ([fd76785](https://github.com/wuwentao/midea-lan/commit/fd76785f40eda3f5a0db3238466ea581692d8f08))
+- Add new-device support guide (en/zh-Hans) [#180](https://github.com/wuwentao/midea-lan/pull/180) ([40d8cbc](https://github.com/wuwentao/midea-lan/commit/40d8cbc06b9d48530c6c46235a7f39ccbee6c9e3))
+
+### Testing
+- **tsmartlife:** Cover download_lua/download_plugin inheritance from SmartHomeCloud [#215](https://github.com/wuwentao/midea-lan/pull/215) ([db79046](https://github.com/wuwentao/midea-lan/commit/db7904687693541e1e8f6ae9df7ee0310cd0485a))
+
+### Miscellaneous Tasks
+- Add CodeRabbit configuration [#178](https://github.com/wuwentao/midea-lan/pull/178) ([43bdf1f](https://github.com/wuwentao/midea-lan/commit/43bdf1f24189f7d26dcb799e792ce4b223d345b8))
+- Add funding links [#210](https://github.com/wuwentao/midea-lan/pull/210) ([4359f66](https://github.com/wuwentao/midea-lan/commit/4359f6628dd9a3f5cf14287d1b4efbfd50150835))
+- **ac:** Add b5 capability tags [#172](https://github.com/wuwentao/midea-lan/pull/172) ([d668628](https://github.com/wuwentao/midea-lan/commit/d6686280ee33094978137e8ed145cf74bdcede4e))
 ## [2026.9.2](https://github.com/wuwentao/midea-lan/compare/v2026.9.1...v2026.9.2) (2026-09-24)
 
 ### Features

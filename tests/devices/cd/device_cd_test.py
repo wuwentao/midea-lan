@@ -696,9 +696,13 @@ class TestMideaCDDevice:
         body[35] = 0x80 if fahrenheit else 0x00
         body[8] = 68
         body[4] = raw_current
+        if model == "2530001N":
+            body[55] = 1
         status = device.process_message(_build_message(MessageType.query, body))
-        assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
-        assert status[DeviceAttributes.current_temperature.value] == 40
+        expected_outdoor = 19.0 if model == "2530001N" else 20.0
+        expected_current = 40.0 if model != "2530001N" else (40.0, 37.0)[fahrenheit]
+        assert status[DeviceAttributes.outdoor_temperature.value] == expected_outdoor
+        assert status[DeviceAttributes.current_temperature.value] == expected_current
 
     def test_2530001n_power_write_preserves_new_protocol_temperatures(self) -> None:
         """A power write keeps the model's correctly decoded target and maximum."""
@@ -707,6 +711,7 @@ class TestMideaCDDevice:
         body[3] = 50
         body[4] = 128
         body[8] = 68
+        body[55] = 1
         body[10] = 65
         body[11] = 35
 
@@ -714,7 +719,7 @@ class TestMideaCDDevice:
 
         assert status[DeviceAttributes.target_temperature.value] == 50
         assert status[DeviceAttributes.current_temperature.value] == 49
-        assert status[DeviceAttributes.outdoor_temperature.value] == 20
+        assert status[DeviceAttributes.outdoor_temperature.value] == 19
         assert status[DeviceAttributes.max_temperature.value] == 65
         assert status[DeviceAttributes.min_temperature.value] == 35
 
@@ -726,6 +731,66 @@ class TestMideaCDDevice:
         assert message.use_old_protocol is False
         assert message.body[4] == 50
         assert message.body[23] == 65
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [(128, 49.0), (129, 49.5), (190, -48.0), (254, -16.0)],
+    )
+    def test_2530001n_negative_temperature_sensor_decoding(
+        self,
+        raw: int,
+        expected: float,
+    ) -> None:
+        """Decode 2530001N tank values as its official plugin does."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = raw
+        body[55] = 1
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == expected
+
+    def test_2530001n_current_temperature_is_raw_without_negative_support(self) -> None:
+        """The official plugin displays raw tank values without the flag."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 128
+        body[55] = 0
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 128.0
+
+    @pytest.mark.parametrize(
+        ("negative_support", "raw", "expected"),
+        [(True, 68, 19.0), (False, 68, 9.0)],
+    )
+    def test_2530001n_outdoor_temperature_uses_capability_encoding(
+        self,
+        negative_support: bool,
+        raw: int,
+        expected: float,
+    ) -> None:
+        """Decode 2530001N outdoor values using the reported capability."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[8] = raw
+        body[55] = int(negative_support)
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == expected
+
+    def test_2530001n_unknown_negative_support_keeps_verified_fallback(self) -> None:
+        """Keep PR #225 decoding when a short status omits the capability."""
+        device = _make_device(model="2530001N")
+        body = _general_body()[:55]
+        body[8] = 68
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
 
     def test_2530001n_active_mode_powers_on_and_updates_cached_state(self) -> None:
         """Selecting an active mode starts the heater and prevents stale writes."""

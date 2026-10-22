@@ -297,6 +297,7 @@ class CapabilityTag(IntEnum):
     wind_lr_angle = 0x000A
     power_on_timer = 0x000B
     power_off_timer = 0x000C
+    comfortable_sleep = 0x0011  # comfortableSleepValue
     indoor_humidity = 0x0015  # queryType == "indoor_humidity"
     screen_display = 0x0017
     breezeless = 0x0018  # queryType == "fn_no_wind_sense"
@@ -343,14 +344,20 @@ class CapabilityTag(IntEnum):
     rewarming_dry = 0x0068
     arom = 0x0069
     unknown_6d = 0x006D
+    control_humidity = 0x007C
     has_cool_heat_amount = 0x0090
     has_icheck = 0x0091
     emergent_heat_wind = 0x0093
     heat_ptc_wind = 0x0094
     unknown_95 = 0x0095
     cvp = 0x0098
+    cool_heat = 0x009C
+    unknown_9d = 0x009D
     new_wind_sense = 0x00AA
     comfort = 0x00AD
+    unknown_c0 = 0x00C0
+    meeting_mode = 0x00C1
+    one_control = 0x00C2
     # AC outdoor silent mode (PortaSplit)
     out_silent = 0x00CD
     ieco = 0x00E3

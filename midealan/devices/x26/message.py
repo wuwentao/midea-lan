@@ -1,4 +1,4 @@
-"""Midea local x26 message."""
+"""Midea lan x26 message."""
 
 from enum import IntEnum
 from typing import Any

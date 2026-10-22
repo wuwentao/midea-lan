@@ -1,4 +1,4 @@
-"""Midea local DB device."""
+"""Midea lan DB device."""
 
 import logging
 from enum import StrEnum
@@ -8,7 +8,20 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueWrongType
 
-from .message import MessageDBResponse, MessagePower, MessageQuery, MessageStart
+from .message import (
+    PROFILE_MODEL,
+    PROFILE_SUBTYPE,
+    PROFILE_V41_MODEL,
+    PROFILE_V41_SUBTYPE,
+    PROGRAMS,
+    V41_PROGRAMS,
+    V41_TEMPERATURES,
+    DBControls,
+    MessageDBResponse,
+    MessagePower,
+    MessageQuery,
+    MessageStart,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,6 +46,21 @@ class DeviceAttributes(StrEnum):
     washing_data = "washing_data"
     progress = "progress"
     time_remaining = "time_remaining"
+    appointment_control_supported = "appointment_control_supported"
+    appointment_controls_available = "appointment_controls_available"
+    appointment = "appointment"
+    appointment_finish = "appointment_finish"
+    parameter_control_supported = "parameter_control_supported"
+    parameter_controls_available = "parameter_controls_available"
+    program_control = "program_control"
+    temperature_control = "temperature_control"
+    spin_speed_control = "spin_speed_control"
+    water_level_control = "water_level_control"
+    detergent_control = "detergent_control"
+    rinse_count = "rinse_count"
+    wash_time_control = "wash_time_control"
+    spin_time_control = "spin_time_control"
+    forget_free = "forget_free"
     stains = "stains"
     dirty_degree = "dirty_degree"
 
@@ -227,6 +255,26 @@ class MideaDBDevice(MideaDevice):
             },
         )
 
+        is_v41 = self.subtype == PROFILE_V41_SUBTYPE and PROFILE_V41_MODEL in (
+            self.model,
+            self.sn8,
+        )
+        self._is_v41_profile = is_v41
+        self._profile_programs = V41_PROGRAMS if is_v41 else {}
+        self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
+        self._controls = (
+            DBControls()
+            if self.subtype == PROFILE_SUBTYPE
+            and PROFILE_MODEL in (self.model, self.sn8)
+            else None
+        )
+        if self._controls is not None:
+            self._attributes.update(self._controls.attributes)
+
+    def get_parameter_options(self, attr: str) -> list[str]:
+        """Return verified model options, including actual-minute time choices."""
+        return self._controls.options(attr) if self._controls is not None else []
+
     def build_query(self) -> list[MessageQuery]:
         """Midea DB device build query."""
         return [MessageQuery(self._message_protocol_version)]
@@ -264,12 +312,17 @@ class MideaDBDevice(MideaDevice):
                 # parse program
                 elif attr == DeviceAttributes.program:
                     self._attributes[DeviceAttributes.program] = (
-                        MideaDBDevice._program.get(value, value)
-                    )
+                        self._program
+                        | self._profile_programs
+                        | (PROGRAMS if self._controls is not None else {})
+                    ).get(value, value)
                 # parse temperature
                 elif attr == DeviceAttributes.temperature:
                     self._attributes[DeviceAttributes.temperature] = (
-                        MideaDBDevice._temperature.get(value, value)
+                        MideaDBDevice._temperature | self._profile_temperatures
+                    ).get(
+                        value,
+                        value,
                     )
                 # parse progress
                 elif attr == DeviceAttributes.progress:
@@ -277,10 +330,28 @@ class MideaDBDevice(MideaDevice):
                 else:
                     self._attributes[attr] = value
                 new_status[str(attr)] = self._attributes[attr]
+        if self._controls is not None and hasattr(message, "washing_data"):
+            controls = self._controls.update(message.body)
+            self._attributes.update(controls)
+            new_status.update({str(attr): value for attr, value in controls.items()})
         return new_status
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea DB device set attribute."""
+        if self._is_v41_profile and attr in (
+            DeviceAttributes.power,
+            DeviceAttributes.start,
+        ):
+            raise ValueWrongType("[db] v41 profile is read-only")
+        if self._controls is not None and self._controls.supports(attr):
+            message_set = self._controls.make_message(
+                attr,
+                value,
+                self._message_protocol_version,
+            )
+            self.build_send(message_set)
+            self.build_send(MessageQuery(self._message_protocol_version))
+            return
         if not isinstance(value, bool):
             raise ValueWrongType("[db] Expected bool")
         message: MessagePower | MessageStart | None = None

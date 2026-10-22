@@ -16,6 +16,7 @@ from midealan.devices.ac.message import (
     COMMON_TAGS,
     CONFORT_MODE_MIN_LENGTH2,
     FROST_PROTECT_MIN_LENGTH,
+    NEW_PROTOCOL_WIND_ANGLE_BYTE,
     PROPERTIES_TAGS,
     SMART_DRY_MIN_LENGTH,
     CapabilitiesQuery,
@@ -36,7 +37,6 @@ from midealan.devices.ac.message import (
     MessageSubProtocolSet,
     PowerFormats,
     PowerQuery,
-    PropertiesBody,
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
@@ -49,7 +49,10 @@ from midealan.devices.ac.message import (
     SubProtocolQuery30,
     ToggleDisplay,
     _PropertiesCapsQueryBase,
+    encode_countdown_timer,
+    encode_properties_timer,
     format_property_tags,
+    parse_countdown_timer,
 )
 from midealan.message import ListTypes, MessageBase, MessageType
 
@@ -634,6 +637,22 @@ class TestCollectCapabilityProperties:
 class TestCapabilityBodyParsing:
     """Test B5 capability body parsing does not poison subsequent queries."""
 
+    @pytest.mark.parametrize("raw_value", [0x00, 0x01, 0x02, 0x03])
+    def test_b5_out_silent_preserves_activation_value(self, raw_value: int) -> None:
+        """Test B5 preserves the model-specific out_silent activation value."""
+        body = bytearray(
+            [
+                0xB5,
+                0x01,
+                CapabilityTag.out_silent & 0xFF,
+                CapabilityTag.out_silent >> 8,
+                0x01,
+                raw_value,
+            ],
+        )
+
+        assert CapabilityBody(body).capabilities["out_silent"] == raw_value
+
     def test_b5_capability_only_tags_do_not_leak_into_query(self) -> None:
         """Test B5 tags auto-parsed as capability keys don't poison next query.
 
@@ -715,6 +734,15 @@ class TestNewProtocolSetOutSilent:
         assert body[4] == 0x01  # length byte
         assert body[5] == expected_byte
 
+    @pytest.mark.parametrize("on_value", [0x01, 0x02, 0x03])
+    def test_out_silent_uses_device_on_value(self, on_value: int) -> None:
+        """Test out_silent uses the activation value advertised by the device."""
+        msg = PropertiesSet(protocol_version=ProtocolVersion.V1)
+        msg.out_silent = True
+        msg.out_silent_on_value = on_value
+
+        assert msg.body[5] == on_value
+
     def test_out_silent_none_not_packed(self) -> None:
         """Test out_silent None does not add to payload."""
         msg = PropertiesSet(protocol_version=ProtocolVersion.V1)
@@ -722,6 +750,102 @@ class TestNewProtocolSetOutSilent:
         body = msg.body
         assert body[0] == 0xB0
         assert body[1] == 0x00  # 0 params packed
+
+
+class TestCountdownTimers:
+    """Test countdown timer slot encoding and decoding."""
+
+    @pytest.mark.parametrize(
+        "minutes",
+        [1, 3, 14, 15, 16, 59, 60, 119, 120, 299, 330, 31 * 60 + 59],
+    )
+    def test_encode_round_trips_through_parse(self, minutes: int) -> None:
+        """Test encode_countdown_timer is the inverse of parse_countdown_timer."""
+        assert parse_countdown_timer(*encode_countdown_timer(minutes)) == minutes
+
+    @pytest.mark.parametrize(
+        ("minutes", "expected"),
+        [(0, (0x7F, 15)), (120, (0x88, 15)), (3, (0x80, 12)), (5000, (0xFF, 1))],
+    )
+    def test_encode_countdown_timer(
+        self,
+        minutes: int,
+        expected: tuple[int, int],
+    ) -> None:
+        """Test disarm, exact quarter-hours, sub-quarter minutes and clamping."""
+        assert encode_countdown_timer(minutes) == expected
+
+    def test_state_set_without_timers_keeps_zero_bytes(self) -> None:
+        """Test the default StateSet still sends fan 0x66 and timer bytes 00."""
+        body = StateSet(protocol_version=ProtocolVersion.V1).body
+        assert body[3:7] == bytearray([0x66, 0x00, 0x00, 0x00])
+
+    def test_state_set_power_off_timer(self) -> None:
+        """Test a 2 h power-off timer, as verified on hardware (E6 7F 88 FF)."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_off_timer = 120
+        assert msg.body[3:7] == bytearray([0xE6, 0x7F, 0x88, 0xFF])
+
+    def test_state_set_both_timers(self) -> None:
+        """Test both slots and their minute nibbles."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_on_timer = 330
+        msg.power_off_timer = 3
+        assert msg.body[3:7] == bytearray([0xE6, 0x96, 0x80, 0xFC])
+
+    def test_state_set_disarm_timers(self) -> None:
+        """Test explicit cancel sends the timer flag with disarmed slots."""
+        msg = StateSet(protocol_version=ProtocolVersion.V1)
+        msg.power_on_timer = 0
+        msg.power_off_timer = 0
+        assert msg.body[3:7] == bytearray([0xE6, 0x7F, 0x7F, 0xFF])
+
+    @pytest.mark.parametrize(
+        ("minutes", "expected"),
+        [(0, [0x00, 0x00, 0x00]), (75, [0x01, 0x01, 0x0F]), (99999, [0x01, 0xFF, 0])],
+    )
+    def test_encode_properties_timer(self, minutes: int, expected: list[int]) -> None:
+        """Test the B0 [switch, hours, minutes] value, incl. the byte clamp."""
+        assert encode_properties_timer(minutes) == bytearray(expected)
+
+    @pytest.mark.parametrize(
+        ("attr", "minutes", "expected"),
+        [
+            ("power_off_timer", 120, [0x0C, 0x00, 0x03, 0x01, 0x02, 0x00]),
+            ("power_off_timer", 0, [0x0C, 0x00, 0x03, 0x00, 0x00, 0x00]),
+            ("power_on_timer", 330, [0x0B, 0x00, 0x03, 0x01, 0x05, 0x1E]),
+        ],
+    )
+    def test_properties_set_timer(
+        self,
+        attr: str,
+        minutes: int,
+        expected: list[int],
+    ) -> None:
+        """Test the B0 timer parameters [switch, hours, minutes]."""
+        msg = PropertiesSet(protocol_version=ProtocolVersion.V1)
+        setattr(msg, attr, minutes)
+        body = msg.body
+        assert body[0] == 0xB0
+        assert body[1] == 0x01
+        assert body[2:8] == bytearray(expected)
+
+    def test_c0_countdown_timers(self) -> None:
+        """Test C0 decodes both timer slots with their minute nibbles."""
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0, 0x03])
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[4] = 0x95  # power-on 5 h 1 quarter
+        body[5] = 0x87  # power-off 1 h 3 quarters
+        body[6] = 0x01  # power-on +15 min, power-off +14 min
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 330
+        assert response.power_off_timer == 119
+
+        body[4:7] = bytearray([0x7F, 0x7F, 0xFF])
+        response = MessageACResponse(header + body)
+        assert response.power_on_timer == 0
+        assert response.power_off_timer == 0
 
 
 class TestNewProtocolSetAngles:
@@ -1446,9 +1570,7 @@ class TestMessageACResponse:
         expected: int,
     ) -> None:
         """Test the Lua-compatible timer byte and minute correction formula."""
-        assert (
-            PropertiesBody._parse_countdown_timer(value, minute_correction) == expected
-        )
+        assert parse_countdown_timer(value, minute_correction) == expected
 
     def test_message_notify2_a0_short_body(self) -> None:
         """Skip Message parse notify2 A0 when the body is too short."""
@@ -1923,7 +2045,7 @@ class TestMessageACResponse:
 
     @pytest.mark.parametrize(
         ("raw_value", "expected"),
-        [(0x03, True), (0x00, False)],
+        [(0x03, True), (0x02, True), (0x01, True), (0x00, False)],
     )
     def test_message_notify2_b0_out_silent(
         self,
@@ -2328,6 +2450,238 @@ class TestMessageACResponse:
         assert hasattr(response, "indoor_humidity")
         assert response.indoor_humidity == 55
         assert not hasattr(response, "defrosting")
+
+    @pytest.mark.parametrize(
+        ("frame_hex", "expected"),
+        [
+            # B5 08:00:28 first-of-day
+            (
+                (
+                    "aa49ac00000000000805b5017e0038cd1d42667f7f0000000c00000000400f"
+                    "009000f2000000e000000040000000003c0028282f850e0066000000000020"
+                    "000800000000000000011d0b"
+                ),
+                {
+                    "power": True,
+                    "target_temperature": 26.0,
+                    "mode": 2,
+                    "fan_speed": 102,
+                    "indirect_wind": True,
+                    "indoor_humidity": 47,
+                    "indoor_temperature": 26.0,
+                },
+            ),
+            # B5 18:18:19 power-on
+            (
+                (
+                    "aa49ac00000000000805b5017e0038641da5647f7f0033000c00000000000f"
+                    "000000f2000000e000000040000000003c00282833850e0070070000000020"
+                    "00080000000000060001f8ba"
+                ),
+                {
+                    "power": True,
+                    "target_temperature": 26.0,
+                    "mode": 5,
+                    "fan_speed": 100,
+                    "indirect_wind": False,
+                    "indoor_humidity": 51,
+                    "indoor_temperature": 31.7,
+                    "swing_vertical": False,
+                    "swing_horizontal": True,
+                    "wind_lr_angle": 0,
+                    "wind_ud_angle": 0,
+                },
+            ),
+            # B5 18:18:33 fan full
+            (
+                (
+                    "aa49ac00000000000805b5017e0038651da5647f7f0033000c00070000000f"
+                    "000000f2000000e000000040000000003c00282833850e0070070000000020"
+                    "00080000000000050001b5f6"
+                ),
+                {
+                    "power": True,
+                    "target_temperature": 26.0,
+                    "mode": 5,
+                    "fan_speed": 100,
+                    "indirect_wind": False,
+                    "indoor_humidity": 51,
+                    "indoor_temperature": 31.7,
+                    "swing_vertical": False,
+                    "swing_horizontal": True,
+                    "wind_lr_angle": 0,
+                    "wind_ud_angle": 0,
+                },
+            ),
+            # B5 18:19:12 heat 30C
+            (
+                (
+                    "aa49ac00000000000805b5017e00386a2584667f7f0000000c00000000000f"
+                    "009000f2000000e000000040000000003c00282830860e0070070000000020"
+                    "00080000000000060001bdab"
+                ),
+                {
+                    "power": True,
+                    "target_temperature": 30.0,
+                    "mode": 4,
+                    "fan_speed": 102,
+                    "indirect_wind": False,
+                    "indoor_humidity": 48,
+                    "indoor_temperature": 31.7,
+                    "swing_vertical": False,
+                    "swing_horizontal": False,
+                    "wind_lr_angle": 100,
+                    "wind_ud_angle": 0,
+                },
+            ),
+            # B5 12:07:06 power-off
+            (
+                (
+                    "aa49ac00000000000805b5017e0038d11c41667f7f0000000c00000000000f"
+                    "009000f0000000e000000040000000003c00282832810e0064090000000020"
+                    "00080000000000050036d553"
+                ),
+                {
+                    "power": False,
+                    "target_temperature": 26.0,
+                    "mode": 2,
+                    "fan_speed": 102,
+                    "indirect_wind": False,
+                    "indoor_humidity": 50,
+                    "indoor_temperature": 25.9,
+                },
+            ),
+            # B1 12:07:22 grid reply
+            (
+                (
+                    "aa73ac00000000000803b10942000001011800000100150000013217000001"
+                    "64330211004b000004002810000a0000016409000001007e000037a01c4166"
+                    "7f7f0000000c00000000000f009000f0000000e000000040000000003c0028"
+                    "2832810e006408000000002000080000000000000036cd"
+                ),
+                {
+                    "power": False,
+                    "target_temperature": 26.0,
+                    "mode": 2,
+                    "fan_speed": 102,
+                    "indoor_temperature": 25.8,
+                },
+            ),
+        ],
+    )
+    def test_message_new_protocol_0x7e_live_state(
+        self,
+        frame_hex: str,
+        expected: dict[str, object],
+    ) -> None:
+        """Test live state and dual-path temperatures from the 0x7e payload."""
+        response = MessageACResponse(bytearray.fromhex(frame_hex))
+        for attribute, value in expected.items():
+            assert hasattr(response, attribute)
+            assert getattr(response, attribute) == value
+
+    def test_message_new_protocol_0x7e_static_guards(self) -> None:
+        """Test static guards: implausible values are not written."""
+        # Real captured frame (see test_message_new_protocol_0x7e_live_state),
+        # with payload[1] set to a rejectable 43.5 C setpoint and payload[36]
+        # set to a rejectable humidity of 120.
+        frame = bytearray.fromhex(
+            "aa49ac00000000000805b5017e0038cd1d42667f7f0000000c00000000400f"
+            "009000f2000000e000000040000000003c0028282f850e0066000000000020"
+            "000800000000000000011d0b",
+        )
+        frame[16] = 0xFE  # payload[1] -> setpoint decodes to 43.5 C
+        frame[15 + 36] = 120  # payload[36] -> humidity above 100
+        response = MessageACResponse(frame)
+        assert hasattr(response, "power")
+        assert response.power is False  # bit 0 of 0xFE
+        assert hasattr(response, "mode")
+        assert response.mode == 2
+        assert hasattr(response, "fan_speed")
+        assert response.fan_speed == 102
+        assert hasattr(response, "indoor_temperature")
+        assert response.indoor_temperature == 26.0  # still in range
+        assert not hasattr(response, "target_temperature")  # 43.5 C rejected
+        assert not hasattr(response, "indoor_humidity")  # 120 rejected
+
+        # payload[40] = 0xFF marks the indoor temperature as unavailable;
+        # the setpoint still lands while the indoor reading is skipped.
+        frame = bytearray.fromhex(
+            "aa49ac00000000000805b5017e0038cd1d42667f7f0000000c00000000400f"
+            "009000f2000000e000000040000000003c0028282f850e0066000000000020"
+            "000800000000000000011d0b",
+        )
+        frame[15 + 40] = 0xFF  # payload[40] -> indoor temperature unavailable
+        response = MessageACResponse(frame)
+        assert hasattr(response, "target_temperature")
+        assert response.target_temperature == 26.0
+        assert not hasattr(response, "indoor_temperature")
+
+    def test_message_new_protocol_0x7e_angle_grade_guard(self) -> None:
+        """Test louver nibbles without a library grade are not written."""
+        # Real B5 notify frame (18:18:33.539) with payload[17] rewritten to
+        # lr nibble 2 (vendor Lua grade 13, not expressible by the library
+        # angle maps) and ud nibble 1 (a valid library grade).
+        frame = bytearray.fromhex(
+            "aa49ac00000000000805b5017e0038651da5647f7f0033000c00070000000f"
+            "000000f2000000e000000040000000003c00282833850e0070070000000020"
+            "00080000000000050001b5f6",
+        )
+        # A B5 payload starts at the 0x7e offset + 3 (tag, 1-byte length and
+        # the head byte); NEW_PROTOCOL_WIND_ANGLE_BYTE indexes the louver
+        # byte inside it.
+        frame[frame.find(b"\x7e") + 3 + NEW_PROTOCOL_WIND_ANGLE_BYTE] = 0x21
+        response = MessageACResponse(frame)
+        assert not hasattr(response, "wind_lr_angle")  # grade 13 skipped
+        assert hasattr(response, "wind_ud_angle")
+        assert response.wind_ud_angle == 1
+
+        # The same guard applies per nibble: with lr nibble 1 (a valid grade)
+        # and ud nibble 2 (grade 13, not expressible), only the ud angle is
+        # skipped.
+        frame[frame.find(b"\x7e") + 3 + NEW_PROTOCOL_WIND_ANGLE_BYTE] = 0x12
+        response = MessageACResponse(frame)
+        assert hasattr(response, "wind_lr_angle")
+        assert response.wind_lr_angle == 1
+        assert not hasattr(response, "wind_ud_angle")  # grade 13 skipped
+
+    def test_message_new_protocol_0x7e_short_payload_skips_sections(self) -> None:
+        """Test a short 0x7e payload is rejected by the length guards."""
+        body = bytearray(20)
+        body[0] = 0xB1  # a notify2 response carrying a single property
+        body[1] = 0x01  # one property
+        body[2] = 0x7E
+        body[3] = 0x00
+        body[4] = 0x00
+        body[5] = 0x0A  # payload length: 10, shorter than every field index
+        body[6:16] = b"\x00" * 10
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 1, 3])
+        header[1] = len(header) + len(body)
+        frame = header + body
+        frame.append(MessageBase.checksum(frame[1:]))
+        response = MessageACResponse(frame)
+        assert not hasattr(response, "swing_vertical")
+        assert not hasattr(response, "wind_lr_angle")
+        assert not hasattr(response, "power")
+        assert not hasattr(response, "indoor_humidity")
+        assert not hasattr(response, "target_temperature")
+
+    def test_message_new_protocol_0x7e_humidity_keeps_tag_reading(self) -> None:
+        """Test a zero 0x7e humidity byte keeps the queried tag reading."""
+        body = bytearray([0xB1, 0x02])  # two properties
+        tag = CapabilityTag.indoor_humidity
+        body += bytearray([tag & 0xFF, tag >> 8, 0x00, 0x01, 0x34])  # 52 %
+        body += bytearray([0x7E, 0x00, 0x00, 0x38])  # 0x7e reply, 56 bytes
+        payload = bytearray(56)
+        payload[36] = 0x00  # humidity: no reading in the 0x7e payload
+        body += payload
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 1, 3])
+        header[1] = len(header) + len(body)
+        frame = header + body
+        frame.append(MessageBase.checksum(frame[1:]))
+        response = MessageACResponse(frame)
+        assert hasattr(response, "indoor_humidity")
+        assert response.indoor_humidity == 0x34
 
     def test_message_query_c1_unknown_method(self) -> None:
         """Test Message parse query C1 with an unknown analysis method."""
@@ -3170,8 +3524,16 @@ class TestMessageACResponse:
         assert not hasattr(response, "indoor_temperature")
         assert not hasattr(response, "outdoor_temperature")
 
-    def test_message_b5_notify2_0x7e_ignored_without_temperature_gate(self) -> None:
-        """Test the 0x7e tag is ignored without the model-specific gate."""
+    def test_message_b5_notify2_0x7e_dual_path_without_temperature_gate(self) -> None:
+        """Read 0x7e temperatures dual-path without the model-specific gate.
+
+        Deliberate successor of the previous "ignored without the gate"
+        policy: the 0x7e payload is an additional update source and no latch
+        flag is set, so the C0/A0/A1 paths keep updating and are never
+        suppressed — everything the old policy protected is preserved, plus
+        the earlier update the 0x7e frame provides. The latch-flag assertion
+        lives in the device-layer gated_by_model test.
+        """
         self.header[9] = 0x05
         body = bytearray(62)
         body[0] = 0xB5
@@ -3187,11 +3549,13 @@ class TestMessageACResponse:
 
         response = MessageACResponse(self.header + body)
 
-        # The payload decodes to in-range temperatures, so only the subtype
-        # gate keeps another model's unrelated 0x7e content out.
+        # Dual-path read: values are exposed, but no latch flag is set, so the
+        # C0/A0/A1 paths are never suppressed (contrast the gated model path).
         assert not hasattr(response, "has_new_protocol_temperature")
-        assert not hasattr(response, "target_temperature")
-        assert not hasattr(response, "indoor_temperature")
+        assert hasattr(response, "target_temperature")
+        assert response.target_temperature == 26.0
+        assert hasattr(response, "indoor_temperature")
+        assert response.indoor_temperature == 28.8
         assert not hasattr(response, "outdoor_temperature")
 
 

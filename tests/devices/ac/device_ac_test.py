@@ -8,7 +8,11 @@ from unittest.mock import patch
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.devices.ac import DeviceAttributes, MideaACDevice
+from midealan.devices.ac import (
+    CAPABILITY_QUERY_RETRY_INTERVAL,
+    DeviceAttributes,
+    MideaACDevice,
+)
 from midealan.devices.ac.message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
@@ -25,7 +29,9 @@ from midealan.devices.ac.message import (
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
+    PropertiesSet,
     StateQuery,
+    StateSet,
     SubProtocolFreshAirSet,
     SubProtocolQuery,
     SubProtocolQuery10,
@@ -223,6 +229,29 @@ class TestMideaACDevice:
             message = mock_build_send.call_args[0][0]
             assert message.rate_select is None
 
+    @pytest.mark.parametrize(
+        ("capability_value", "expected_byte"),
+        [(0x01, 0x01), (0x02, 0x02), (0x03, 0x03), (True, 0x03), (None, 0x03)],
+    )
+    def test_out_silent_uses_capability_activation_value(
+        self,
+        capability_value: int | bool | None,
+        expected_byte: int,
+    ) -> None:
+        """Test out_silent uses a numeric B5 value and keeps the legacy fallback."""
+        if capability_value is not None:
+            self.device._capabilities[DeviceAttributes.out_silent.value] = (
+                capability_value
+            )
+
+        message = self.device.make_newprotocol_message_set(
+            DeviceAttributes.out_silent,
+            True,
+        )
+
+        # prompt_tone is packed first; the 0xCD value is the second property.
+        assert message.body[9] == expected_byte
+
     def test_set_attribute_fresh_air_mode_named_speed(self) -> None:
         """Test set attribute for fresh air mode with a named fan speed."""
         self.device._fresh_air_version = DeviceAttributes.fresh_air_1
@@ -346,6 +375,32 @@ class TestMideaACDevice:
         self.device._capabilities["temperature"] = {"cool": {"min": 16}}
         assert self.device._capability_temperature_limits() is None
 
+    def test_refresh_temperature_limits_returns_only_changes(self) -> None:
+        """Only changed min/max keys are returned, so repeat calls stay empty.
+
+        An unrelated status frame re-evaluates the limits for every message,
+        but must not carry redundant min/max entries in its update when the
+        resolved values have not changed.
+        """
+        self.device._attributes[DeviceAttributes.mode] = 2  # -> "cool"
+        self.device._capabilities["temperature"] = {"cool": {"min": 16, "max": 30}}
+
+        # First resolution publishes both keys.
+        first = self.device._refresh_temperature_limits()
+        assert first == {
+            DeviceAttributes.min_temperature.value: 16,
+            DeviceAttributes.max_temperature.value: 30,
+        }
+
+        # A second call with identical inputs returns nothing to update.
+        assert self.device._refresh_temperature_limits() == {}
+
+        # Only the key whose value changed is republished.
+        self.device._capabilities["temperature"] = {"cool": {"min": 16, "max": 31}}
+        assert self.device._refresh_temperature_limits() == {
+            DeviceAttributes.max_temperature.value: 31,
+        }
+
     def test_build_query(self) -> None:
         """Test build query."""
         self.device._used_subprotocol = True
@@ -377,6 +432,84 @@ class TestMideaACDevice:
             isinstance(q, CapabilitiesQuery | CapabilitiesAdditionalQuery)
             for q in queries
         )
+
+    def test_build_query_fallback_uses_bb_family(self) -> None:
+        """A silent B5 family is followed by the BB subprotocol family."""
+        self.device._message_protocol_version = 8
+        assert [type(q) for q in self.device.build_query_fallback()] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+        self.device._used_subprotocol = True
+        assert self.device.build_query_fallback() == []
+        assert [type(q) for q in self.device.build_query()] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+
+    def test_query_probe_hooks_validate_bb_and_defer_b5(self) -> None:
+        """BB replies are validated and timed-out B5 probes get a cooldown."""
+        self.device._message_protocol_version = 8
+        bb_query = SubProtocolQuery10(8)
+        assert self.device._is_query_response_valid(bb_query) is False
+        self.device._used_subprotocol = True
+        assert self.device._is_query_response_valid(bb_query) is True
+        assert self.device._is_query_response_valid(CapabilitiesQuery(8)) is True
+        assert self.device._should_defer_query(CapabilitiesQuery(8)) is True
+        assert self.device._should_defer_query(bb_query) is False
+
+        self.device._used_subprotocol = False
+        with patch("midealan.devices.ac.time.monotonic", return_value=100.0):
+            self.device._defer_query(CapabilitiesQuery(8))
+            assert self.device.build_init_query() == []
+        with patch(
+            "midealan.devices.ac.time.monotonic",
+            return_value=100.0 + CAPABILITY_QUERY_RETRY_INTERVAL,
+        ):
+            assert [type(q) for q in self.device.build_init_query()] == [
+                CapabilitiesQuery,
+            ]
+            retry_at = self.device._capability_query_retry_at
+            assert retry_at == 100.0 + 2 * CAPABILITY_QUERY_RETRY_INTERVAL
+            assert self.device.build_init_query() == []
+
+        self.device._capability_query = False
+        self.device._capability_addition_query = True
+        with patch("midealan.devices.ac.time.monotonic", return_value=200.0):
+            self.device._defer_query(CapabilitiesAdditionalQuery(8))
+            assert self.device.build_init_query() == []
+        with patch(
+            "midealan.devices.ac.time.monotonic",
+            return_value=200.0 + CAPABILITY_QUERY_RETRY_INTERVAL,
+        ):
+            assert [type(q) for q in self.device.build_init_query()] == [
+                CapabilitiesAdditionalQuery,
+            ]
+            assert self.device.build_init_query() == []
+
+        self.device._defer_query(object())
+
+    def test_bb_fallback_replies_select_and_parse_bb_family(self) -> None:
+        """Captured BB-only replies select the fallback family and parse status."""
+        device = self._make_device("223J6397", 1)
+        device._message_protocol_version = 8
+
+        indoor = device.process_message(bytes.fromhex(_BB_QUERY_10_REPLY))
+        basic = device.process_message(bytes.fromhex(_BB_QUERY_11_REPLY))
+        outdoor = device.process_message(bytes.fromhex(_BB_QUERY_30_REPLY))
+
+        assert indoor[DeviceAttributes.indoor_temperature] == 29.5
+        assert indoor[DeviceAttributes.indoor_humidity] == 53
+        assert basic[DeviceAttributes.mode] == 1
+        assert basic[DeviceAttributes.target_temperature] == 25.5
+        assert basic[DeviceAttributes.fan_speed] == 102
+        assert not basic[DeviceAttributes.power]
+        assert outdoor[DeviceAttributes.outdoor_temperature] == 25.5
+        assert device._used_subprotocol is True
+        assert device.build_query_fallback() == []
 
     def test_build_init_query_capability_lifecycle(self) -> None:
         """Test build_init_query arms/clears the one-shot B5 capability probes."""
@@ -933,14 +1066,18 @@ class TestMideaACDevice:
 
         # A socket close re-arms the basic probe (additional stays disarmed until
         # a fresh basic frame advertises it again).
+        self.device._capability_query_retry_at = 100.0
+        self.device._capability_addition_query_retry_at = 100.0
         self.device.reset_init_query()
-        rearmed = (
+        rearmed: tuple[bool, bool, bool, bool, float | None, float | None] = (
             self.device._capability_query,
             self.device._capability_addition_query,
             self.device._support_capability,
             self.device._support_capability_addition,
+            self.device._capability_query_retry_at,
+            self.device._capability_addition_query_retry_at,
         )
-        assert rearmed == (True, False, False, False)
+        assert rearmed == (True, False, False, False, None, None)
         assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
 
     def test_capability_query_lifecycle_stops_after_both_frames(self) -> None:
@@ -972,24 +1109,28 @@ class TestMideaACDevice:
         assert [type(q) for q in self.device.build_init_query()] == [CapabilitiesQuery]
 
         # Basic frame: records support, clears the basic probe, arms additional.
+        self.device._capability_query_retry_at = 100.0
         self.device.process_message(bytes(basic))
-        after_basic = (
+        after_basic: tuple[bool, bool, bool, float | None] = (
             self.device._support_capability,
             self.device._capability_query,
             self.device._capability_addition_query,
+            self.device._capability_query_retry_at,
         )
-        assert after_basic == (True, False, True)
+        assert after_basic == (True, False, True, None)
         assert [type(q) for q in self.device.build_init_query()] == [
             CapabilitiesAdditionalQuery,
         ]
 
         # Additional frame: records support and clears the additional probe.
+        self.device._capability_addition_query_retry_at = 100.0
         self.device.process_message(bytes(additional))
-        after_additional = (
+        after_additional: tuple[bool, bool, float | None] = (
             self.device._support_capability_addition,
             self.device._capability_addition_query,
+            self.device._capability_addition_query_retry_at,
         )
-        assert after_additional == (True, False)
+        assert after_additional == (True, False, None)
         assert self.device.build_init_query() == []
 
         # Both frames merged into a single capability dict. rate_select carries
@@ -1156,14 +1297,134 @@ class TestMideaACDevice:
                 self.device.set_attribute(attr.value, 1)
             mock_build_send.assert_not_called()
 
-    def test_set_attribute_timers_are_read_only(self) -> None:
-        """Test that timer attributes never send a set message."""
+    @staticmethod
+    def _c0_with_timers(on_slot: int, off_slot: int, minutes: int) -> bytearray:
+        body = bytearray(24)
+        body[0] = 0xC0
+        body[1] = 0x01  # power on
+        body[4], body[5], body[6] = on_slot, off_slot, minutes
+        return body
+
+    def test_c0_timers_update_attributes(self) -> None:
+        """Test C0 status timer bytes update the timer attributes."""
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        assert status[DeviceAttributes.power_off_timer.value] == 120
+        assert status[DeviceAttributes.power_on_timer.value] == 0
+
+    def test_set_attribute_timer_uses_state_set(self) -> None:
+        """Test a timer set on a fixed-header device sends a StateSet."""
         with patch.object(self.device, "build_send") as mock_build_send:
-            for attr in [
-                DeviceAttributes.power_on_timer,
-                DeviceAttributes.power_off_timer,
-            ]:
-                self.device.set_attribute(attr.value, 1)
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 120)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.power_off_timer == 120
+            assert message.power_on_timer == 0
+
+    def test_set_attribute_timer_keeps_other_slot(self) -> None:
+        """Test setting one slot re-sends the other armed slot."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x96, 0x7F, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 0)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_on_timer == 330
+            assert message.power_off_timer == 0
+
+    def test_state_set_carries_armed_timers(self) -> None:
+        """Test routine StateSets keep an armed timer instead of clearing it."""
+        assert self.device.make_message_set().power_off_timer is None
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        message = self.device.make_message_set()
+        assert message.power_off_timer == 120
+        assert message.power_on_timer == 0
+
+    def test_power_set_clears_timers(self) -> None:
+        """Test a power command clears armed timers, like the vendor app."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, False)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_off_timer is None
+            assert message.body[4:7] == bytearray([0x00, 0x00, 0x00])
+        # The cache is cleared too, so the next StateSet doesn't re-arm.
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 0
+        assert self.device.make_message_set().power_off_timer is None
+
+    def test_power_set_without_change_keeps_timers(self) -> None:
+        """Test a turn-on of a running unit doesn't disarm its off-timer."""
+        self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x88, 0xFF)),
+        )
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert message.power_off_timer == 120
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 120
+
+    def test_state_set_carries_new_protocol_timers(self) -> None:
+        """Test a 0x7e-reported timer is carried in the fixed-header bytes."""
+        self.device._timers_in_new_protocol = True
+        self.device._attributes[DeviceAttributes.power_off_timer] = 5
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_target_temperature(23.0, None)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            # 5 min: armed slot 0x80, power-off nibble 15 - 5 = 0x0A.
+            assert message.body[4:7] == bytearray([0x7F, 0x80, 0xFA])
+
+    def test_set_attribute_timer_uses_properties_set(self) -> None:
+        """Test timers reported in the 0x7e payload are set via PropertiesSet."""
+        self.device._timers_in_new_protocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_on_timer.value, 30)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, PropertiesSet)
+            assert message.power_on_timer == 30
+            assert message.power_off_timer is None
+
+    def test_c0_timers_ignored_after_new_protocol_timers(self) -> None:
+        """Test the 0x7e payload stays the timer source once it was seen."""
+        self.device._timers_in_new_protocol = True
+        self.device._attributes[DeviceAttributes.power_off_timer] = 60
+        status = self.device.process_message(
+            self._response(self._c0_with_timers(0x7F, 0x7F, 0xFF)),
+        )
+        assert DeviceAttributes.power_off_timer.value not in status
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 60
+
+    def test_set_attribute_timer_unsupported_on_subprotocol(self) -> None:
+        """Test the BB subprotocol path sends nothing for timers."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 120)
+            mock_build_send.assert_not_called()
+        assert self.device.attributes[DeviceAttributes.power_off_timer] is None
+
+    @pytest.mark.parametrize("new_protocol", [False, True])
+    def test_set_attribute_timer_updates_cache(self, new_protocol: bool) -> None:
+        """Test a timer set updates the cached value before the next reply."""
+        self.device._timers_in_new_protocol = new_protocol
+        with (
+            patch.object(self.device, "build_send"),
+            patch.object(self.device, "update_all") as mock_update_all,
+        ):
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, 5)
+            mock_update_all.assert_called_once_with(
+                {DeviceAttributes.power_off_timer.value: 5},
+            )
+        assert self.device.attributes[DeviceAttributes.power_off_timer] == 5
+
+    def test_set_attribute_timer_ignores_bool(self) -> None:
+        """Test a boolean is not taken as a 1-minute timer."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.power_off_timer.value, True)
             mock_build_send.assert_not_called()
 
     def test_set_target_temperature(self) -> None:
@@ -1234,7 +1495,7 @@ class TestMideaACDevice:
         return bytes(frame)
 
     def test_process_message_0x7e_temperatures_are_gated_by_model(self) -> None:
-        """Only model 22013279 takes temperatures from the 0x7e tag."""
+        """22013279 latches 0x7e temperatures; other models read dual-path."""
         frame = self._new_protocol_temperature_response()
 
         # The gate is deliberately model-only, including subtype 1 which was
@@ -1246,12 +1507,25 @@ class TestMideaACDevice:
             assert status[DeviceAttributes.indoor_temperature.value] == 28.8
             assert device._prefer_new_protocol_temperature
 
-        # The known 22251759 / 32773 device keeps its C0 temperatures, which
-        # include an outdoor reading not available from the 0x7e response.
+        # The known 22251759 / 32773 device reads the 0x7e temperatures
+        # dual-path: they are exposed as an additional update source, but no
+        # latch is set, so its C0 temperatures (including the outdoor reading
+        # not available from the 0x7e response) keep updating as well.
         other = self._make_device("22251759", 32773)
         status = other.process_message(frame)
-        assert DeviceAttributes.target_temperature.value not in status
-        assert DeviceAttributes.indoor_temperature.value not in status
+        assert status[DeviceAttributes.target_temperature.value] == 26.0
+        assert status[DeviceAttributes.indoor_temperature.value] == 28.8
+        assert not other._prefer_new_protocol_temperature
+
+        # A later C0 response still updates the C0-sourced temperatures -
+        # including the outdoor reading the 0x7e payload never carries -
+        # because reading 0x7e temperatures on this model does not latch.
+        status = other.process_message(
+            self._response(bytearray(MODEL_220F4047_C0_BODY)),
+        )
+        assert status[DeviceAttributes.target_temperature.value] == 16.5
+        assert status[DeviceAttributes.indoor_temperature.value] == -2.3
+        assert status[DeviceAttributes.outdoor_temperature.value] == -9.0
         assert not other._prefer_new_protocol_temperature
 
     def test_power_saving_control(self) -> None:
@@ -2077,3 +2351,23 @@ class TestHASupportProperties:
             if record.levelno == logging.WARNING
         ]
         assert any("exceed" in msg.lower() for msg in warning_messages)
+
+
+# Frames captured from a BB-only 0xAC appliance (model 223J6397, subtype 1)
+# that answers the subprotocol queries and no B5/0x41 query.
+_BB_QUERY_10_REPLY = (
+    "aa82ac00000000000803bb7800ffff10d4f7d4f7050000860b92099209007d00000000"
+    "8000008000000000000000355164020eb5860b0000000000000001000000003cf60000"
+    "000092090000000000000c0000000000000000000000ff280a00363030303030010430"
+    "3004000000000000000000000000000045000100000000007c44"
+)
+_BB_QUERY_11_REPLY = (
+    "aa5aac00000000000803bb5000ffff1100800000000251663200000000320001010001"
+    "630c513266000400000000000000000000000000000000000000000000000000400000"
+    "01e000004000030028280030000000000000a51c"
+)
+_BB_QUERY_30_REPLY = (
+    "aa6aac00000000000803bb6000ffff3000ff050c03f609f609210000c00001a1000099"
+    "000000000001000000f000a63e00f00000686700050000640080100000000000000000"
+    "0000000000000000000000000000000000001700000000ff450000000000002d75"
+)

@@ -1,4 +1,4 @@
-"""Midea local CA device."""
+"""Midea lan CA device."""
 
 import logging
 from enum import StrEnum
@@ -11,11 +11,28 @@ from .message import MessageCAResponse, MessageQuery
 
 _LOGGER = logging.getLogger(__name__)
 
+SUBTYPE_310A2111 = 56
+FLEX_ZONE_MODE_BY_TEMPERATURE: dict[float, str] = {
+    6.0: "baby",
+    2.0: "treasure",
+    0.0: "zero",
+}
+
 
 class DeviceAttributes(StrEnum):
     """Midea CA device attributes."""
 
     mode = "mode"
+    code_mode = "code_mode"
+    freezing_mode = "freezing_mode"
+    smart_mode = "smart_mode"
+    energy_saving_mode = "energy_saving_mode"
+    holiday_mode = "holiday_mode"
+    moisturize_mode = "moisturize_mode"
+    preservation_mode = "preservation_mode"
+    acme_freezing_mode = "acme_freezing_mode"
+    flood_light = "flood_light"
+    freezing_ice_machine_power = "freezing_ice_machine_power"
     energy_consumption = "energy_consumption"
     refrigerator_actual_temp = "refrigerator_actual_temp"
     freezer_actual_temp = "freezer_actual_temp"
@@ -70,6 +87,17 @@ class MideaCADevice(MideaDevice):
             device_type=DeviceType.CA,
             **kwargs,
             attributes={
+                # Read-only parser values; None means no general status received.
+                DeviceAttributes.code_mode: None,
+                DeviceAttributes.freezing_mode: None,
+                DeviceAttributes.smart_mode: None,
+                DeviceAttributes.energy_saving_mode: None,
+                DeviceAttributes.holiday_mode: None,
+                DeviceAttributes.moisturize_mode: None,
+                DeviceAttributes.preservation_mode: None,
+                DeviceAttributes.acme_freezing_mode: None,
+                DeviceAttributes.flood_light: None,
+                DeviceAttributes.freezing_ice_machine_power: None,
                 DeviceAttributes.energy_consumption: None,
                 DeviceAttributes.refrigerator_actual_temp: None,
                 DeviceAttributes.freezer_actual_temp: None,
@@ -116,6 +144,26 @@ class MideaCADevice(MideaDevice):
                 else:
                     self._attributes[attr] = value
                 new_status[str(attr)] = self._attributes[attr]
+        if (
+            self.model == "310A2111"
+            and self.subtype == SUBTYPE_310A2111
+            and (
+                DeviceAttributes.flex_zone_setting_temp in new_status
+                or DeviceAttributes.variable_mode in new_status
+            )
+        ):
+            # This model reports its preset through the setting temperature,
+            # not the generic variable-mode byte. Emit the derived attribute
+            # as well so consumers refresh on temperature-only updates.
+            temperature = self._attributes[DeviceAttributes.flex_zone_setting_temp]
+            mode = (
+                FLEX_ZONE_MODE_BY_TEMPERATURE.get(temperature)
+                if isinstance(temperature, (int, float))
+                and not isinstance(temperature, bool)
+                else None
+            )
+            self._attributes[DeviceAttributes.variable_mode] = mode
+            new_status[DeviceAttributes.variable_mode] = mode
         return new_status
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:

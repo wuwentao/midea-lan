@@ -1,4 +1,4 @@
-"""Midea local device selector tests."""
+"""Midea lan device selector tests."""
 
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices import device_selector

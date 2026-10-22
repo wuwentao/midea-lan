@@ -1,4 +1,4 @@
-"""Midea local security."""
+"""Midea lan security."""
 
 import hmac
 from enum import IntEnum
@@ -31,6 +31,10 @@ MSGTYPE_HANDSHAKE_RESPONSE = 0x1
 MSGTYPE_ENCRYPTED_RESPONSE = 0x3
 MSGTYPE_ENCRYPTED_REQUEST = 0x6
 TCP_KEY_RESPONSE_LENGTH = 64
+AES_KEY_LENGTH = 16
+# luaGetCbc derives a 16-byte key and 16-byte IV from a sha256 hex digest:
+# key = digest[:AES_KEY_LENGTH], iv = digest[AES_KEY_LENGTH:LUA_CBC_IV_END].
+LUA_CBC_IV_END = 32
 
 
 class UdpIdMethod(IntEnum):
@@ -72,12 +76,18 @@ class CloudSecurity:
         return sign.hexdigest()
 
     def encrypt_password(self, login_id: str, data: str) -> str:
-        """Encrypt password."""
+        """Encrypt password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         m = sha256()
-        m.update(data.encode("ascii"))
+        m.update(data.encode("utf-8"))
         login_hash = login_id + m.hexdigest() + self._login_key
         m = sha256()
-        m.update(login_hash.encode("ascii"))
+        m.update(login_hash.encode("utf-8"))
         return m.hexdigest()
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:
@@ -142,19 +152,21 @@ class CloudSecurity:
         if isinstance(data, str):
             data = bytes.fromhex(data)
         if aes_iv is None or aes_iv == b"0":  # ECB
-            return AES.new(aes_key, AES.MODE_ECB).encrypt(pad(data, 16))
+            return AES.new(aes_key, AES.MODE_ECB).encrypt(pad(data, AES.block_size))
         # CBC
-        return AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).encrypt(pad(data, 16))
+        return AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).encrypt(
+            pad(data, AES.block_size),
+        )
 
-    def aes_decrypt(
+    def aes_decrypt_bytes(
         self,
         data: str | bytes,
         key: bytes | None = None,
         iv: bytes | None = None,
-    ) -> str:
-        """Decrypt AES."""
+    ) -> bytes:
+        """Decrypt AES and return raw bytes."""
         if len(data) == 0:
-            return ""
+            return b""
         if key is not None:
             aes_key = key
             aes_iv = iv
@@ -168,12 +180,21 @@ class CloudSecurity:
         if aes_iv is None or aes_iv == b"0":  # ECB
             return unpad(
                 AES.new(aes_key, AES.MODE_ECB).decrypt(data),
-                len(aes_key),
-            ).decode()
+                AES.block_size,
+            )
         return unpad(
             AES.new(aes_key, AES.MODE_CBC, iv=aes_iv).decrypt(data),
-            len(aes_key),
-        ).decode()
+            AES.block_size,
+        )
+
+    def aes_decrypt(
+        self,
+        data: str | bytes,
+        key: bytes | None = None,
+        iv: bytes | None = None,
+    ) -> str:
+        """Decrypt AES."""
+        return self.aes_decrypt_bytes(data, key, iv).decode()
 
 
 class MeijuCloudSecurity(CloudSecurity):
@@ -184,11 +205,17 @@ class MeijuCloudSecurity(CloudSecurity):
         super().__init__(login_key, iot_key, hmac_key, 10864842703515613082)
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:  # noqa: ARG002
-        """Encrypt IAM password."""
+        """Encrypt IAM password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         md = md5()
-        md.update(data.encode("ascii"))
+        md.update(data.encode("utf-8"))
         md_second = md5()
-        md_second.update(md.hexdigest().encode("ascii"))
+        md_second.update(md.hexdigest().encode("utf-8"))
         return md_second.hexdigest()
 
 
@@ -206,14 +233,20 @@ class MSmartCloudSecurity(CloudSecurity):
         )
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:
-        """Encrypt IAM password."""
+        """Encrypt IAM password.
+
+        ``data`` is the user account password and may contain non-ASCII
+        characters, so it is encoded as UTF-8. For ASCII-only passwords UTF-8
+        produces identical bytes, keeping the resulting hash backward
+        compatible.
+        """
         md = md5()
-        md.update(data.encode("ascii"))
+        md.update(data.encode("utf-8"))
         md_second = md5()
-        md_second.update(md.hexdigest().encode("ascii"))
+        md_second.update(md.hexdigest().encode("utf-8"))
         login_hash = login_id + md_second.hexdigest() + self._login_key
         sha = sha256()
-        sha.update(login_hash.encode("ascii"))
+        sha.update(login_hash.encode("utf-8"))
         return sha.hexdigest()
 
     def set_aes_keys(
@@ -245,12 +278,32 @@ class MideaAirSecurity(CloudSecurity):
         sha.update((urlparse(url).path + payload + self._login_key).encode("ascii"))
         return sha.hexdigest()
 
+    def decrypt_appliance_lua_cbc(self, data: str) -> str:
+        """Decrypt an appliance lua file served by the ``luaGetCbc`` endpoint.
+
+        The current NetHome Plus / Midea Air apps request lua files from
+        ``/v1/appliance/protocol/lua/luaGetCbc`` and serve them as a
+        hex-encoded AES-128-CBC blob. Both key and IV are derived from
+        ``sha256(app_key)``: ``key = sha256(app_key)[:16]`` and
+        ``iv = sha256(app_key)[16:32]`` (hex digest sliced as ASCII), where
+        ``app_key`` is this security object's login key.
+        """
+        digest = sha256(self._login_key.encode("ascii")).hexdigest()
+        key = digest[:AES_KEY_LENGTH].encode("ascii")
+        iv = digest[AES_KEY_LENGTH:LUA_CBC_IV_END].encode("ascii")
+        return unpad(
+            AES.new(key, AES.MODE_CBC, iv=iv).decrypt(bytes.fromhex(data)),
+            AES.block_size,
+        ).decode()
+
     def decrypt_appliance_lua(self, data: str) -> str:
         """Decrypt a legacy appliance lua file.
 
-        Unlike the Meiju/SmartHome clouds, the legacy backend serves lua files
-        as a hex-encoded AES-128-ECB blob keyed by ``md5(app_key)[:16]``, where
-        ``app_key`` is this security object's login key.
+        Unlike the Meiju/SmartHome clouds, the legacy ``luaGet`` endpoint
+        serves lua files as a hex-encoded AES-128-ECB blob keyed by
+        ``md5(app_key)[:16]``, where ``app_key`` is this security object's
+        login key. Retained as a fallback for the current CBC scheme (see
+        :meth:`decrypt_appliance_lua_cbc`).
         """
         # The legacy backend derives the AES key with MD5; not used as a
         # security hash.
@@ -261,8 +314,22 @@ class MideaAirSecurity(CloudSecurity):
         )
         return unpad(
             AES.new(key, AES.MODE_ECB).decrypt(bytes.fromhex(data)),
-            16,
+            AES.block_size,
         ).decode()
+
+
+class ToshibaIOLifeSecurity(MideaAirSecurity):
+    """Toshiba IOLife security."""
+
+    def decrypt_appliance_sn(self, encrypted_sn: str, access_token: str) -> str:
+        """Decrypt a Toshiba IOLife appliance serial number."""
+        key = (
+            md5(self._login_key.encode("ascii"), usedforsecurity=False)
+            .hexdigest()[:16]
+            .encode("ascii")
+        )
+        data_key = self.aes_decrypt_bytes(access_token, key)
+        return self.aes_decrypt(encrypted_sn, data_key[:AES_KEY_LENGTH])
 
 
 class LocalSecurity:

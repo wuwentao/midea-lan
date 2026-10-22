@@ -1,15 +1,18 @@
 """Midea Lan device test."""
 
 import contextlib
+import logging
+import re
 import threading
 from typing import Any, ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from midealan.cloud import DEFAULT_KEYS
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import (
+    MAX_RECONNECT_SLEEP,
     MESSAGE_TYPE_INDEX,
     QUERY_TIMEOUT,
     RESPONSE_TIMEOUT,
@@ -130,6 +133,9 @@ class TestMideaDevice:
             attributes={},
             mac="1234567890ab",
             serial_number="test_serial",
+            sn8="9d52c159",
+            manufacturer_code="1234",
+            cloud_name="MSmartHome",
         )
 
     def test_initial_attributes(self) -> None:
@@ -142,6 +148,9 @@ class TestMideaDevice:
         assert self.device.subtype == 1
         assert self.device.mac == "1234567890ab"
         assert self.device.serial_number == "test_serial"
+        assert self.device.sn8 == "9d52c159"
+        assert self.device.manufacturer_code == "1234"
+        assert self.device.cloud_name == "MSmartHome"
 
     def test_get_attribute(self) -> None:
         """Test get_attribute reads from the internal attributes dict."""
@@ -454,6 +463,7 @@ class TestMideaDevice:
                     bytearray([0x0]),
                     bytearray([0x0]),
                     TimeoutError(),
+                    TimeoutError(),
                 ],
             ),
             patch.object(self.device, "build_send", return_value=None),
@@ -503,7 +513,7 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError()],
+                side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -531,7 +541,11 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[TimeoutError(), bytearray([0x0])],
+                side_effect=[
+                    TimeoutError(),
+                    TimeoutError(),
+                    bytearray([0x0]),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -685,7 +699,12 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[TimeoutError(), bytearray([0x0]), bytearray([0x0])],
+                side_effect=[
+                    TimeoutError(),
+                    TimeoutError(),
+                    bytearray([0x0]),
+                    bytearray([0x0]),
+                ],
             ),
             patch.object(
                 self.device,
@@ -704,8 +723,9 @@ class TestMideaDevice:
 
         # appliance query first, then the init probe, then the status query.
         assert sent[0].__class__.__name__ == "MessageQueryAppliance"
-        assert sent[1] is init_cmd
-        assert sent[2] is real_cmd
+        assert sent[1].__class__.__name__ == "MessageQueryAppliance"
+        assert sent[2] is init_cmd
+        assert sent[3] is real_cmd
         assert "MessageQueryAppliance" in self.device._unsupported_protocol
         assert self.device._appliance_query is True
 
@@ -831,7 +851,11 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError(), bytearray([0x0])],
+                side_effect=[
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    bytearray([0x0]),
+                ],
             ),
             patch.object(
                 self.device,
@@ -844,7 +868,8 @@ class TestMideaDevice:
             self.device.refresh_status(True)  # must not raise (real query answered)
 
         assert "_Additional" in self.device._unsupported_protocol
-        # Sent exactly once despite still being reported as armed.
+        # The basic probe already answered in this pass, so a later timeout is
+        # treated as unsupported without another wait.
         assert sum(isinstance(c, _Additional) for c in sent) == 1
 
     def test_blacklisted_init_query_still_advances_stage_in_checked_pass(self) -> None:
@@ -978,8 +1003,12 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                # appliance ok, first real ok, second real times out
-                side_effect=[bytearray([0x0]), bytearray([0x0]), TimeoutError()],
+                # appliance ok, first real ok, second real times out once
+                side_effect=[
+                    bytearray([0x0]),
+                    bytearray([0x0]),
+                    TimeoutError(),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -990,6 +1019,7 @@ class TestMideaDevice:
         ):
             self.device._socket = socket_mock
             self.device.refresh_status(True)  # must not raise
+            assert socket_mock.recv.call_count == 3
 
     def test_all_queries_failing_among_several_raises(self) -> None:
         """The sibling of the above: every real query failing must still raise."""
@@ -1001,7 +1031,11 @@ class TestMideaDevice:
             patch.object(
                 socket_mock,
                 "recv",
-                side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
+                side_effect=[
+                    bytearray([0x0]),
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
             ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
@@ -1013,11 +1047,307 @@ class TestMideaDevice:
             self.device._socket = socket_mock
             with pytest.raises(NoSupportedProtocol):
                 self.device.refresh_status(True)
-            # Both must have failed on their own timeout. If they shared a class name
-            # the second would take the SKIP path, consuming only two of the three
-            # recv side effects and testing a different branch than this one claims.
+            # The appliance query answered, so both status timeouts are treated
+            # as unsupported without a second wait.
             assert self.device._unsupported_protocol == ["QueryA", "QueryB"]
             assert socket_mock.recv.call_count == 3
+
+    def test_refresh_status_probes_fallback_query_family(self) -> None:
+        """A silent primary family must be followed by the fallback family.
+
+        Verified on AC model 223J6397: the appliance answers the appliance query
+        and the BB subprotocol queries and none of the B5/0x41 status queries, so
+        the whole primary family times out. Probing the fallback before raising
+        NoSupportedProtocol is what keeps such a device available; without it the
+        family is blacklisted and only a manual reload brings the device back.
+        """
+        primary = [type("PrimaryA", (), {})(), type("PrimaryB", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_query_fallback", return_value=fallback),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                # QUERY_PROBE_RETRIES waits per query: two silent primary
+                # queries, then the fallback answers on its only wait.
+                side_effect=[
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    None,
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)  # must not raise
+
+        # Each silent primary query is sent twice (QUERY_PROBE_RETRIES) before
+        # the fallback family is tried, and the answered fallback query once.
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            primary[0],
+            primary[0],
+            primary[1],
+            primary[1],
+            *fallback,
+        ]
+        # The silent family stays blacklisted for the rest of the connection.
+        assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
+
+    def test_init_timeout_does_not_mask_status_family_fallback(self) -> None:
+        """Init probe timeouts do not change the primary status result."""
+        init = type("InitQuery", (), {})()
+        primary = [type("PrimaryA", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(
+                self.device,
+                "build_init_query",
+                return_value=[init],
+            ),
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_query_fallback", return_value=fallback),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    None,
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            init,
+            init,
+            primary[0],
+            primary[0],
+            fallback[0],
+        ]
+
+    def test_probe_success_disables_later_timeout_retries(self) -> None:
+        """Once this pass gets a reply, later timeouts are not retried."""
+        init = type("InitQuery", (), {})()
+        primary = [type("PrimaryA", (), {})(), type("PrimaryB", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(
+                self.device,
+                "build_init_query",
+                return_value=[init],
+            ),
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_query_fallback", return_value=fallback),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    None,
+                    TimeoutError(),
+                    TimeoutError(),
+                    None,
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            init,
+            primary[0],
+            primary[1],
+            fallback[0],
+        ]
+        assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
+
+    def test_probe_answered_state_resets_each_checked_pass(self) -> None:
+        """A later checked pass still retries before any reply is seen."""
+        first_cmd = type("FirstPassQuery", (), {})()
+        second_cmd = type("SecondPassQuery", (), {})()
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        queries = [[first_cmd], [second_cmd]]
+
+        with (
+            patch.object(self.device, "build_query", side_effect=queries),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    None,
+                    TimeoutError(),
+                    TimeoutError(),
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+            with pytest.raises(NoSupportedProtocol):
+                self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            first_cmd,
+            second_cmd,
+            second_cmd,
+        ]
+        assert self.device._unsupported_protocol == ["SecondPassQuery"]
+
+    def test_refresh_status_fallback_is_probed_only_once(self) -> None:
+        """A fallback that is silent too must still fail the probe.
+
+        Without the once-only guard a device that answers neither family would
+        re-probe the fallback forever inside the same checked pass instead of
+        letting connection recovery retry.
+        """
+        primary = [type("PrimaryA", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(
+                self.device,
+                "build_query_fallback",
+                return_value=fallback,
+            ) as fallback_mock,
+            patch.object(self.device, "build_send"),
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[TimeoutError()] * 4,
+            ),
+            pytest.raises(NoSupportedProtocol),
+        ):
+            self.device.refresh_status(True)
+
+        fallback_mock.assert_called_once()
+        assert self.device._unsupported_protocol == ["PrimaryA", "FallbackA"]
+
+    def test_refresh_status_without_fallback_keeps_previous_behaviour(self) -> None:
+        """A device with no alternative family fails on the first total timeout."""
+        primary = [type("PrimaryA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_send"),
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[TimeoutError()] * 2,
+            ),
+            pytest.raises(NoSupportedProtocol),
+        ):
+            self.device.refresh_status(True)
+
+        assert self.device._unsupported_protocol == ["PrimaryA"]
+
+    def test_refresh_status_does_not_fallback_after_invalid_probe(self) -> None:
+        """A parse or family error must not select an alternative protocol."""
+        primary = [type("PrimaryA", (), {})()]
+        fallback = [type("FallbackA", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(self.device, "build_query_fallback", return_value=fallback),
+            patch.object(self.device, "build_send"),
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                return_value=None,
+            ),
+            patch.object(
+                self.device,
+                "_is_query_response_valid",
+                return_value=False,
+            ),
+            pytest.raises(NoSupportedProtocol),
+        ):
+            self.device.refresh_status(True)
+
+        assert self.device._unsupported_protocol == []
+
+    def test_probe_retry_drops_partial_response_from_buffer(self) -> None:
+        """A timed-out partial reply must not be glued onto the retry reply.
+
+        The decoder keeps an incomplete frame in _buffer across recv() calls. If
+        the timed-out first attempt left one behind, appending the complete retry
+        reply to it makes decode_8370 lose the frame, and the answered command is
+        still blacklisted.
+        """
+        cmd = type("QueryPartial", (), {})()
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        buffers_seen: list[bytes] = []
+
+        def await_reply() -> None:
+            buffers_seen.append(self.device._buffer)
+            if len(buffers_seen) == 1:
+                # The timed-out attempt delivered only part of the frame.
+                self.device._buffer = b"\x83\x70partial"
+                raise TimeoutError
+
+        with (
+            patch.object(self.device, "build_query", return_value=[cmd]),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(self.device, "_await_query_reply", side_effect=await_reply),
+        ):
+            self.device.refresh_status(True)  # must not raise
+
+        # The retry (second wait) must start from an empty buffer.
+        assert buffers_seen == [b"", b""]
+        assert self.device._buffer == b""
+        assert self.device._unsupported_protocol == []
+        assert build_send_mock.call_count == 2
+
+    def test_probe_timeout_can_be_deferred_by_device_hook(self) -> None:
+        """A device hook may defer a probe instead of blacklisting it."""
+        cmd = type("DeferredQuery", (), {})()
+        self.device._socket = MagicMock()
+        with (
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[TimeoutError(), TimeoutError()],
+            ),
+            patch.object(self.device, "build_send"),
+            patch.object(self.device, "_should_defer_query", return_value=True),
+            patch.object(self.device, "_defer_query") as defer_query,
+        ):
+            assert self.device._probe_query_reply(cmd, []) == (0, True)
+
+        defer_query.assert_called_once_with(cmd)
+        assert self.device._unsupported_protocol == []
+
+    def test_probe_final_timeout_clears_partial_response(self) -> None:
+        """A second timeout cannot leak a partial frame into the next query."""
+        cmd = type("QueryPartialTimeout", (), {})()
+        self.device._socket = MagicMock()
+
+        def await_reply() -> None:
+            self.device._buffer = b"\x83\x70partial"
+            raise TimeoutError
+
+        with (
+            patch.object(self.device, "_await_query_reply", side_effect=await_reply),
+            patch.object(self.device, "build_send"),
+        ):
+            assert self.device._probe_query_reply(cmd, []) == (0, True)
+
+        assert self.device._buffer == b""
 
     def test_close_socket_rearms_appliance_query(self) -> None:
         """close_socket must re-arm the appliance query for the next connection.
@@ -1042,6 +1372,51 @@ class TestMideaDevice:
 
         build_send_mock.assert_called_once_with(cmd, query=True)
 
+    def test_unchecked_refresh_delays_between_queries(self) -> None:
+        """Pause between periodic query sends."""
+        commands = [type(f"Query{index}", (), {})() for index in range(3)]
+        sent: list[object] = []
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=commands),
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
+            ),
+            patch("midealan.device.time.sleep") as sleep_mock,
+        ):
+            self.device.refresh_status()
+
+        assert sent == commands
+        assert sleep_mock.call_count == 2
+        sleep_mock.assert_called_with(0.1)
+
+    def test_checked_refresh_does_not_delay_between_queries(self) -> None:
+        """Protocol checking remains reply-driven and is not delay-paced."""
+        command = type("Query", (), {})()
+        self.device._appliance_query = False
+        socket_mock = MagicMock()
+        self.device._socket = socket_mock
+        with (
+            patch.object(self.device, "build_query", return_value=[command]),
+            patch.object(self.device, "build_send"),
+            patch.object(
+                socket_mock,
+                "recv",
+                return_value=bytearray([0x0]),
+            ),
+            patch.object(
+                self.device,
+                "parse_message",
+                return_value=MessageResult.SUCCESS,
+            ),
+            patch("midealan.device.time.sleep") as sleep_mock,
+        ):
+            self.device.refresh_status(check_protocol=True)
+
+        sleep_mock.assert_not_called()
+
     def test_unchecked_refresh_skips_unsupported_query_without_advancing(self) -> None:
         """An unchecked refresh skips an unsupported query and sends the rest.
 
@@ -1061,11 +1436,13 @@ class TestMideaDevice:
                 return_value=[unsupported, supported],
             ),
             patch.object(self.device, "build_send") as build_send_mock,
+            patch("midealan.device.time.sleep") as sleep_mock,
         ):
             self.device.refresh_status()
 
         # Only the supported query is sent; the unsupported one is skipped.
         build_send_mock.assert_called_once_with(supported, query=True)
+        sleep_mock.assert_not_called()
 
     def test_parse_message(self) -> None:
         """Test parse message."""
@@ -1245,6 +1622,85 @@ class TestMideaDevice:
         assert self.device._buffer == b""
         assert self.device._unsupported_protocol == []
 
+    @pytest.mark.parametrize("close_error", [None, OSError(), ValueError()])
+    def test_close_socket_publishes_unavailable_before_reconnect(
+        self,
+        close_error: Exception | None,
+    ) -> None:
+        """Closing the active socket publishes its loss even if close raises."""
+        socket_mock: Any = MagicMock()
+        socket_mock.close.side_effect = close_error
+        update = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        self.device._available = True
+        self.device.register_update(update)
+
+        self.device.close_socket()
+
+        assert self.device._socket is None
+        assert self.device.available is False
+        update.assert_called_once_with({"available": False})
+        self.device.set_available(True)
+        assert update.call_args_list == [
+            call({"available": False}),
+            call({"available": True}),
+        ]
+
+    def test_close_socket_already_unavailable_does_not_republish(self) -> None:
+        """Closing the socket on an already-unavailable device stays quiet."""
+        socket_mock: Any = MagicMock()
+        update = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        self.device._available = False
+        self.device.register_update(update)
+
+        self.device.close_socket()
+
+        assert self.device._socket is None
+        assert self.device.available is False
+        update.assert_not_called()
+
+    def test_close_socket_stopped_device_does_not_publish_unavailable(self) -> None:
+        """An explicit thread shutdown does not publish a connection loss."""
+        socket_mock: Any = MagicMock()
+        self.device._socket = socket_mock
+        self.device._is_run = True
+        update = MagicMock()
+        self.device.register_update(update)
+
+        self.device.close()
+
+        assert self.device._socket is None
+        update.assert_not_called()
+
+    def test_close_stale_socket_preserves_current_connection(self) -> None:
+        """Closing an old socket leaves the new connection and query state intact."""
+        old_socket = MagicMock()
+        current_socket = MagicMock()
+        update = MagicMock()
+        self.device._socket = current_socket
+        self.device._is_run = True
+        self.device._available = True
+        self.device._buffer = b"current"
+        self.device._unsupported_protocol = ["CurrentQuery"]
+        self.device._appliance_query = False
+        self.device.register_update(update)
+
+        with patch.object(self.device, "reset_init_query") as reset_init_query:
+            self.device.close_socket(old_socket)
+
+        old_socket.close.assert_called_once()
+        current_socket.close.assert_not_called()
+        assert self.device._socket is current_socket
+        assert self.device.available is True
+        assert self.device._buffer == b"current"
+        assert self.device._unsupported_protocol == ["CurrentQuery"]
+        assert self.device._appliance_query is False
+        reset_init_query.assert_not_called()
+        update.assert_not_called()
+
     def test_close_socket_close_value_error(self) -> None:
         """Test close_socket swallows ValueError raised by socket.close()."""
         socket_mock = MagicMock()
@@ -1258,16 +1714,22 @@ class TestMideaDevice:
         """Test close_socket only clears the same socket it captured."""
         old_socket = MagicMock()
         new_socket: Any = MagicMock()
+        update = MagicMock()
 
         def replace_socket() -> None:
             self.device._socket = new_socket
 
         old_socket.close.side_effect = replace_socket
         self.device._socket = old_socket
+        self.device._is_run = True
+        self.device._available = True
+        self.device.register_update(update)
         self.device.close_socket()
 
         old_socket.close.assert_called_once()
         assert self.device._socket is new_socket
+        assert self.device.available is True
+        update.assert_not_called()
 
     def test_set_ip(self) -> None:
         """Test set ip."""
@@ -1419,6 +1881,44 @@ class TestMideaDevice:
 
         assert sleep_calls == [1, 1, 1, 1, 1]
 
+    def test_connect_loop_caps_reconnect_backoff(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test the reconnect backoff stops growing at MAX_RECONNECT_SLEEP.
+
+        issue #658: this loop is also entered when the appliance is reachable
+        and only missed the protocol probe, so the old 600 s ceiling kept the
+        entities unavailable for up to ten minutes after the device answered
+        again and the integration had to be reloaded by hand.
+        """
+        self.device._is_run = True
+        self.device._socket = None
+        sleeps = 0
+
+        def stop_mid_backoff(_seconds: float) -> None:
+            nonlocal sleeps
+            sleeps += 1
+            # Stop once the ramp has saturated, without sleeping for real.
+            if sleeps == 150:
+                self.device._is_run = False
+
+        with (
+            caplog.at_level(logging.WARNING, logger="midealan.device"),
+            patch.object(self.device, "connect", return_value=False),
+            patch("time.sleep", side_effect=stop_mid_backoff),
+        ):
+            self.device._connect_loop()
+
+        backoff = [
+            int(match.group(1))
+            for record in caplog.records
+            if (match := re.search(r"sleep (\d+) seconds and retry", record.message))
+        ]
+        # Exponential until the cap, then flat: a device that comes back waits
+        # at most MAX_RECONNECT_SLEEP for the next attempt.
+        assert backoff == [5, 10, 20, 40, MAX_RECONNECT_SLEEP, MAX_RECONNECT_SLEEP]
+
     def test_run_breaks_when_stopped_during_connect_loop(self) -> None:
         """Test run exits immediately if closed while _connect_loop runs."""
         self.device._is_run = True
@@ -1505,7 +2005,12 @@ class TestMideaDevice:
             self.device.set_attribute("power", True)
 
     @staticmethod
-    def _make_device(serial_number: str | None) -> MideaDevice:
+    def _make_device(
+        serial_number: str | None,
+        sn8: str | None = None,
+        manufacturer_code: str | None = None,
+        cloud_name: str | None = None,
+    ) -> MideaDevice:
         return MideaDevice(
             name="Test Device",
             device_id=1,
@@ -1520,6 +2025,9 @@ class TestMideaDevice:
             attributes={},
             mac="1234567890ab",
             serial_number=serial_number,
+            sn8=sn8,
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
         )
 
     def test_serial_number_normalization(self) -> None:
@@ -1530,3 +2038,37 @@ class TestMideaDevice:
         assert self._make_device("\x00" * 32).serial_number is None
         assert self._make_device(None).serial_number is None
         assert self._make_device("ABC123\x00\x00").serial_number == "ABC123"
+
+    def test_sn8_normalization(self) -> None:
+        """Test sn8 normalization in __init__."""
+        assert self._make_device(None, sn8="9d52c159").sn8 == "9d52c159"
+        assert self._make_device(None, sn8="9d52c159\x00").sn8 == "9d52c159"
+        # Empty, NUL-padded, None or the "00000000" placeholder normalize to None.
+        assert self._make_device(None, sn8="").sn8 is None
+        assert self._make_device(None, sn8="\x00" * 8).sn8 is None
+        assert self._make_device(None, sn8="00000000").sn8 is None
+        assert self._make_device(None, sn8=None).sn8 is None
+
+    def test_manufacturer_code_normalization(self) -> None:
+        """Test manufacturer_code normalization in __init__."""
+        assert self._make_device(None, manufacturer_code="1234").manufacturer_code == (
+            "1234"
+        )
+        # Empty, NUL-padded, None or the "0000" placeholder normalize to None.
+        assert self._make_device(None, manufacturer_code="").manufacturer_code is None
+        assert self._make_device(None, manufacturer_code="0000").manufacturer_code is (
+            None
+        )
+        assert self._make_device(None, manufacturer_code=None).manufacturer_code is None
+
+    def test_cloud_name_normalization(self) -> None:
+        """Test cloud_name normalization in __init__."""
+        assert self._make_device(None, cloud_name="MSmartHome").cloud_name == (
+            "MSmartHome"
+        )
+        assert self._make_device(None, cloud_name="  MSmartHome  ").cloud_name == (
+            "MSmartHome"
+        )
+        # Empty or None cloud names normalize to None.
+        assert self._make_device(None, cloud_name="").cloud_name is None
+        assert self._make_device(None, cloud_name=None).cloud_name is None

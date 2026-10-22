@@ -5,10 +5,70 @@ from unittest.mock import patch
 import pytest
 
 from midealan.const import ProtocolVersion
+from midealan.device import MideaDeviceInitKwargs
 from midealan.devices.db import DeviceAttributes, MideaDBDevice
-from midealan.devices.db.message import MessagePower, MessageQuery, MessageStart
+from midealan.devices.db.message import (
+    MessageParameters,
+    MessagePower,
+    MessageQuery,
+    MessageStart,
+)
 from midealan.exceptions import ValueWrongType
 from midealan.message import MessageType
+
+DB_BODY = bytes.fromhex(
+    "030101001f0520010300030400400000204f0000db5933b10000002d08080000"
+    "02ffff000000ffffffffffffffff140101ffffffff01ff200000080000",
+)
+DB_RESERVED = bytes.fromhex(
+    "040106001f0540060303020400427a01208a0000db5933b10000003f0c080000"
+    "02ffff000000ffffffffffffffff140101ffffffff01ff200000080000",
+)
+BASE_ARGS: MideaDeviceInitKwargs = {
+    "name": "Test laundry appliance",
+    "device_id": 1,
+    "ip_address": "192.0.2.1",
+    "port": 6444,
+    "token": "00",
+    "key": "00",
+    "device_protocol": ProtocolVersion.V1,
+    "model": "test",
+    "subtype": 0,
+}
+
+
+def device_args(
+    model: str,
+    subtype: int,
+    *,
+    sn8: str | None = None,
+) -> MideaDeviceInitKwargs:
+    """Return typed connection arguments for a DB device."""
+    args = BASE_ARGS.copy()
+    args["model"] = model
+    args["subtype"] = subtype
+    if sn8 is not None:
+        args["sn8"] = sn8
+    return args
+
+
+def frame(
+    body: bytes | bytearray,
+    message_type: MessageType = MessageType.query,
+) -> bytes:
+    """Use an identity-free header; direct decoders do not validate its checksum."""
+    return bytes([0xAA] + [0] * 7 + [ProtocolVersion.V1, message_type]) + body + b"\x00"
+
+
+def verified_washer(body: bytes | bytearray | None = None) -> MideaDBDevice:
+    """Create the verified profile without opening a socket."""
+    device = MideaDBDevice(
+        customize="",
+        **device_args("38131140", 13145),
+    )
+    if body is not None:
+        device.process_message(frame(body))
+    return device
 
 
 class TestMideaDBDevice:
@@ -181,3 +241,168 @@ class TestMideaDBDevice:
         ):
             self.device.set_attribute(DeviceAttributes.power.value, 5)
         mock_build_send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("other", 13145), ("38131140", 13146), ("38132386", 1)],
+    )
+    def test_unverified_profiles_keep_legacy_attributes(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Do not infer controls from the shared DB device type or Lua family."""
+        device = MideaDBDevice(
+            customize="",
+            **device_args(model, subtype),
+        )
+        assert DeviceAttributes.parameter_control_supported not in device.attributes
+        assert DeviceAttributes.appointment_control_supported not in device.attributes
+        assert device.get_parameter_options(DeviceAttributes.program_control) == []
+
+    def test_verified_profile_exposes_controls_for_model_or_sn8(self) -> None:
+        """Require the verified subtype and accept its identity from model or SN8."""
+        for model, sn8 in (
+            ("38131140", None),
+            ("marketing name", "38131140"),
+        ):
+            device = MideaDBDevice(
+                customize="",
+                **device_args(model, 13145, sn8=sn8),
+            )
+            assert (
+                device.get_attribute(DeviceAttributes.parameter_control_supported)
+                is True
+            )
+            assert (
+                device.get_attribute(DeviceAttributes.parameter_controls_available)
+                is False
+            )
+            assert (
+                device.get_attribute(DeviceAttributes.appointment_control_supported)
+                is True
+            )
+            assert (
+                len(
+                    device.get_parameter_options(DeviceAttributes.program_control),
+                )
+                == 30
+            )
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38132386", None), ("marketing name", "38132386")],
+    )
+    def test_v41_profile_decodes_read_only_status(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Decode v41 status for model or SN8 without exposing controls."""
+        device = MideaDBDevice(
+            customize="",
+            **device_args(model, 0, sn8=sn8),
+        )
+        body = bytearray(DB_BODY)
+        body[4], body[7], body[8] = (0x6F, 0x08, 0x07)
+        device.process_message(frame(body))
+        assert device.get_attribute(DeviceAttributes.program) == "greatwaves"
+        assert device.get_attribute(DeviceAttributes.temperature) == "90"
+        assert device.get_attribute(DeviceAttributes.dehydration_speed) == "1600"
+        assert DeviceAttributes.program_control not in device.attributes
+        assert DeviceAttributes.temperature_control not in device.attributes
+        assert DeviceAttributes.spin_speed_control not in device.attributes
+        assert DeviceAttributes.rinse_count not in device.attributes
+        assert DeviceAttributes.wash_time_control not in device.attributes
+        assert DeviceAttributes.forget_free not in device.attributes
+        assert DeviceAttributes.appointment_control_supported not in device.attributes
+        assert device.get_parameter_options(DeviceAttributes.program_control) == []
+        for attr in (DeviceAttributes.power, DeviceAttributes.start):
+            with (
+                patch.object(device, "build_send") as send,
+                pytest.raises(ValueWrongType, match="read-only"),
+            ):
+                device.set_attribute(attr, True)
+            send.assert_not_called()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueWrongType),
+        ):
+            device.set_attribute(DeviceAttributes.temperature_control, "50")
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "subtype", "temperature"),
+        [
+            ("other", 0, 0x08),
+            ("other", 0, 0x09),
+            ("38131140", 13145, 0x08),
+            ("38131140", 13145, 0x09),
+        ],
+    )
+    def test_v41_temperature_values_are_profile_scoped(
+        self,
+        model: str,
+        subtype: int,
+        temperature: int,
+    ) -> None:
+        """Keep v41-only temperature codes raw on unrelated DB profiles."""
+        device = MideaDBDevice(customize="", **device_args(model, subtype))
+        body = bytearray(DB_BODY)
+        body[7] = temperature
+        device.process_message(frame(body))
+        assert device.get_attribute(DeviceAttributes.temperature) == temperature
+
+    def test_verified_response_updates_control_attributes(self) -> None:
+        """Publish decoded controls and the profile-specific program name together."""
+        device = verified_washer(DB_BODY)
+        assert device.get_attribute(DeviceAttributes.program) == "water_mixed_wash"
+        assert (
+            device.get_attribute(DeviceAttributes.parameter_controls_available) is True
+        )
+        assert device.get_attribute(DeviceAttributes.temperature_control) == "cold"
+        assert device.get_parameter_options(DeviceAttributes.spin_time_control) == [
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+        ]
+
+    def test_verified_set_attribute_dispatches_parameter_and_query(self) -> None:
+        """Route supported controls through the model helper and refresh real state."""
+        device = verified_washer(DB_BODY)
+        before = dict(device.attributes)
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.temperature_control, "20")
+        assert len(send.call_args_list) == 2
+        assert isinstance(send.call_args_list[0].args[0], MessageParameters)
+        assert isinstance(send.call_args_list[1].args[0], MessageQuery)
+        assert device.attributes == before
+
+    def test_verified_control_error_does_not_send(self) -> None:
+        """Validate a supported control before sending either command or query."""
+        device = verified_washer()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="standby"),
+        ):
+            device.set_attribute(DeviceAttributes.program_control, "cotton")
+        send.assert_not_called()
+
+    def test_verified_reservation_response_merges_device_and_control_state(
+        self,
+    ) -> None:
+        """Publish legacy cycle state and reservation controls from one response."""
+        device = verified_washer(DB_RESERVED)
+        assert device.get_attribute(DeviceAttributes.start) is True
+        assert device.get_attribute(DeviceAttributes.status) == "delay"
+        assert device.get_attribute(DeviceAttributes.time_remaining) == 138
+        assert device.get_attribute(DeviceAttributes.appointment) is True
+        assert (
+            device.get_attribute(DeviceAttributes.parameter_controls_available) is False
+        )
+        assert (
+            device.get_attribute(DeviceAttributes.appointment_controls_available)
+            is True
+        )

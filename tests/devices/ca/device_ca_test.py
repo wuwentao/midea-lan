@@ -7,6 +7,19 @@ from midealan.devices.ca import DeviceAttributes, MideaCADevice
 from midealan.devices.ca.message import MessageQuery
 from midealan.message import MessageType
 
+DIAGNOSTIC_FLAGS = (
+    (DeviceAttributes.code_mode, 1, 0x01),
+    (DeviceAttributes.freezing_mode, 1, 0x02),
+    (DeviceAttributes.smart_mode, 1, 0x04),
+    (DeviceAttributes.energy_saving_mode, 1, 0x08),
+    (DeviceAttributes.holiday_mode, 1, 0x10),
+    (DeviceAttributes.moisturize_mode, 1, 0x20),
+    (DeviceAttributes.preservation_mode, 1, 0x40),
+    (DeviceAttributes.acme_freezing_mode, 1, 0x80),
+    (DeviceAttributes.flood_light, 7, 0x10),
+    (DeviceAttributes.freezing_ice_machine_power, 8, 0x80),
+)
+
 
 def _build_message(message_type: MessageType, body: bytearray) -> bytes:
     """Build a full CA response message."""
@@ -56,6 +69,8 @@ class TestMideaCADevice:
 
     def test_initial_attributes(self) -> None:
         """Test initial attributes."""
+        for attribute, _, _ in DIAGNOSTIC_FLAGS:
+            assert self.device.attributes[attribute] is None
         assert self.device.attributes[DeviceAttributes.energy_consumption] is None
         assert self.device.attributes[DeviceAttributes.refrigerator_actual_temp] is None
         assert self.device.attributes[DeviceAttributes.freezer_actual_temp] is None
@@ -129,6 +144,78 @@ class TestMideaCADevice:
         self.device.process_message(_build_message(MessageType.query, body))
         assert self.device.attributes[DeviceAttributes.humidity] is None
         assert self.device.attributes[DeviceAttributes.variable_mode] is None
+
+    @pytest.mark.parametrize(("attribute", "offset", "mask"), DIAGNOSTIC_FLAGS)
+    def test_process_message_diagnostic_flag(
+        self,
+        attribute: DeviceAttributes,
+        offset: int,
+        mask: int,
+    ) -> None:
+        """Expose each flag independently, retaining parser booleans or raw masks."""
+        body = _general_body(25)
+        body[offset] = mask
+        new_status = self.device.process_message(
+            _build_message(MessageType.query, body),
+        )
+        for flag, _, _ in DIAGNOSTIC_FLAGS:
+            if flag in (
+                DeviceAttributes.flood_light,
+                DeviceAttributes.freezing_ice_machine_power,
+            ):
+                expected = mask if flag == attribute else 0
+                assert type(self.device.attributes[flag]) is int
+            else:
+                expected = flag == attribute
+                assert type(self.device.attributes[flag]) is bool
+            assert self.device.attributes[flag] == expected
+            assert new_status[flag.value] == expected
+
+        body[offset] = 0
+        new_status = self.device.process_message(
+            _build_message(MessageType.query, body),
+        )
+        assert not self.device.attributes[attribute]
+        assert not new_status[attribute.value]
+
+    def test_notify_preserves_unknown_and_known_diagnostic_flags(self) -> None:
+        """A door notification does not invent or overwrite general status flags."""
+        notification = _build_message(MessageType.notify1, bytearray([0x00, 0x17]))
+        new_status = self.device.process_message(notification)
+        for attribute, _, _ in DIAGNOSTIC_FLAGS:
+            assert self.device.attributes[attribute] is None
+            assert attribute.value not in new_status
+
+        body = _general_body(25)
+        body[1] = 0xFF
+        body[7] = 0x10
+        body[8] = 0x80
+        self.device.process_message(_build_message(MessageType.query, body))
+        known_values = {
+            attribute: self.device.attributes[attribute]
+            for attribute, _, _ in DIAGNOSTIC_FLAGS
+        }
+        new_status = self.device.process_message(notification)
+        for attribute, value in known_values.items():
+            assert self.device.attributes[attribute] == value
+            assert attribute.value not in new_status
+
+    @pytest.mark.parametrize(("attribute", "offset", "mask"), DIAGNOSTIC_FLAGS)
+    def test_diagnostic_flags_are_read_only(
+        self,
+        attribute: DeviceAttributes,
+        offset: int,
+        mask: int,
+    ) -> None:
+        """Setting a diagnostic attribute leaves its parsed value unchanged."""
+        body = _general_body(25)
+        body[offset] = mask
+        self.device.process_message(_build_message(MessageType.query, body))
+        previous = self.device.attributes[attribute]
+
+        self.device.set_attribute(attribute.value, False)
+
+        assert self.device.attributes[attribute] == previous
 
     def test_process_message_notify00(self) -> None:
         """Test process message with a notify00 body."""

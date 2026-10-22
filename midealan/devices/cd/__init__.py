@@ -1,4 +1,4 @@
-"""Midea local CD device."""
+"""Midea lan CD device."""
 
 import json
 import logging
@@ -26,6 +26,17 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# RSJ000CB reports some auxiliary sensors as half-degree raw bytes while
+# target/current/min/max stay direct. Lua only identifies the raw fields;
+# T5/T4 offsets come from midea_ac_lan#586, and T3 was added after
+# midea-lan#197 real-device review showed raw 66 maps plausibly to 18 C.
+OLD_PROTOCOL_TEMPERATURE_OFFSET = 30.0
+OLD_PROTOCOL_TEMPERATURE_DIVISOR = 2.0
+MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0  # T5U/body[5], T5L/body[6], T3/body[7]
+MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0  # T4/body[8]
+MIXED_SENSOR_TEMPERATURE_DIVISOR = 2.0
+MODE_NONE = 0x00
 
 
 class CDSubType(IntEnum):
@@ -133,8 +144,16 @@ class DeviceAttributes(StrEnum):
 class MideaCDDevice(MideaDevice):
     """Midea CD device."""
 
+    _new_protocol_models: ClassVar[frozenset[str]] = frozenset(
+        {"RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"},
+    )
+    _forced_temperature_models: ClassVar[frozenset[str]] = frozenset(
+        {"RSJRAC06", "RSJRAC07", "2530001N"},
+    )
+    _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
+
     _modes: ClassVar[dict[int, str]] = {
-        0x00: "none",
+        MODE_NONE: "none",
         0x01: "energy_save",
         0x02: "standard",
         0x03: "dual",
@@ -143,7 +162,7 @@ class MideaCDDevice(MideaDevice):
     }
     _vacation_mode_key: ClassVar[int] = 0x05
     _extended_modes: ClassVar[dict[int, str]] = {
-        0x00: "none",
+        MODE_NONE: "none",
         0x01: "economy",
         0x02: "hybrid",
         0x03: "e_heater",
@@ -268,12 +287,19 @@ class MideaCDDevice(MideaDevice):
         # fahrenheit to celsius
         if self._fahrenheit or force_fahrenheit:
             return self.fahrenheit_to_celsius(value, True if force_fahrenheit else None)
-        # celsius
-        # old protocol
+        # celsius old protocol
         if self._lua_protocol == LuaProtocol.old or force_old:
-            return round((value - 30.0) / 2)
+            return round(
+                (value - OLD_PROTOCOL_TEMPERATURE_OFFSET)
+                / OLD_PROTOCOL_TEMPERATURE_DIVISOR,
+            )
         # new protocol
         return value
+
+    @staticmethod
+    def _mixed_temperature_value(value: float, offset: float) -> float:
+        """Decode a half-degree sensor value with its field-specific offset."""
+        return (value - offset) / MIXED_SENSOR_TEMPERATURE_DIVISOR
 
     def _temperature_to_value(self, value: float) -> float:
         # celsius to fahrenheit
@@ -282,7 +308,10 @@ class MideaCDDevice(MideaDevice):
         # celsius
         # old protocol
         if self._lua_protocol == LuaProtocol.old:
-            return round(value * 2 + 30.0)
+            return round(
+                value * OLD_PROTOCOL_TEMPERATURE_DIVISOR
+                + OLD_PROTOCOL_TEMPERATURE_OFFSET,
+            )
         # new protocol
         return value
 
@@ -292,19 +321,13 @@ class MideaCDDevice(MideaDevice):
             return_value = LuaProtocol(value)
             # auto mode, use model to set value as old or new
             if return_value == LuaProtocol.auto:
-                # new protocol: models RSJRAC01, RSJRAC06, RSJRAC07
                 # old protocol: RSJ18RD2 (subtype 186), confirmed by
                 # real-device messages. Raw body[3]=148 decodes to 59C
                 # only with old protocol: (148-30)/2=59.
                 # subtype 186 was previously mapped to new protocol from
                 # an unverified RSJ000CB assumption; subtype alone cannot
                 # distinguish models with different protocol versions.
-                check_device = self.model in {
-                    "RSJ000CB",
-                    "RSJRAC01",
-                    "RSJRAC06",
-                    "RSJRAC07",
-                }
+                check_device = self.model in self._new_protocol_models
                 return_value = LuaProtocol.new if check_device else LuaProtocol.old
         if isinstance(value, bool | int):
             return_value = LuaProtocol.new if value else LuaProtocol.old
@@ -448,6 +471,29 @@ class MideaCDDevice(MideaDevice):
                     # Skip unknown values; the next device status notification
                     # will correct the mode.
                     continue
+                # MessageCDResponse keeps the 0xCD body bytes raw. RSJ000CB
+                # then applies empirical scaling only for validated sensors:
+                # T5U/body[5]/top, T5L/body[6]/bottom, and T3/body[7]/
+                # condenser use (raw-30)/2; T4/body[8]/outdoor uses
+                # (raw-50)/2. This intentionally differs from the Lua file,
+                # which has field names but no scaling formula. TP/body[9]/
+                # compressor stays on the generic path until matched C01/raw
+                # data confirms a separate RSJ000CB conversion.
+                if self.model in self._mixed_temperature_models and attr in [
+                    DeviceAttributes.top_temperature,
+                    DeviceAttributes.bottom_temperature,
+                    DeviceAttributes.condenser_temperature,
+                    DeviceAttributes.outdoor_temperature,
+                ]:
+                    offset = (
+                        MIXED_OUTDOOR_TEMPERATURE_OFFSET
+                        if attr == DeviceAttributes.outdoor_temperature
+                        else MIXED_SENSOR_TEMPERATURE_OFFSET
+                    )
+                    parsed = self._mixed_temperature_value(raw_value, offset)
+                    self._attributes[attr] = parsed
+                    new_status[str(attr)] = parsed
+                    continue
                 # process temperature family
                 if attr in [
                     DeviceAttributes.max_temperature,
@@ -463,10 +509,12 @@ class MideaCDDevice(MideaDevice):
                     parsed = self._value_to_temperature(
                         raw_value,
                         force_fahrenheit=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_outdoor_temp
+                            self.model in self._forced_temperature_models
+                            and is_outdoor_temp
                         ),
                         force_old=(
-                            self.model in ["RSJRAC06", "RSJRAC07"] and is_current_temp
+                            self.model in self._forced_temperature_models
+                            and is_current_temp
                         ),
                     )
                     # Defensive: ignore invalid zeros for min/max/target/current
@@ -682,7 +730,7 @@ class MideaCDDevice(MideaDevice):
             for timers in timer_groups
         )
 
-    def set_attribute(  # noqa: C901, PLR0911
+    def set_attribute(  # noqa: C901, PLR0911, PLR0915
         self,
         attr: str,
         value: bool | float | str | dict[Any, Any],
@@ -832,14 +880,14 @@ class MideaCDDevice(MideaDevice):
             # which is NOT a valid modeValue for the device.  We handle that
             # explicitly in the vacation branches below.
             if current_mode is None or current_mode == "none":
-                message.mode = 0x00
+                message.mode = MODE_NONE
             elif current_mode == "vacation":
                 # Do not send 0x05 as modeValue; the device does not support it.
                 # Fall back to 0x00 (no explicit operating mode).
-                message.mode = 0x00
+                message.mode = MODE_NONE
             else:
                 mode_key = self._mode_key(str(current_mode))
-                message.mode = mode_key if mode_key is not None else 0x00
+                message.mode = mode_key if mode_key is not None else MODE_NONE
 
             # Update based on attribute being set
             if attr == DeviceAttributes.mode:
@@ -860,6 +908,10 @@ class MideaCDDevice(MideaDevice):
                     )
                     return  # Don't send invalid mode
                 message.mode = mode_key
+                if mode_key != MODE_NONE:
+                    # Selecting an active operating mode also starts the
+                    # appliance. The cache is updated after a successful send.
+                    message.power = True
 
             elif attr == DeviceAttributes.power:
                 message.power = bool(value)
@@ -923,6 +975,12 @@ class MideaCDDevice(MideaDevice):
             # Avoid replaying SET-echo junk into the next control frame
             message.fields = dict(self._fields)
             self.build_send(message)
+            if attr == DeviceAttributes.mode:
+                self._attributes[DeviceAttributes.mode] = str(value)
+                if mode_key != MODE_NONE:
+                    # SET echoes have an untrusted power bit; retain the sent
+                    # state for an immediate follow-up full-frame write.
+                    self._attributes[DeviceAttributes.power] = True
 
     @staticmethod
     def _sanitize_set_fields(fields: dict[Any, Any]) -> dict[Any, Any]:

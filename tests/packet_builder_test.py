@@ -1,4 +1,4 @@
-"""Midea local packet builder test."""
+"""Midea lan packet builder test."""
 
 from midealan.packet_builder import PacketBuilder
 from midealan.security import LocalSecurity

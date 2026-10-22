@@ -1,1 +1,1 @@
-"""Midea local FB device tests."""
+"""Midea lan FB device tests."""

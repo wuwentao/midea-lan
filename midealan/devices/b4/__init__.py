@@ -1,4 +1,4 @@
-"""Midea local B4 device."""
+"""Midea lan B4 device."""
 
 import logging
 from enum import StrEnum
@@ -13,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class DeviceAttributes(StrEnum):
-    """Midea local B4 device attributes."""
+    """Midea lan B4 device attributes."""
 
     door = "door"
     status = "status"

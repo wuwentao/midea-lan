@@ -18,10 +18,34 @@ from midealan.devices.ed.message import (
     MessageQuery09,
     MessageQueryFF,
 )
-from midealan.exceptions import ValueWrongType
+from midealan.exceptions import SocketException, ValueWrongType
 from midealan.message import ListTypes
 
 TEST_AUTH_VALUE = "AA"
+
+CAPTURED_CUR_QUANTIFY_21_FRAME = bytes.fromhex(
+    "aa69ed00000000000004ff01030040088201030110000240010000001050563b00000011"
+    "5000c31e00001340730005002030000200236000000000001538a02c01f401e803000000"
+    "003a40000000003b105252100316503c180000003c5041400000000712230f120014",
+)
+
+CAPTURED_CUR_QUANTIFY_22_FRAME = bytes.fromhex(
+    "aa69ed00000000000004ff01030040088243010110000240010000001050563b00000011"
+    "5000c31e00001340740004002030000200236000000000001638a02c01f401e803000000"
+    "003a40000000003b105852100316503c180000003c5041400000000712220f1200ce",
+)
+
+CAPTURED_CUR_QUANTIFY_0_FRAME = bytes.fromhex(
+    "aa69ed00000000000003ff01030040088201030110000240030000001050543800000011"
+    "50a8840f00001340770004002030000200236000000000000038a02c01f401e803000000"
+    "003a40000000003b105652100316503c180000003c50414000000007122c0f1200c3",
+)
+
+CAPTURED_CUR_QUANTIFY_CASES = (
+    (CAPTURED_CUR_QUANTIFY_21_FRAME, 21),
+    (CAPTURED_CUR_QUANTIFY_22_FRAME, 22),
+    (CAPTURED_CUR_QUANTIFY_0_FRAME, 0),
+)
 
 
 class TestMideaEDDevice:
@@ -58,6 +82,15 @@ class TestMideaEDDevice:
         assert self.device.attributes[DeviceAttributes.life2] is None
         assert self.device.attributes[DeviceAttributes.life3] is None
         assert not self.device.attributes[DeviceAttributes.child_lock]
+        assert not self.device.attributes[DeviceAttributes.save_mode]
+        assert not self.device.attributes[DeviceAttributes.heat]
+        assert not self.device.attributes[DeviceAttributes.no_obsolete_water]
+        assert self.device.attributes[DeviceAttributes.v_version] is None
+        assert self.device.attributes[DeviceAttributes.cur_quantify] is None
+        assert self.device.attributes[DeviceAttributes.quantify_21] is None
+        assert (
+            self.device.attributes[DeviceAttributes.input_temperature_sensing] is None
+        )
 
     def test_process_message(self) -> None:
         """Test process message."""
@@ -129,16 +162,20 @@ class TestMideaEDDevice:
 
     def test_process_message_water_purifier_frame(self) -> None:
         """Test a captured water purifier frame updates its attributes."""
-        raw = bytes.fromhex(
-            "aa69ed00000000000004ff01030040088201030110000240010000001050563b0000001150"
-            "00c31e00001340730005002030000200236000000000001538a02c01f401e803000000003a"
-            "40000000003b105252100316503c180000003c5041400000000712230f120014",
-        )
+        raw = CAPTURED_CUR_QUANTIFY_21_FRAME
         new_status = self.device.process_message(raw)
         assert new_status[DeviceAttributes.water_kind.value] == 0
         assert new_status[DeviceAttributes.heat_start.value] == 2
         assert new_status[DeviceAttributes.ice_gall_status.value] == 0
         assert new_status[DeviceAttributes.hot_pot_temperature.value] == 82
+        assert new_status[DeviceAttributes.save_mode.value] is False
+        assert new_status[DeviceAttributes.heat.value] is True
+        assert new_status[DeviceAttributes.no_obsolete_water.value] is True
+        assert new_status[DeviceAttributes.v_version.value] == 1
+        assert new_status[DeviceAttributes.cur_quantify.value] == 21
+        assert new_status[DeviceAttributes.quantify_21.value] == 300
+        assert new_status[DeviceAttributes.quantify_23.value] == 1000
+        assert new_status[DeviceAttributes.input_temperature_sensing.value] == 35
         assert new_status[DeviceAttributes.maxlife1.value] == 60
         assert new_status[DeviceAttributes.maxlife2.value] == 24
         assert new_status[DeviceAttributes.antifreeze.value] is True
@@ -196,6 +233,256 @@ class TestMideaEDDevice:
 
             self.device.set_attribute(DeviceAttributes.child_lock, True)
             mock_build_send.assert_called()
+
+    def test_set_attribute_heat_uses_official_lua_command(self) -> None:
+        """Test the water purifier heat toggle uses the official Lua encoding."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.heat, True)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00],
+            )
+
+            self.device.set_attribute(DeviceAttributes.heat, False)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x00, 0x04, 0x00, 0x00, 0x00],
+            )
+
+        assert self.device.attributes[DeviceAttributes.heat] is False
+
+    def test_cur_quantify_without_report_does_not_send(self) -> None:
+        """Do not infer faucet gear capability from initialized attributes."""
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            patch("midealan.devices.ed._LOGGER") as mock_logger,
+        ):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 22)
+        mock_build_send.assert_not_called()
+        # A dropped write before the first report is logged for diagnosability.
+        mock_logger.debug.assert_called_once()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] is None
+
+    def test_set_attribute_cur_quantify_uses_official_lua_command(self) -> None:
+        """Test the faucet gear write uses the official Lua encoding."""
+        self.device.process_message(CAPTURED_CUR_QUANTIFY_21_FRAME)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 22)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x0D, 0x02, 0x16, 0x00, 0x00],
+            )
+
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 0)
+            message = mock_build_send.call_args.args[0]
+            assert message.body == bytearray(
+                [0x15, 0x01, 0x01, 0x0D, 0x02, 0x00, 0x00, 0x00],
+            )
+
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 21
+
+    @pytest.mark.parametrize("previous_value", [0, 21])
+    def test_set_attribute_cur_quantify_preserves_reported_state(
+        self,
+        previous_value: int | None,
+    ) -> None:
+        """A faucet gear request must not replace the last device report."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = previous_value
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 24)
+        mock_build_send.assert_called_once()
+        assert mock_build_send.call_args.args[0].body == bytearray(
+            [0x15, 0x01, 0x01, 0x0D, 0x02, 0x18, 0x00, 0x00],
+        )
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == previous_value
+
+    def test_cur_quantify_acknowledgement_preserves_reported_state(self) -> None:
+        """A synthetic acknowledgement without gear status is not confirmation."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = 21
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 24)
+        mock_build_send.assert_called_once()
+        acknowledgement = bytes.fromhex("aa0ded00000000000002150100ee")
+        status = self.device.process_message(acknowledgement)
+        assert DeviceAttributes.cur_quantify not in status
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 21
+
+    @pytest.mark.parametrize(
+        "exception_type",
+        [SocketException, TimeoutError, ConnectionResetError, OSError],
+    )
+    def test_cur_quantify_send_failure_preserves_reported_state(
+        self,
+        exception_type: type[Exception],
+    ) -> None:
+        """Propagate send failures without recording an unconfirmed gear."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = 21
+        with (
+            patch.object(
+                self.device,
+                "build_send",
+                side_effect=exception_type,
+            ) as mock_build_send,
+            pytest.raises(exception_type),
+        ):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 24)
+        mock_build_send.assert_called_once()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 21
+
+    @pytest.mark.parametrize(
+        ("raw_frame", "reported_value"),
+        CAPTURED_CUR_QUANTIFY_CASES,
+    )
+    def test_cur_quantify_uses_captured_report_after_request(
+        self,
+        raw_frame: bytes,
+        reported_value: int,
+    ) -> None:
+        """Captured status, not the preceding request, determines the gear."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = 21
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 24)
+        mock_build_send.assert_called_once()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 21
+        status = self.device.process_message(raw_frame)
+        assert status[DeviceAttributes.cur_quantify] == reported_value
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == reported_value
+
+    @pytest.mark.parametrize("value", [0, 21, 22, 23, 24, 25, 0.0, 21.0, 25.0])
+    def test_cur_quantify_valid_requests_preserve_reported_state(
+        self,
+        value: float,
+    ) -> None:
+        """All supported gear requests leave the reported state unchanged."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = 22
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, value)
+        mock_build_send.assert_called_once()
+        assert mock_build_send.call_args.args[0].body == bytearray(
+            [0x15, 0x01, 0x01, 0x0D, 0x02, int(value), 0x00, 0x00],
+        )
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 22
+
+    @pytest.mark.parametrize(
+        "value",
+        [True, False, "21", -1, 1, 5, 20, 26, 21.5, float("nan"), float("inf")],
+    )
+    def test_cur_quantify_invalid_requests_preserve_reported_state(
+        self,
+        value: bool | float | str,
+    ) -> None:
+        """Invalid requests neither send nor replace the last reported gear."""
+        self.device._attributes[DeviceAttributes.cur_quantify] = 22
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            pytest.raises((ValueWrongType, ValueError)),
+        ):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, value)
+        mock_build_send.assert_not_called()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 22
+
+    def test_set_attribute_cur_quantify_validates_values(self) -> None:
+        """Reject wrong-typed faucet gear values before sending."""
+        self.device.process_message(CAPTURED_CUR_QUANTIFY_21_FRAME)
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, True)
+        with pytest.raises(ValueWrongType):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, "0.5")
+        with pytest.raises(ValueError, match="whole number"):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 22.5)
+        with pytest.raises(ValueError, match="preset slot"):
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 5)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 21)
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 21.0)
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 0)
+            assert mock_build_send.call_count == 3
+
+    @pytest.mark.parametrize(
+        ("raw_frame", "reported_value"),
+        CAPTURED_CUR_QUANTIFY_CASES,
+    )
+    def test_cur_quantify_report_enables_writes(
+        self,
+        raw_frame: bytes,
+        reported_value: int,
+    ) -> None:
+        """A captured gear report enables writes, including a zero report."""
+        assert self.device.attributes[DeviceAttributes.cur_quantify] is None
+        status = self.device.process_message(raw_frame)
+        assert status[DeviceAttributes.cur_quantify] == reported_value
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 24)
+        mock_build_send.assert_called_once()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == reported_value
+
+    @pytest.mark.parametrize(
+        "raw_frame",
+        [
+            "aa0ded00000000000002150100ee",
+            "aa12ed00000000000003ff010023300000000000",
+        ],
+    )
+    def test_cur_quantify_missing_report_does_not_enable_writes(
+        self,
+        raw_frame: str,
+    ) -> None:
+        """A synthetic ACK or short quantify record cannot enable writes."""
+        status = self.device.process_message(bytes.fromhex(raw_frame))
+        assert DeviceAttributes.cur_quantify not in status
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 22)
+        mock_build_send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("632009EN", 0), ("63000622", 395), ("6360000A", 703)],
+    )
+    def test_cur_quantify_model_alone_does_not_enable_writes(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Neither a purifier identity nor another ED subtype grants writes."""
+        device = MideaEDDevice(
+            name="Unreported device",
+            device_id=2,
+            ip_address="192.0.2.1",
+            port=6444,
+            token=TEST_AUTH_VALUE,
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model=model,
+            subtype=subtype,
+            customize="",
+        )
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.cur_quantify, 0)
+        mock_build_send.assert_not_called()
+
+    def test_cur_quantify_report_survives_reconnect_reset(self) -> None:
+        """Reconnect retains a report in this instance without disk caching."""
+        self.device.process_message(CAPTURED_CUR_QUANTIFY_21_FRAME)
+        self.device.close_socket()
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.cur_quantify, 0)
+        mock_build_send.assert_called_once()
+        assert self.device.attributes[DeviceAttributes.cur_quantify] == 21
+
+    def test_set_attribute_water_purifier_group_data_is_read_only(self) -> None:
+        """Test read-only purifier group data never emits a set command."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            for attr in (
+                DeviceAttributes.save_mode,
+                DeviceAttributes.no_obsolete_water,
+                DeviceAttributes.smart_no_obsolete_water,
+                DeviceAttributes.v_version,
+                DeviceAttributes.quantify_1,
+                DeviceAttributes.quantify_21,
+                DeviceAttributes.input_temperature_sensing,
+            ):
+                self.device.set_attribute(attr, True)
+        mock_build_send.assert_not_called()
 
     def test_tea_bar_attributes_are_model_specific(self) -> None:
         """Expose tea bar status attributes only for the verified model."""
@@ -988,9 +1275,16 @@ class TestMideaEDDeviceSoftWater:
             )
 
     @pytest.mark.parametrize("value", ["False", "True", 5])
-    def test_set_attribute_wash_antifreeze_require_bool(self, value: str | int) -> None:
-        """Test a non-bool wash or antifreeze value raises and does not send."""
-        for attr in (DeviceAttributes.wash, DeviceAttributes.antifreeze):
+    def test_set_attribute_wash_antifreeze_heat_require_bool(
+        self,
+        value: str | int,
+    ) -> None:
+        """Test a non-bool wash, antifreeze or heat value raises and does not send."""
+        for attr in (
+            DeviceAttributes.wash,
+            DeviceAttributes.antifreeze,
+            DeviceAttributes.heat,
+        ):
             with (
                 patch.object(self.device, "build_send") as mock_build_send,
                 pytest.raises(ValueWrongType, match="Expected bool"),

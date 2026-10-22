@@ -1,4 +1,4 @@
-"""Midea local C2 message."""
+"""Midea lan C2 message."""
 
 from enum import IntEnum
 from typing import cast

@@ -1,4 +1,4 @@
-"""Midea local x26 device."""
+"""Midea lan x26 device."""
 
 import logging
 import math

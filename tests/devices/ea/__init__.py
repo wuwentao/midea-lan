@@ -1,1 +1,1 @@
-"""Midea local EA device tests."""
+"""Midea lan EA device tests."""

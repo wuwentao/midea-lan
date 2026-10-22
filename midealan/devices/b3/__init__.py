@@ -1,4 +1,4 @@
-"""Midea local B3 device."""
+"""Midea lan B3 device."""
 
 import logging
 from enum import StrEnum
@@ -13,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class DeviceAttributes(StrEnum):
-    """Midea local B3 device attributes."""
+    """Midea lan B3 device attributes."""
 
     top_compartment_status = "top_compartment_status"
     top_compartment_mode = "top_compartment_mode"
@@ -40,7 +40,7 @@ class DeviceAttributes(StrEnum):
 
 
 class MideaB3Device(MideaDevice):
-    """Midea local B3 device."""
+    """Midea lan B3 device."""
 
     _status: ClassVar[dict[int, str]] = {
         0x00: "off",
@@ -56,7 +56,7 @@ class MideaB3Device(MideaDevice):
         customize: str,  # noqa: ARG002
         **kwargs: Unpack[MideaDeviceInitKwargs],
     ) -> None:
-        """Initialize Midea local B3 device."""
+        """Initialize Midea lan B3 device."""
         super().__init__(
             device_type=DeviceType.B3,
             **kwargs,
@@ -87,11 +87,11 @@ class MideaB3Device(MideaDevice):
         )
 
     def build_query(self) -> list[MessageQuery]:
-        """Midea local B3 device build query."""
+        """Midea lan B3 device build query."""
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
-        """Midea local B3 process message."""
+        """Midea lan B3 process message."""
         message = MessageB3Response(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -113,8 +113,8 @@ class MideaB3Device(MideaDevice):
         return new_status
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
-        """Midea local B3 device set attribute."""
+        """Midea lan B3 device set attribute."""
 
 
 class MideaAppliance(MideaB3Device):
-    """Midea local B3 appliance."""
+    """Midea lan B3 appliance."""

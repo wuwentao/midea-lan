@@ -1,1 +1,1 @@
-"""Midea local BF device tests."""
+"""Midea lan BF device tests."""

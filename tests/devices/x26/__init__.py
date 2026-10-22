@@ -1,1 +1,1 @@
-"""Midea local x26 device tests."""
+"""Midea lan x26 device tests."""

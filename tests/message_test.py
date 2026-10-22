@@ -1,4 +1,4 @@
-"""Midea local message test."""
+"""Midea lan message test."""
 
 import pytest
 

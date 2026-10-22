@@ -1,4 +1,4 @@
-"""Midea local FA device."""
+"""Midea lan FA device."""
 
 import json
 import logging

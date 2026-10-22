@@ -1,4 +1,4 @@
-"""Midea local B8 message."""
+"""Midea lan B8 message."""
 
 from enum import IntEnum
 

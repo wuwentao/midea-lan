@@ -1,4 +1,4 @@
-"""Midea local CD message."""
+"""Midea lan CD message."""
 
 from typing import Any, NotRequired, TypedDict
 
@@ -610,15 +610,20 @@ class CDGeneralMessageBody(MessageBody):
         self.target_temperature = float(body[3])
         # washBoxTemp
         self.current_temperature = float(body[4])
-        # boxTopTemp
+        # 0xCD Lua mapping for RSJ000CB
+        # (midea-lua/lua/0xCD/T_0000_CD_RSJ000CB_8.lua) exposes these as
+        # raw bytes with int2String(), not scaled temperatures. Keep protocol
+        # parsing raw here; model-specific empirical scaling from
+        # midea_ac_lan#586 and midea-lan#197 belongs in the CD device class.
+        # body[5]: boxTopTemp / T5U / upper tank -> HA top_temperature.
         self.top_temperature = float(body[5])
-        # boxBottomTemp
+        # body[6]: boxBottomTemp / T5L / lower tank -> HA bottom_temperature.
         self.bottom_temperature = float(body[6])
-        # t3Value
+        # body[7]: t3Value / T3 / evaporator -> HA condenser_temperature.
         self.condenser_temperature = float(body[7])
-        # t4Value
+        # body[8]: t4Value / T4 / ambient -> HA outdoor_temperature.
         self.outdoor_temperature = float(body[8])
-        # compressorTopTemp
+        # body[9]: compressorTopTemp / TP -> HA compressor_temperature.
         self.compressor_temperature = float(body[9])
         # tsMaxValue
         self.max_temperature = float(body[10])
@@ -739,7 +744,9 @@ class CDGeneralMessageBody(MessageBody):
         self.multi_terminal = (
             ((body[35] & 0x04) > 0) if len(body) > NEW_BODY_LENGTH else False
         )
-        # fahrenheitEffect - bit 7 of messageBytes[35] (body[35])
+        # fahrenheitEffect - bit 7 of messageBytes[35] (body[35]). This is a
+        # display-unit flag for the generic conversion path; RSJ000CB validated
+        # mixed sensors are decoded later without using this flag.
         self.fahrenheit = (
             ((body[35] & 0x80) > 0) if len(body) > NEW_BODY_LENGTH else False
         )

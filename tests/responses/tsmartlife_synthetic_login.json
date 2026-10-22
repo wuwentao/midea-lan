@@ -1,0 +1,11 @@
+{
+  "code": 0,
+  "data": {
+    "randomData": "278d821c901868a6e6623f6912bf7c5c59c25aabb48ef24e1bfc8646f6ef7600",
+    "uid": "synthetic_test_uid_0000000000000",
+    "mdata": {
+      "accessToken": "synthetic_test_bearer_token"
+    },
+    "accessToken": "3e63deb539885e5f8bbfbdaad77660110a155aea897391332ae0682c02dfe446"
+  }
+}

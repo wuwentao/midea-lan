@@ -1,4 +1,4 @@
-"""Midea local devices."""
+"""Midea lan devices."""
 
 from importlib import import_module
 from typing import cast
@@ -21,6 +21,9 @@ def device_selector(
     customize: str,
     mac: str | None = None,
     serial_number: str | None = None,
+    sn8: str | None = None,
+    manufacturer_code: str | None = None,
+    cloud_name: str | None = None,
 ) -> MideaDevice:
     """Select and load device."""
     try:
@@ -42,6 +45,9 @@ def device_selector(
             customize=customize,
             mac=mac,
             serial_number=serial_number,
+            sn8=sn8,
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
         )
     except ModuleNotFoundError:
         device = None

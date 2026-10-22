@@ -55,8 +55,18 @@ user-facing harnesses.
 - **Adding/extending a device type**: create `devices/<hextype>/` matching the
   `device_selector` naming rule above. The device class extends `MideaDevice` and must be
   re-exported as `MideaAppliance` (see the `class MideaAppliance(MideaA1Device)` alias at
-  the bottom of each `__init__.py`). Implement `build_query`, `process_message`,
-  `make_message_set`, and `set_attribute`.
+  the bottom of each `__init__.py`). Implement `build_query`, `process_message`, and
+  `set_attribute`. Many devices add a `make_message_set` helper that `set_attribute` calls
+  to assemble the outgoing frame, but it is a per-device convenience, not a required
+  override — newer devices (e.g. `x9b`, `x9c`) build the set message inline in
+  `set_attribute` instead. For a full, step-by-step walkthrough see
+  [`docs/adding-a-new-device.md`](docs/adding-a-new-device.md) (and its `.zh-Hans.md`
+  translation), which uses `0xD9` ([PR #175](https://github.com/wuwentao/midea-lan/pull/175))
+  as its running example and `0x9B`
+  ([PR #181](https://github.com/wuwentao/midea-lan/pull/181)) as a second worked example
+  for richer devices (decoder-derived attribute enum, write-only/synthetic attributes,
+  sub-command framing, range-checked numeric params, structured multi-step commands,
+  V1/V2 superset decoding).
 - **Attributes** are declared as a `DeviceAttributes(StrEnum)` per device and exposed
   through the `device.attributes` dict; state is never accessed by raw key elsewhere.
 - **No magic numbers**: protocol offsets, lengths, and flag values are named module-level

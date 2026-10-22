@@ -1,4 +1,4 @@
-"""Midea local B4 message."""
+"""Midea lan B4 message."""
 
 from midealan.const import MAX_BYTE_VALUE, DeviceType
 from midealan.message import (

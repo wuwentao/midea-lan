@@ -1,4 +1,4 @@
-"""Midea local device."""
+"""Midea lan device."""
 
 import logging
 import socket
@@ -36,6 +36,19 @@ SOCKET_TIMEOUT = 10  # socket connection default timeout
 QUERY_TIMEOUT = (
     5  # default is 1s, 0xAC have more queries, set to 2s, latest: increase to 5s
 )
+PERIODIC_QUERY_DELAY = 0.1
+# A single timeout during the checked protocol probe blacklists the command for
+# the whole connection, even when the device was merely slow or not yet ready
+# rather than genuinely unsupported. Give every probe reply one more chance
+# before recording it in _unsupported_protocol.
+QUERY_PROBE_RETRIES = 2
+# Upper bound for the reconnect backoff. The exponential ramp keeps a device
+# that is really gone (powered off, unplugged, no longer on the LAN) from being
+# probed in a tight loop, but the ceiling also applies to the outage this loop
+# is entered for when the appliance is reachable and only missed the protocol
+# probe (issue #658). A recovered device must not have to wait for a ten-minute
+# backoff -- users reloaded the integration by hand instead.
+MAX_RECONNECT_SLEEP = 60
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -88,6 +101,9 @@ class MideaDeviceInitKwargs(TypedDict):
     subtype: int
     mac: NotRequired[str | None]
     serial_number: NotRequired[str | None]
+    sn8: NotRequired[str | None]
+    manufacturer_code: NotRequired[str | None]
+    cloud_name: NotRequired[str | None]
 
 
 class MideaDevice(threading.Thread):
@@ -123,6 +139,7 @@ class MideaDevice(threading.Thread):
         self._is_run: bool = False
         self._available = False
         self._appliance_query = True
+        self._probe_answered = False
         self._refresh_interval = 30
         self._heartbeat_interval = SOCKET_TIMEOUT
         self._default_refresh_interval = 30
@@ -134,6 +151,26 @@ class MideaDevice(threading.Thread):
         # empty ``apc_sn`` attribute; normalize these to None (mirrors set_mac).
         sn = kwargs.get("serial_number")
         self._serial_number = (sn.strip("\x00").strip() or None) if sn else None
+        # sn8 and manufacturer_code come from the cloud at setup time; the cloud
+        # defaults them to "00000000"/"0000" when absent. Normalize those
+        # placeholders (and blanks) to None so the debug log and consumers can
+        # distinguish "unknown" from a real value.
+        sn8 = kwargs.get("sn8")
+        self._sn8 = (
+            (sn8.strip("\x00").strip() or None)
+            if sn8 and sn8.strip("\x00").strip() != "00000000"
+            else None
+        )
+        manufacturer_code = kwargs.get("manufacturer_code")
+        self._manufacturer_code = (
+            (manufacturer_code.strip("\x00").strip() or None)
+            if manufacturer_code and manufacturer_code.strip("\x00").strip() != "0000"
+            else None
+        )
+        # cloud_name records which Midea cloud account/service the user used to
+        # add the device at setup time (it is not part of the device payload).
+        cloud_name = kwargs.get("cloud_name")
+        self._cloud_name = (cloud_name.strip() or None) if cloud_name else None
 
     _fahrenheit_default: ClassVar[bool] = False
 
@@ -218,6 +255,21 @@ class MideaDevice(threading.Thread):
     def serial_number(self) -> str | None:
         """Device serial number."""
         return self._serial_number
+
+    @property
+    def sn8(self) -> str | None:
+        """Device SN8 (8-char model identifier from the cloud)."""
+        return self._sn8
+
+    @property
+    def manufacturer_code(self) -> str | None:
+        """Device manufacturer (enterprise) code from the cloud."""
+        return self._manufacturer_code
+
+    @property
+    def cloud_name(self) -> str | None:
+        """Cloud account/service the device was added with."""
+        return self._cloud_name
 
     @staticmethod
     def fetch_v2_message(msg: bytes) -> tuple[list, bytes]:
@@ -421,6 +473,81 @@ class MideaDevice(threading.Thread):
         # recovery SOCKET_TIMEOUT after recv msg
         self._socket.settimeout(SOCKET_TIMEOUT)
 
+    def _probe_query_reply(
+        self,
+        cmd: MessageRequest,
+        real_cmds: list,
+    ) -> tuple[int, bool]:
+        """Wait for a checked-pass probe reply, retrying once when it times out.
+
+        A single timeout is not proof that the protocol is unsupported before
+        the device has answered in this checked pass: a not-yet-ready device
+        can miss the first reply window (issue #658), so probe replies get one
+        more chance until the first successful reply proves the appliance is
+        ready. Only reply waits that time out count as proof. A retry *send*
+        that times out is a transport failure and is deliberately left to
+        propagate to connection recovery, exactly like the initial send, which
+        sits outside the checked-pass try. The decoder buffer is dropped before
+        the resend so a partial frame left behind by the timed-out attempt
+        cannot be prepended to the retry reply and make decode_8370 lose it.
+
+        Returns the number of failures the caller must add to its error count
+        and whether the command ended with repeated timeouts. The latter keeps
+        a parse failure or an invalid response from selecting a different
+        protocol family.
+        """
+        attempt = 1
+        max_attempts = 1 if self._probe_answered else QUERY_PROBE_RETRIES
+        while True:
+            try:
+                self._await_query_reply()
+            except TimeoutError:
+                if attempt < max_attempts:
+                    _LOGGER.debug(
+                        "[%s] Probe for %s timed out (%s/%s), retrying",
+                        self._device_id,
+                        cmd.__class__.__name__,
+                        attempt,
+                        max_attempts,
+                    )
+                    attempt += 1
+                    self._buffer = b""
+                    self.build_send(cmd, query=True)
+                    continue
+                # The reply timed out on every attempt: only now is the
+                # command recorded as unsupported, unless the device-specific
+                # hook wants to retry it after a cooldown.
+                self._buffer = b""
+                if self._should_defer_query(cmd):
+                    self._defer_query(cmd)
+                else:
+                    self._unsupported_protocol.append(cmd.__class__.__name__)
+                _LOGGER.debug(
+                    "[%s] Does not supports the protocol %s, cmd %s, ignored",
+                    self._device_id,
+                    cmd.__class__.__name__,
+                    cmd,
+                )
+                return 1 if cmd in real_cmds else 0, True
+            except ResponseException:
+                # parse msg error
+                _LOGGER.debug(
+                    "[%s] refresh_status ResponseException %s, cmd %s",
+                    self._device_id,
+                    cmd.__class__.__name__,
+                    cmd,
+                )
+                return 1 if cmd in real_cmds else 0, False
+            self._probe_answered = True
+            if not self._is_query_response_valid(cmd):
+                _LOGGER.debug(
+                    "[%s] Invalid response family for %s",
+                    self._device_id,
+                    cmd.__class__.__name__,
+                )
+                return 1 if cmd in real_cmds else 0, False
+            return 0, False
+
     def _advance_query_stage(
         self,
         cmds: list,
@@ -473,6 +600,28 @@ class MideaDevice(threading.Thread):
             return real_cmds, True, True
         return real_cmds, status_appended, False
 
+    def _use_query_fallback(self, cmds: list, queued: set[str]) -> list:
+        """Append the alternative query family to ``cmds`` and return it.
+
+        Called from refresh_status() once every query of the primary family has
+        timed out and before the device is declared unsupported. The fallback
+        commands are appended and recorded in ``queued`` like any other stage,
+        so an alternative family that is offered twice -- a subclass that
+        cannot tell whether the device speaks it yet -- is still only sent
+        once per connection. Returns the appended commands, empty when the
+        device has no alternative family, in which case the caller keeps the
+        primary result and raises NoSupportedProtocol as before.
+        """
+        fallback = [
+            cmd
+            for cmd in self.build_query_fallback()
+            if cmd.__class__.__name__ not in queued
+        ]
+        for cmd in fallback:
+            queued.add(cmd.__class__.__name__)
+            cmds.append(cmd)
+        return fallback
+
     def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status.
 
@@ -491,6 +640,9 @@ class MideaDevice(threading.Thread):
         real_cmds: list = []
         status_appended = False
         error_count = 0
+        timeout_count = 0
+        if check_protocol:
+            self._probe_answered = False
         # Names already queued this refresh, so a stage command left armed after
         # a timeout (recorded in _unsupported_protocol) is not queued again.
         queued: set[str] = set()
@@ -538,39 +690,27 @@ class MideaDevice(threading.Thread):
         # Index-based so the next stage, built only once the current reply is
         # parsed, can be appended and validated within this same checked pass.
         index = 0
+        # Set once the alternative family has been probed, so a device that
+        # answers neither family fails out to the reconnect path instead of
+        # being re-probed for the rest of the connection.
+        fallback_probed = False
         while index < len(cmds):
             cmd = cmds[index]
             index += 1
+            query_sent = False
             if cmd.__class__.__name__ not in self._unsupported_protocol:
                 # set socket QUERY_TIMEOUT for query msg
                 # build_send exception should be catch by connect/run
                 self.build_send(cmd, query=True)
+                query_sent = True
                 # init check_protocol, skip timeout exception
                 if check_protocol:
-                    try:
-                        self._await_query_reply()
-                    # only catch TimoutError for check_protocol
+                    # only catch TimeoutError for check_protocol
                     # unexpected exception in recv/settimeout, catch by main loop
-                    except TimeoutError:
-                        if cmd in real_cmds:
-                            error_count += 1
-                        self._unsupported_protocol.append(cmd.__class__.__name__)
-                        _LOGGER.debug(
-                            "[%s] Does not supports the protocol %s, cmd %s, ignored",
-                            self._device_id,
-                            cmd.__class__.__name__,
-                            cmd,
-                        )
-                    except ResponseException:
-                        # parse msg error
-                        if cmd in real_cmds:
-                            error_count += 1
-                        _LOGGER.debug(
-                            "[%s] refresh_status ResponseException %s, cmd %s",
-                            self._device_id,
-                            cmd.__class__.__name__,
-                            cmd,
-                        )
+                    error, repeated_timeout = self._probe_query_reply(cmd, real_cmds)
+                    error_count += error
+                    if repeated_timeout and cmd in real_cmds:
+                        timeout_count += 1
                     # The reply (or its absence) may resolve the state the next
                     # stage depends on -- the appliance reply enables the
                     # capability probes, a capability reply the status queries.
@@ -600,6 +740,8 @@ class MideaDevice(threading.Thread):
                         real_cmds,
                         status_appended,
                     )
+            if not check_protocol and query_sent and index < len(cmds):
+                time.sleep(self.periodic_query_delay())
             # All the REAL status queries failed. The appliance query is excluded: it
             # answers even when the device serves no status protocol, so counting it
             # left error_count one short of len(cmds) and the failure was masked --
@@ -607,6 +749,33 @@ class MideaDevice(threading.Thread):
             # `real_cmds and` keeps the check vacuously false for a device whose
             # build_query() is empty, which would otherwise raise on 0 == 0.
             if real_cmds and error_count == len(real_cmds):
+                if (
+                    check_protocol
+                    and not fallback_probed
+                    and timeout_count == len(real_cmds)
+                ):
+                    # Every query of the primary family is silent, which is not
+                    # proof that the appliance serves no status protocol: it
+                    # may answer a different family (see
+                    # build_query_fallback()). Probe that family before giving
+                    # up. This runs inside the same checked pass, so a device
+                    # that was merely unreachable answers neither family,
+                    # nothing switches and the primary family is probed again
+                    # on the next connect.
+                    fallback_probed = True
+                    fallback_cmds = self._use_query_fallback(cmds, queued)
+                    if fallback_cmds:
+                        _LOGGER.debug(
+                            "[%s] no reply to %s, probing the alternative "
+                            "query family %s",
+                            self._device_id,
+                            real_cmds,
+                            fallback_cmds,
+                        )
+                        real_cmds = fallback_cmds
+                        error_count = 0
+                        timeout_count = 0
+                        continue
                 _LOGGER.warning(
                     "[%s] all the query cmds failed %s, please report bug",
                     self._device_id,
@@ -633,10 +802,14 @@ class MideaDevice(threading.Thread):
             _LOGGER.debug("[%s] Appliance query Received: %s", self._device_id, message)
             self._message_protocol_version = message.protocol_version
             _LOGGER.debug(
-                "[%s] device model %s subtype %s, device protocol %s, msg protocol %s",
+                "[%s] device model %s subtype %s sn8 %s manufacturer_code %s "
+                "cloud_name %s, device protocol %s, msg protocol %s",
                 self._device_id,
                 self._model,
                 self._subtype,
+                self._sn8,
+                self._manufacturer_code,
+                self._cloud_name,
                 self._device_protocol_version,
                 self._message_protocol_version,
             )
@@ -733,6 +906,37 @@ class MideaDevice(threading.Thread):
         """Build query."""
         raise NotImplementedError
 
+    def periodic_query_delay(self) -> float:
+        """Return the delay between periodic query sends."""
+        return PERIODIC_QUERY_DELAY
+
+    def _is_query_response_valid(self, _cmd: MessageRequest) -> bool:
+        """Return whether the received response belongs to the queried family."""
+        return True
+
+    def _should_defer_query(self, _cmd: MessageRequest) -> bool:
+        """Return whether a timed-out query should be retried later."""
+        return False
+
+    def _defer_query(self, _cmd: MessageRequest) -> None:
+        """Record a device-specific deferred query after a repeated timeout."""
+
+    def build_query_fallback(self) -> list:
+        """Build an alternative query family to probe before giving up.
+
+        refresh_status() sends build_query() first. An appliance that answers
+        the appliance query and then none of those status queries may simply
+        serve a different status family -- the AC BB subprotocol devices are
+        one example (issue wuwentao/midea_ac_lan#658, model 223J6397/subtype 1
+        answers every BB subprotocol query and times out on all B5 and 0x41
+        queries). Before declaring the protocol unsupported, refresh_status()
+        probes this list once per connection, so such a device is detected
+        instead of being left unavailable until the integration is reloaded.
+        The base class has no alternative family, which keeps the previous
+        behaviour for every other device.
+        """
+        return []
+
     def build_init_query(self) -> list:
         """Build one-time queries to run once at connect time.
 
@@ -742,14 +946,14 @@ class MideaDevice(threading.Thread):
         appliance query is unsupported, probes still run with the default
         protocol version 0. Their own replies are then processed before the
         status queries are built, so a status query can react to the result
-        (e.g. the AC B5 capability probes decoded here). A device only needs to
-        send these once (their reply never changes); the subclass clears its own
+        (e.g. the AC B5 capability probes decoded here). A device normally sends
+        these once (their reply never changes); the subclass clears its own
         arming flags when the reply is parsed, and any query that times out is
-        recorded in _unsupported_protocol and skipped from then on. The subclass
-        may return a follow-up query only after an earlier init reply is parsed
-        (e.g. the AC additional-capability probe); refresh_status() keeps
-        offering build_init_query() until it is exhausted. The base class has
-        none.
+        either recorded in _unsupported_protocol or deferred by the subclass.
+        The subclass may return a follow-up query only after an earlier init
+        reply is parsed (e.g. the AC additional-capability probe);
+        refresh_status() keeps offering build_init_query() until it is
+        exhausted. The base class has none.
         """
         return []
 
@@ -880,6 +1084,14 @@ class MideaDevice(threading.Thread):
                     # Avoid clearing a socket installed by a concurrent reconnect.
                     if self._socket is sock:
                         self._socket = None
+                        # Publish the loss before reconnecting can make the device
+                        # available again. A stale socket must not affect it. The
+                        # publish stays under the lock so a concurrent reconnect
+                        # cannot interleave a later available=True we then clobber.
+                        # Guard on _available so one failed reconnect cycle does not
+                        # emit duplicate unavailable notifications.
+                        if self._is_run and self._available:
+                            self.set_available(False)
 
     def set_ip_address(self, ip_address: str) -> None:
         """Set IP address."""
@@ -917,8 +1129,13 @@ class MideaDevice(threading.Thread):
             # I/O once teardown is in progress.
             if self._should_run() and self.connect(check_protocol=True) is False:
                 connection_retries += 1
-                # Sleep time with exponential backoff, maximum 600 seconds
-                sleep_time = min(5 * (2 ** (connection_retries - 1)), 600)
+                # Sleep time with exponential backoff, capped by
+                # MAX_RECONNECT_SLEEP so an appliance that comes back is retried
+                # long before the old ten-minute ceiling.
+                sleep_time = min(
+                    5 * (2 ** (connection_retries - 1)),
+                    MAX_RECONNECT_SLEEP,
+                )
                 _LOGGER.warning(
                     "[%s] Unable to connect, sleep %s seconds and retry",
                     self._device_id,

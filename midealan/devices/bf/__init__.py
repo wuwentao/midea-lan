@@ -17,6 +17,9 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+FAST_POLL_MODEL = "700006B9"
+FAST_POLL_SUBTYPE = 5
+FAST_REFRESH_MAX_INTERVAL = 1
 
 
 class DeviceAttributes(StrEnum):
@@ -184,6 +187,14 @@ class MideaBFDevice(MideaDevice):
                 self._attributes[status] = value
                 new_status[str(status)] = value
         return new_status
+
+    def _uses_deadline_polling(self) -> bool:
+        """Enable fast receive wakeups only for the verified oven and interval."""
+        return (
+            self.model == FAST_POLL_MODEL
+            and self.subtype == FAST_POLL_SUBTYPE
+            and 0 < self._refresh_interval <= FAST_REFRESH_MAX_INTERVAL
+        )
 
     def make_message_set(self) -> MessageSet:
         """Create a MessageSet pre-populated with current work-mode attributes.

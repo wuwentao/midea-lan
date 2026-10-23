@@ -5,11 +5,17 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.message import MessageRequest, ToshibaFrame
 
 from .message import MessageEAResponse, MessageQuery
 
 _LOGGER = logging.getLogger(__name__)
+TOSHIBA_BASE_STATUS_LENGTH = 25
+TOSHIBA_STATUS_COOKING = 0x0A
+TOSHIBA_STATUS_KEEP_WARM = 0x07
+TOSHIBA_BASE_FRAME_TYPES = frozenset((0x0003, 0x8003, 0x0004))
+MINUTES_PER_HOUR = 60
 
 
 class DeviceAttributes(StrEnum):
@@ -25,8 +31,24 @@ class DeviceAttributes(StrEnum):
     progress = "progress"
 
 
-class MideaEADevice(MideaDevice):
+class MideaEADevice(ToshibaDevice):
     """Midea EA device."""
+
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        TOSHIBA_BASE_FRAME_TYPES,
+    )
+
+    _toshiba_progress: ClassVar[dict[int, str]] = {
+        0x01: "stop",
+        0x02: "error",
+        0x03: "reserved",
+        0x04: "soak",
+        0x05: "rice_cooking",
+        0x06: "steam",
+        0x07: "keep_warm",
+        0x08: "heat_cleaning",
+        0x0A: "cooking",
+    }
 
     _mode_list: ClassVar[list[str]] = (
         [
@@ -154,12 +176,17 @@ class MideaEADevice(MideaDevice):
             },
         )
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea EA device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea EA device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageEAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -181,8 +208,35 @@ class MideaEADevice(MideaDevice):
                 new_status[str(status)] = self._attributes[status]
         return new_status
 
+    @staticmethod
+    def _bcd(value: int) -> int:
+        """Decode the packed-decimal time fields used by Toshiba rice cookers."""
+        return value - (value // 0x10) * 6
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode the common Toshiba rice-cooker status generations."""
+        body = frame.body
+        if len(body) < TOSHIBA_BASE_STATUS_LENGTH or body[0] != 0x00:
+            return None
+        cooking_state = body[23]
+        course = body[16]
+        progress = self._toshiba_progress.get(cooking_state, "stop")
+        hours = self._bcd(body[22])
+        minutes = self._bcd(body[21])
+        values: dict[DeviceAttributes, Any] = {
+            DeviceAttributes.cooking: cooking_state == TOSHIBA_STATUS_COOKING,
+            DeviceAttributes.keep_warm: cooking_state == TOSHIBA_STATUS_KEEP_WARM,
+            DeviceAttributes.mode: course,
+            DeviceAttributes.time_remaining: hours * MINUTES_PER_HOUR + minutes,
+            DeviceAttributes.progress: progress,
+        }
+        self._attributes.update(values)
+        return {str(attr): value for attr, value in values.items()}
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea EA device set attribute."""
+        del attr, value
+        self.reject_toshiba_write()
 
 
 class MideaAppliance(MideaEADevice):

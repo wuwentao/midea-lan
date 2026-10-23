@@ -2,10 +2,10 @@
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices.ea import DeviceAttributes, MideaEADevice
 from midealan.devices.ea.message import MessageQuery
-from midealan.message import MessageType
+from midealan.message import MessageType, ToshibaMessageRequest, encode_toshiba_frame
 
 PROTOCOL_NONE = 0x00
 
@@ -47,6 +47,66 @@ class TestMideaEADevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_toshiba_query_and_status_generations(self) -> None:
+        """Decode a v4+ Toshiba rice-cooker status with 16-bit frame type."""
+        device = MideaEADevice(
+            name="Toshiba EA",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        query = device.build_query()[0]
+        assert isinstance(query, ToshibaMessageRequest)
+        assert query.serialize() == bytes.fromhex(
+            "55aacc330f0001ea0000000000000300003845",
+        )
+        body = bytearray(25)
+        body[16] = 2
+        body[21] = 0x30
+        body[22] = 0x01
+        body[23] = 0x0A
+        response = bytes.fromhex(
+            "55aacc33270001ea0000000000000380"
+            "00000000000000000000000000000000020000000030010a002522",
+        )
+        assert response[14:16] == bytes.fromhex("0380")
+        status = device.process_message(response)
+        assert status[DeviceAttributes.cooking] is True
+        assert status[DeviceAttributes.keep_warm] is False
+        assert status[DeviceAttributes.mode] == 2
+        assert status[DeviceAttributes.time_remaining] == 90
+        assert status[DeviceAttributes.progress] == "cooking"
+
+        body[23] = 0x07
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.EA, 0x0004, body)),
+        )
+        assert status[DeviceAttributes.cooking] is False
+        assert status[DeviceAttributes.keep_warm] is True
+        assert status[DeviceAttributes.progress] == "keep_warm"
+
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.EA, 0x8002, body)),
+            )
+            == {}
+        )
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.EA, MessageType.query, b"\x00")),
+            )
+            == {}
+        )
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.set_attribute(attr=DeviceAttributes.mode, value=1)
 
     def test_set_attribute_noop(self) -> None:
         """Test set attribute is a no-op for this device."""

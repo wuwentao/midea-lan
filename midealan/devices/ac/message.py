@@ -305,6 +305,7 @@ MODEL_220F4047_OPERATING_SNAPSHOT_LENGTH = 4
 OPERATING_RESPONSE_PREFIX_LENGTH = 2
 OPERATING_RESPONSE_HEADER_LENGTH = 4
 OPERATING_RESPONSE_TRAILER_LENGTH = 2
+PERSON_AIRFLOW_TOWARD_ON_VALUE = 0x01
 
 
 class CapabilityTag(IntEnum):
@@ -1784,6 +1785,7 @@ class PropertiesBody(NewProtocolMessageBody):
             <= MODEL_220F4047_MAX_TARGET_TEMPERATURE
         ):
             self.target_temperature = target_temperature
+            self.has_core_target_temperature = True
         fan_speed = power_data[3]
         if 0 <= fan_speed <= MODEL_220F4047_MAX_FAN_SPEED:
             self.fan_speed = fan_speed
@@ -1810,6 +1812,7 @@ class PropertiesBody(NewProtocolMessageBody):
                 <= MODEL_220F4047_MAX_TARGET_TEMPERATURE
             ):
                 self.target_temperature = target_temperature
+                self.has_core_target_temperature = True
         if fan_data := params.get(MODEL_220F4047_FAN_SPEED_TAG):
             fan_speed = fan_data[0]
             if 0 <= fan_speed <= MODEL_220F4047_MAX_FAN_SPEED:
@@ -1860,7 +1863,7 @@ class PropertiesBody(NewProtocolMessageBody):
             if person_params is None:
                 return
             if data := person_params.get(CapabilityTag.wind_straight):
-                self.wind_straight = data[0] == 1
+                self.wind_straight = data[0] == PERSON_AIRFLOW_TOWARD_ON_VALUE
             if data := person_params.get(CapabilityTag.wind_avoid):
                 self.wind_avoid = data[0] > 0
 
@@ -1875,12 +1878,6 @@ class PropertiesBody(NewProtocolMessageBody):
         super().__init__(body)
 
         params = self.parse()
-        self._parse_model_properties(
-            body,
-            params,
-            supports_220f4047_operating=supports_220f4047_operating,
-            supports_person_airflow=supports_person_airflow,
-        )
         if CapabilityTag.indirect_wind in params:
             self.indirect_wind = (
                 params[CapabilityTag.indirect_wind][0] == INDIRECT_WIND_VALUE
@@ -1990,6 +1987,13 @@ class PropertiesBody(NewProtocolMessageBody):
             )
         ):
             self.has_new_protocol_temperature = True
+        # Validated model-specific fields remain authoritative over generic 0x7e.
+        self._parse_model_properties(
+            body,
+            params,
+            supports_220f4047_operating=supports_220f4047_operating,
+            supports_person_airflow=supports_person_airflow,
+        )
 
     def _parse_new_protocol_extensions(
         self,

@@ -21,6 +21,12 @@ from tests.devices.ac.device_ac_test import TestMideaACDevice as _DeviceFixture
 Controlled = tuple[MideaACDevice, list[PropertiesSet]]
 
 
+@pytest.fixture(autouse=True)
+def stable_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep exact deadline arithmetic independent of host clock precision."""
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0)
+
+
 class _InertSocket:
     """Witness the real socket lifecycle without opening a transport."""
 
@@ -1038,3 +1044,40 @@ def test_person_confirmation_requires_both_flags_after_latest_write() -> None:
         assert device._pending_person_airflow is not None
         device.process_message(_property_response([(0x33, b"\x00")]))
         assert device._pending_person_airflow is None
+
+
+@pytest.mark.parametrize("source", ["aggregate", "standalone"])
+def test_valid_model_target_wins_over_generic_7e_in_same_reply(source: str) -> None:
+    """Generic extension values cannot replace validated model-specific state."""
+    device = _DeviceFixture._make_device("220F4047", 8)
+    generic = bytes(56)  # Generic target 12C, power/mode/fan zero.
+    response = (
+        core_response(True, 2, 27.5, 102, extra=[(0x7E, generic)])
+        if source == "aggregate"
+        else _property_response([(3, bytes([105])), (0x7E, generic)])
+    )
+    device.process_message(response)
+    assert device.attributes[A.target_temperature] == 27.5
+    assert device._prefer_core_target_temperature is True
+    if source == "aggregate":
+        assert device.attributes[A.power] is True
+        assert device.attributes[A.mode] == 2
+        assert device.attributes[A.fan_speed] == 102
+
+
+@pytest.mark.parametrize("kind", ["generic_only", "bad_crc", "invalid_target"])
+def test_generic_7e_target_cannot_latch_model_specific_source(kind: str) -> None:
+    """Only validated model target evidence can disable the C0 fallback."""
+    device = _DeviceFixture._make_device("220F4047", 8)
+    properties = [(0x7E, bytes(56))]
+    if kind != "generic_only":
+        properties.append((3, bytes([105 if kind == "bad_crc" else 0])))
+    response = _property_response(properties)
+    if kind == "bad_crc":
+        body = bytearray(response[10:-1])
+        body[-1] ^= 1
+        response = _DeviceFixture._response(body)
+    device.process_message(response)
+    assert device._prefer_core_target_temperature is False
+    device.process_message(_DeviceFixture._response(bytearray(MODEL_220F4047_C0_BODY)))
+    assert device.attributes[A.target_temperature] != 12.0

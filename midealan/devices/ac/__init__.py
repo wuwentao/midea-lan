@@ -792,7 +792,7 @@ class MideaACDevice(MideaDevice):
             self._model_capabilities.has_new_operating_property_control
             and body_type == ListTypes.B1
             and message.message_type == MessageType.query
-            and hasattr(message, DeviceAttributes.target_temperature)
+            and getattr(message, "has_core_target_temperature", False)
         ):
             self._prefer_core_target_temperature = True
 

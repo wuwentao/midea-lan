@@ -5,10 +5,16 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
-from midealan.devices.da import DeviceAttributes, MideaDADevice
+from midealan.const import DeviceType, ProtocolVersion
+from midealan.devices.da import (
+    DeviceAttributes,
+    MideaDADevice,
+    ToshibaDALegacyQuery,
+    ToshibaDAQuery,
+)
 from midealan.devices.da.message import MessageQuery
 from midealan.exceptions import ValueWrongType
+from midealan.message import encode_toshiba_frame
 
 
 class TestMideaDADevice:
@@ -121,6 +127,100 @@ class TestMideaDADevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_toshiba_profiles_select_answering_wire_type(self) -> None:
+        """Probe both DA wire profiles, then retain the validated legacy type."""
+        device = MideaDADevice(
+            name="Toshiba DA",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        queries = device.build_query()
+        assert isinstance(queries[0], ToshibaDAQuery)
+        assert isinstance(queries[1], ToshibaDALegacyQuery)
+        assert queries[0].serialize()[7] == DeviceType.DA
+        assert queries[1].serialize()[7] == DeviceType.DB
+        body = bytearray(47)
+        body[3] = 1
+        body[9] = 30
+        body[18] = 0x04
+        body[20:22] = (7).to_bytes(2, "little")
+        body[22] = 2
+        body[23:27] = (45).to_bytes(4, "little")
+        status = device.process_message(
+            bytes(
+                encode_toshiba_frame(
+                    DeviceType.DA,
+                    3,
+                    body,
+                    wire_device_type=DeviceType.DB,
+                ),
+            ),
+        )
+        assert status[DeviceAttributes.power] is True
+        assert status[DeviceAttributes.start] is True
+        assert status[DeviceAttributes.progress] == "rinse"
+        assert status[DeviceAttributes.time_remaining] == 45
+        selected = device.build_query()
+        assert len(selected) == 1
+        assert isinstance(selected[0], ToshibaDALegacyQuery)
+
+        body[18] = 0x20
+        status = device.process_message(
+            bytes(
+                encode_toshiba_frame(
+                    DeviceType.DA,
+                    3,
+                    body,
+                    wire_device_type=DeviceType.DB,
+                ),
+            ),
+        )
+        assert status[DeviceAttributes.progress] == "soft_keep"
+
+        body[9] = 0x82
+        body[18] = 0
+        status = device.process_message(
+            bytes(
+                encode_toshiba_frame(
+                    DeviceType.DA,
+                    3,
+                    body,
+                    wire_device_type=DeviceType.DB,
+                ),
+            ),
+        )
+        assert status[DeviceAttributes.wash_time] == 120
+        assert status[DeviceAttributes.progress] == "idle"
+        assert (
+            device.process_message(
+                bytes(
+                    encode_toshiba_frame(
+                        DeviceType.DA,
+                        3,
+                        b"\x00",
+                        wire_device_type=DeviceType.DB,
+                    ),
+                ),
+            )
+            == {}
+        )
+
+        status = self.device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DA, 3, body)),
+        )
+        assert status[DeviceAttributes.progress] == "idle"
+        selected = self.device.build_query()
+        assert len(selected) == 1
+        assert isinstance(selected[0], ToshibaDAQuery)
 
     def test_set_attribute(self) -> None:
         """Test set attribute."""

@@ -5,7 +5,8 @@ from enum import StrEnum
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.device import MideaDeviceInitKwargs, ToshibaDevice
+from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
     WORK_MODE_MAP,
@@ -17,6 +18,7 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+TOSHIBA_BASE_STATUS_LENGTH = 28
 
 
 class DeviceAttributes(StrEnum):
@@ -151,8 +153,12 @@ _INT_ATTRS: frozenset[DeviceAttributes] = frozenset(
 )
 
 
-class MideaBFDevice(MideaDevice):
+class MideaBFDevice(ToshibaDevice):
     """Midea BF device."""
+
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (MessageType.query, MessageType.notify1),
+    )
 
     def __init__(
         self,
@@ -167,12 +173,17 @@ class MideaBFDevice(MideaDevice):
             attributes=dict.fromkeys(DeviceAttributes, None),
         )
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea BF device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea BF device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageBFResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         # message layer already resolves work_status into a string name
@@ -184,6 +195,32 @@ class MideaBFDevice(MideaDevice):
                 self._attributes[status] = value
                 new_status[str(status)] = value
         return new_status
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode the Toshiba BF base cooking status."""
+        body = frame.body
+        if len(body) < TOSHIBA_BASE_STATUS_LENGTH or body[0] != 0x00:
+            return None
+        cooking_states = {
+            0: "before_cooking",
+            1: "finish_cooking",
+            2: "before_cooking",
+            3: "error_occur",
+            4: "during_process",
+            5: "during_process_wireless_lan_off",
+            6: "before_cooking",
+            7: "finished_process",
+        }
+        cooking_state = (body[19] >> 2) & 0x07
+        values: dict[DeviceAttributes, Any] = {
+            DeviceAttributes.door: bool(body[19] & 0x01),
+            DeviceAttributes.status: cooking_states[cooking_state],
+            DeviceAttributes.time_remaining: int.from_bytes(body[22:24], "little"),
+            DeviceAttributes.high_temperature: bool(body[20] & 0x0F),
+            DeviceAttributes.furnace_light: bool(body[25] & 0x07),
+        }
+        self._attributes.update(values)
+        return {str(attr): value for attr, value in values.items()}
 
     def make_message_set(self) -> MessageSet:
         """Create a MessageSet pre-populated with current work-mode attributes.
@@ -216,6 +253,7 @@ class MideaBFDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea BF device set attribute."""
+        self.reject_toshiba_write()
         # status on device maps to work_status on message
         if attr == DeviceAttributes.status:
             if not isinstance(value, str):

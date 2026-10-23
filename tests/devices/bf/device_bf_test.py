@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices.bf import DeviceAttributes, MideaBFDevice
 from midealan.devices.bf.message import (
     MessageQuery,
@@ -12,7 +12,12 @@ from midealan.devices.bf.message import (
     WorkStatus,
 )
 from midealan.exceptions import SocketException
-from midealan.message import ListTypes, MessageType
+from midealan.message import (
+    ListTypes,
+    MessageType,
+    ToshibaMessageRequest,
+    encode_toshiba_frame,
+)
 
 
 def _build_device() -> MideaBFDevice:
@@ -59,6 +64,42 @@ class TestMideaBFDevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_toshiba_query_and_base_status(self) -> None:
+        """Decode the Toshiba BF door, cooking state, time, and warnings."""
+        device = MideaBFDevice(
+            name="Toshiba BF",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        assert isinstance(device.build_query()[0], ToshibaMessageRequest)
+        body = bytearray(28)
+        body[19] = 0x11
+        body[20] = 0x01
+        body[22:24] = (90).to_bytes(2, "little")
+        body[25] = 0x01
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.BF, 3, body)),
+        )
+        assert status[DeviceAttributes.door] is True
+        assert status[DeviceAttributes.status] == "during_process"
+        assert status[DeviceAttributes.time_remaining] == 90
+        assert status[DeviceAttributes.high_temperature] is True
+        assert status[DeviceAttributes.furnace_light] is True
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.BF, MessageType.query, b"\x00")),
+            )
+            == {}
+        )
 
     def test_process_message_basic(self) -> None:
         """Test process message with a basic totalState body."""

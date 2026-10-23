@@ -20,15 +20,32 @@ from midealan.device import (
     MessageResult,
     MideaDevice,
     NoSupportedProtocol,
+    ToshibaDevice,
 )
 from midealan.exceptions import SocketException
-from midealan.message import MessageType
+from midealan.message import (
+    MessageRequest,
+    MessageType,
+    ToshibaFrame,
+    ToshibaMessageRequest,
+    encode_toshiba_frame,
+)
 
 
 class _DictDevice(MideaDevice):
     """MideaDevice subclass exposing a class-level dict for lookup tests."""
 
     modes: ClassVar[dict[int, str]] = {1: "auto", 2: "cool"}
+
+
+class _ToshibaTestDevice(ToshibaDevice):
+    """Concrete Toshiba device for shared protocol-selection tests."""
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Accept one test body and expose the selected wire type."""
+        if frame.body != b"\x00":
+            return None
+        return {"body": frame.body}
 
 
 def test_get_dict_key_by_value() -> None:
@@ -137,6 +154,64 @@ class TestMideaDevice:
             manufacturer_code="1234",
             cloud_name="MSmartHome",
         )
+
+    @staticmethod
+    def _toshiba_device(**identity: str) -> _ToshibaTestDevice:
+        """Build a shared Toshiba test device without opening a socket."""
+        return _ToshibaTestDevice(
+            name="Test Toshiba Device",
+            device_id=1,
+            device_type=DeviceType.DB,
+            ip_address="192.0.2.1",
+            port=6444,
+            token=DEFAULT_KEYS[99]["token"],
+            key=DEFAULT_KEYS[99]["key"],
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=1,
+            attributes={},
+            **identity,
+        )
+
+    @pytest.mark.parametrize(
+        "identity",
+        [{"manufacturer_code": "0008"}, {"cloud_name": "Toshiba Iolife"}],
+    )
+    def test_toshiba_identity_selects_protocol(self, identity: dict[str, str]) -> None:
+        """Select Toshiba framing from either supported identity source."""
+        device = self._toshiba_device(**identity)
+        assert device.toshiba_protocol is True
+        query = device.build_toshiba_query()[0]
+        assert isinstance(query, ToshibaMessageRequest)
+        assert device.build_query_fallback() == []
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.reject_toshiba_write()
+
+    def test_toshiba_traffic_selects_and_validates_protocol(self) -> None:
+        """Select Toshiba only after a complete supported status response."""
+        device = self._toshiba_device()
+        device.reject_toshiba_write()
+        fallback = device.build_query_fallback()[0]
+        assert isinstance(fallback, ToshibaMessageRequest)
+        assert device._is_query_response_valid(fallback) is False
+        assert device._is_query_response_valid(MagicMock(spec=MessageRequest)) is True
+        assert device.process_toshiba_message(b"midea") is None
+
+        invalid = encode_toshiba_frame(DeviceType.DB, MessageType.query, b"\x00")
+        invalid[-1] ^= 1
+        assert device.process_toshiba_message(bytes(invalid)) == {}
+        assert device._is_query_response_valid(fallback) is False
+
+        unsupported = encode_toshiba_frame(DeviceType.DB, MessageType.query, b"\x01")
+        assert device.process_toshiba_message(bytes(unsupported)) == {}
+        assert device.toshiba_protocol == False  # noqa: E712
+
+        valid = encode_toshiba_frame(DeviceType.DB, MessageType.query, b"\x00")
+        assert device.process_toshiba_message(bytes(valid)) == {"body": b"\x00"}
+        assert device.toshiba_protocol is True
+        assert device.toshiba_wire_device_type() == DeviceType.DB
+        assert device.toshiba_wire_device_types() == (DeviceType.DB,)
+        assert device._is_query_response_valid(fallback) is True
 
     def test_initial_attributes(self) -> None:
         """Test initial attributes."""
@@ -1096,6 +1171,89 @@ class TestMideaDevice:
         ]
         # The silent family stays blacklisted for the rest of the connection.
         assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
+
+    def test_refresh_status_probes_fallback_families_in_stages(self) -> None:
+        """A successful fallback stage prevents later families from being sent."""
+        primary = [type("PrimaryA", (), {})()]
+        first = [type("FirstFallback", (), {})()]
+        second = [type("SecondFallback", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(
+                self.device,
+                "build_query_fallback_stages",
+                return_value=[first, second],
+            ),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[TimeoutError(), TimeoutError(), None],
+            ),
+        ):
+            self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            primary[0],
+            primary[0],
+            first[0],
+        ]
+
+    def test_refresh_status_advances_after_silent_fallback_stage(self) -> None:
+        """A later family is probed only after the previous stage times out."""
+        primary = [type("PrimaryA", (), {})()]
+        first = [type("FirstFallback", (), {})()]
+        second = [type("SecondFallback", (), {})()]
+        self.device._socket = MagicMock()
+        self.device._appliance_query = False
+        with (
+            patch.object(self.device, "build_query", return_value=primary),
+            patch.object(
+                self.device,
+                "build_query_fallback_stages",
+                return_value=[first, second],
+            ),
+            patch.object(self.device, "build_send") as build_send_mock,
+            patch.object(
+                self.device,
+                "_await_query_reply",
+                side_effect=[
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    TimeoutError(),
+                    None,
+                ],
+            ),
+        ):
+            self.device.refresh_status(True)
+
+        assert [call.args[0] for call in build_send_mock.call_args_list] == [
+            primary[0],
+            primary[0],
+            first[0],
+            first[0],
+            second[0],
+        ]
+
+    def test_query_fallback_skips_an_already_queued_stage(self) -> None:
+        """Skip duplicate stages while retaining the next new query family."""
+        duplicate = type("DuplicateFallback", (), {})()
+        next_query = type("NextFallback", (), {})()
+        commands: list[object] = []
+
+        fallback, stage_index = self.device._use_next_query_fallback(
+            commands,
+            {"DuplicateFallback"},
+            [[duplicate], [next_query]],
+            0,
+        )
+
+        assert fallback == [next_query]
+        assert commands == [next_query]
+        assert stage_index == 2
 
     def test_init_timeout_does_not_mask_status_family_fallback(self) -> None:
         """Init probe timeouts do not change the primary status result."""

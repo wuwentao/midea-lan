@@ -21,6 +21,10 @@ from midealan.message import (
     MessageType,
     NewProtocolMessageBody,
     SubBodyType,
+    ToshibaMessageRequest,
+    decode_toshiba_frame,
+    encode_toshiba_frame,
+    toshiba_crc16,
 )
 
 
@@ -470,6 +474,132 @@ class TestNewProtocolMessageBody:
         """
         body = NewProtocolMessageBody(bytearray([0xB1]))
         assert body.parse() == {}
+
+
+class TestToshibaMessage:
+    """Test the shared Toshiba UART envelope."""
+
+    @pytest.mark.parametrize(
+        ("device_type", "expected"),
+        [
+            (DeviceType.BF, "55aacc330f0001bf000000000000030000c461"),
+            (DeviceType.CA, "55aacc330f0001ca000000000000030000357c"),
+            (DeviceType.DA, "55aacc330f0001da000000000000030000a3e8"),
+            (DeviceType.DB, "55aacc330f0001db000000000000030000e687"),
+            (DeviceType.EA, "55aacc330f0001ea0000000000000300003845"),
+        ],
+    )
+    def test_query_vectors(self, device_type: DeviceType, expected: str) -> None:
+        """Match the Lua-derived base query for every documented family."""
+        message = ToshibaMessageRequest(device_type, 0, b"\x00")
+        data = message.serialize()
+        assert data == bytes.fromhex(expected)
+        assert message.header == data[:16]
+        assert message.body == bytearray([0])
+        assert message.header.hex() in str(message)
+
+    def test_decode_complete_frame(self) -> None:
+        """Decode the full 16-bit frame type after strict envelope validation."""
+        data = encode_toshiba_frame(DeviceType.EA, 0x0380, b"\x00\x01")
+        frame = decode_toshiba_frame(
+            data,
+            expected_device_type=DeviceType.EA,
+            allowed_frame_types={0x0380},
+        )
+        assert frame is not None
+        assert frame.device_type == DeviceType.EA
+        assert frame.frame_type == 0x0380
+        assert frame.body == b"\x00\x01"
+        assert int.from_bytes(data[-2:], "little") == toshiba_crc16(data[:-2])
+
+    def test_decode_ea_wire_frame_type(self) -> None:
+        """Expose EA's raw 03 80 discriminator in wire-byte order."""
+        data = encode_toshiba_frame(DeviceType.EA, 0x8003, b"\x00")
+        assert data[14:16] == bytes.fromhex("0380")
+        frame = decode_toshiba_frame(
+            data,
+            expected_device_type=DeviceType.EA,
+            allowed_frame_types={0x8003},
+        )
+        assert frame is not None
+        assert frame.frame_type == 0x8003
+
+    @pytest.mark.parametrize(
+        "mutation",
+        ["magic", "length", "version", "device", "reserved", "crc"],
+    )
+    def test_decode_rejects_invalid_envelope(self, mutation: str) -> None:
+        """Reject malformed frames before any device-specific parser runs."""
+        data = encode_toshiba_frame(DeviceType.DB, MessageType.query, b"\x00")
+        indexes = {
+            "magic": 1,
+            "length": 4,
+            "version": 6,
+            "device": 7,
+            "reserved": 8,
+            "crc": -1,
+        }
+        data[indexes[mutation]] ^= 1
+        if mutation != "crc":
+            data[-2:] = toshiba_crc16(data[:-2]).to_bytes(2, "little")
+        assert (
+            decode_toshiba_frame(
+                data,
+                expected_device_type=DeviceType.DB,
+                allowed_frame_types={MessageType.query},
+            )
+            is None
+        )
+
+    def test_decode_checks_complete_frame_type(self) -> None:
+        """Do not accept a matching low byte with a different high byte."""
+        data = encode_toshiba_frame(DeviceType.DB, 0x0103, b"\x00")
+        assert (
+            decode_toshiba_frame(
+                data,
+                expected_device_type=DeviceType.DB,
+                allowed_frame_types={MessageType.query},
+            )
+            is None
+        )
+
+    def test_wire_device_type_override(self) -> None:
+        """Support the documented Toshiba DA v1 DB wire-type profile."""
+        data = encode_toshiba_frame(
+            DeviceType.DA,
+            MessageType.query,
+            b"\x00",
+            wire_device_type=DeviceType.DB,
+        )
+        assert data[7] == DeviceType.DB
+        assert (
+            decode_toshiba_frame(
+                data,
+                expected_device_type=DeviceType.DA,
+                allowed_frame_types={MessageType.query},
+                wire_device_type=DeviceType.DB,
+            )
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        ("device_type", "frame_type", "wire_device_type"),
+        [(0x100, 3, None), (DeviceType.DB, 0x10000, None), (DeviceType.DA, 3, 0x100)],
+    )
+    def test_encode_rejects_out_of_range_fields(
+        self,
+        device_type: DeviceType | int,
+        frame_type: int,
+        wire_device_type: int | None,
+    ) -> None:
+        """Reject values that cannot fit their Toshiba wire fields."""
+        with pytest.raises(ValueError, match="fit their wire fields"):
+            encode_toshiba_frame(
+                device_type,
+                frame_type,
+                b"\x00",
+                wire_device_type=wire_device_type,
+            )
 
 
 class TestMessageResponse:

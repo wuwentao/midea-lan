@@ -8,6 +8,12 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
+    OFFSET_CUR_TEMP_ABOVE_LOW,
+    OFFSET_CUR_TEMP_UNDERSIDE_LOW,
+    OFFSET_FLAGS_B32,
+    OFFSET_TEMP_ABOVE_LOW,
+    OFFSET_TEMP_UNDERSIDE_LOW,
+    OFFSET_WORK_MODE_LOW,
     WORK_MODE_MAP,
     FirePower,
     MessageBFResponse,
@@ -17,6 +23,8 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+DIAGNOSTIC_OVEN_MODEL = "700006B9"
+DIAGNOSTIC_OVEN_SUBTYPE = 5
 
 
 class DeviceAttributes(StrEnum):
@@ -178,9 +186,25 @@ class MideaBFDevice(MideaDevice):
         # message layer already resolves work_status into a string name
         # (see MessageBFBody._parse_status_and_power), so no translator needed.
         new_status: dict[str, Any] = {}
+        diagnostic_offsets = {
+            DeviceAttributes.temperature_above: OFFSET_TEMP_ABOVE_LOW,
+            DeviceAttributes.temperature_underside: OFFSET_TEMP_UNDERSIDE_LOW,
+            DeviceAttributes.cur_temperature_above: OFFSET_CUR_TEMP_ABOVE_LOW,
+            DeviceAttributes.cur_temperature_underside: OFFSET_CUR_TEMP_UNDERSIDE_LOW,
+            DeviceAttributes.work_mode: OFFSET_WORK_MODE_LOW,
+            DeviceAttributes.pre_heat: OFFSET_FLAGS_B32,
+        }
         for status in self._attributes:
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
+                if (
+                    self.model == DIAGNOSTIC_OVEN_MODEL
+                    and self.subtype == DIAGNOSTIC_OVEN_SUBTYPE
+                    and status in diagnostic_offsets
+                    and len(message.body) <= diagnostic_offsets[status]
+                ):
+                    # A missing-byte fallback is not an actual 0C/False report.
+                    value = None
                 self._attributes[status] = value
                 new_status[str(status)] = value
         return new_status

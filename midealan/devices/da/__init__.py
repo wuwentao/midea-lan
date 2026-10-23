@@ -6,13 +6,44 @@ from typing import Any, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.devices.toshiba import (
+    TOSHIBA_WASHER_STATUS_RUNNING,
+    decode_toshiba_washer_status,
+)
 from midealan.exceptions import ValueWrongType
+from midealan.message import (
+    TOSHIBA_FRAME_MAGIC,
+    MessageRequest,
+    MessageType,
+    ToshibaFrame,
+    ToshibaMessageRequest,
+)
 
 from .message import MessageDAResponse, MessagePower, MessageQuery, MessageStart
 
 _LOGGER = logging.getLogger(__name__)
 
 MIN_TEMP = 15
+TOSHIBA_DA_PROGRAM_OFFSET = 3
+TOSHIBA_DA_PROCESS_INFO_OFFSET = 18
+TOSHIBA_DA_ERROR_CODE_START = 20
+TOSHIBA_DA_ERROR_CODE_END = 22
+TOSHIBA_DA_PROCESS_INFO_MASK = 0x3E
+TOSHIBA_DA_PROGRESS = {
+    0x02: "wash",
+    0x04: "rinse",
+    0x08: "spin",
+    0x10: "dry",
+    0x20: "soft_keep",
+}
+
+
+class ToshibaDAQuery(ToshibaMessageRequest):
+    """Toshiba DA query using the normal DA wire type."""
+
+
+class ToshibaDALegacyQuery(ToshibaMessageRequest):
+    """Toshiba DA v1 query using its documented DB wire-type anomaly."""
 
 
 class DeviceAttributes(StrEnum):
@@ -39,6 +70,11 @@ class DeviceAttributes(StrEnum):
 
 class MideaDADevice(MideaDevice):
     """Midea DA device."""
+
+    TOSHIBA_SUPPORTED = True
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (MessageType.set, MessageType.query, MessageType.notify1),
+    )
 
     def __init__(
         self,
@@ -71,12 +107,55 @@ class MideaDADevice(MideaDevice):
             },
         )
 
-    def build_query(self) -> list[MessageQuery]:
+    def toshiba_wire_device_types(self) -> tuple[DeviceType | int, ...]:
+        """Accept the DA v2 wire type and the DA v1 DB compatibility type."""
+        if self._selected_toshiba_wire_type is not None:
+            return (self._selected_toshiba_wire_type,)
+        return (DeviceType.DA, DeviceType.DB)
+
+    def build_toshiba_query(self) -> list[MessageRequest]:
+        """Probe both documented Toshiba DA wire-type profiles when unresolved."""
+        if self._selected_toshiba_wire_type == DeviceType.DB:
+            return [
+                ToshibaDALegacyQuery(
+                    DeviceType.DA,
+                    self._message_protocol_version,
+                    b"\x00",
+                    wire_device_type=DeviceType.DB,
+                ),
+            ]
+        queries: list[MessageRequest] = [
+            ToshibaDAQuery(
+                DeviceType.DA,
+                self._message_protocol_version,
+                b"\x00",
+            ),
+        ]
+        if self._selected_toshiba_wire_type is None:
+            queries.append(
+                ToshibaDALegacyQuery(
+                    DeviceType.DA,
+                    self._message_protocol_version,
+                    b"\x00",
+                    wire_device_type=DeviceType.DB,
+                ),
+            )
+        return queries
+
+    def build_query(self) -> list[MessageRequest]:
         """Midea DA device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea DA device process message."""
+        if self.manufacturer_code in (None, self.TOSHIBA_MANUFACTURER_CODE):
+            status = self.process_toshiba_message(msg)
+            if status is not None:
+                return status
+        elif msg.startswith(TOSHIBA_FRAME_MAGIC):
+            return {}
         message = MessageDAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -155,8 +234,57 @@ class MideaDADevice(MideaDevice):
                 new_status[str(status)] = self._attributes[status]
         return new_status
 
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode the common Toshiba top-load washer base status."""
+        body = frame.body
+        base_status = decode_toshiba_washer_status(body)
+        if base_status is None:
+            return None
+        programs = [
+            "standard",
+            "fast",
+            "blanket",
+            "wool",
+            "embathe",
+            "memory",
+            "child",
+            "down_jacket",
+            "stir",
+            "mute",
+            "bucket_self_clean",
+            "air_dry",
+        ]
+        program = body[TOSHIBA_DA_PROGRAM_OFFSET]
+        process_info = body[TOSHIBA_DA_PROCESS_INFO_OFFSET]
+        active_processes = process_info & TOSHIBA_DA_PROCESS_INFO_MASK
+        progress = TOSHIBA_DA_PROGRESS.get(
+            active_processes & -active_processes,
+            "idle",
+        )
+        values: dict[DeviceAttributes, Any] = {
+            DeviceAttributes.power: base_status.machine_status != 0,
+            DeviceAttributes.start: (
+                base_status.machine_status == TOSHIBA_WASHER_STATUS_RUNNING
+            ),
+            DeviceAttributes.washing_data: bytearray(body),
+            DeviceAttributes.program: (
+                programs[program] if program < len(programs) else program
+            ),
+            DeviceAttributes.progress: progress,
+            DeviceAttributes.time_remaining: base_status.time_remaining,
+            DeviceAttributes.wash_time: base_status.wash_time,
+            DeviceAttributes.dehydration_time: base_status.dehydration_time,
+            DeviceAttributes.error_code: int.from_bytes(
+                body[TOSHIBA_DA_ERROR_CODE_START:TOSHIBA_DA_ERROR_CODE_END],
+                "little",
+            ),
+        }
+        self._attributes.update(values)
+        return {str(attr): value for attr, value in values.items()}
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea DA device set attribute."""
+        self.reject_toshiba_write()
         if not isinstance(value, bool):
             raise ValueWrongType("[da] Expected bool")
         message: MessagePower | MessageStart | None = None

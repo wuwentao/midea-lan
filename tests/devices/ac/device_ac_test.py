@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices.ac import (
     CAPABILITY_QUERY_RETRY_INTERVAL,
     DeviceAttributes,
@@ -39,7 +39,13 @@ from midealan.devices.ac.message import (
     SubProtocolQuery30,
     ToggleDisplay,
 )
-from midealan.message import ListTypes, MessageBase
+from midealan.message import (
+    ListTypes,
+    MessageBase,
+    MessageType,
+    ToshibaMessageRequest,
+    encode_toshiba_frame,
+)
 
 # C0 body from the public capture in
 # https://github.com/wuwentao/midea_ac_lan/issues/998
@@ -433,10 +439,66 @@ class TestMideaACDevice:
             for q in queries
         )
 
+    def test_toshiba_query_reuses_ac_body_and_decoder(self) -> None:
+        """Wrap the AC state query and decode C0 status through shared framing."""
+        device = MideaACDevice(
+            name="Toshiba AC",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        query = device.build_query()[0]
+        assert isinstance(query, ToshibaMessageRequest)
+        assert len(query.body) == 22
+        assert query.body[:20] == StateQuery(0).body[:20]
+        assert query.serialize()[:4] == bytes.fromhex("55aacc33")
+        assert device.build_init_query() == []
+        assert device.build_query_fallback() == []
+        status = device.process_message(
+            bytes.fromhex(
+                "55aacc332e0001ac0000000000000300"
+                "c00150667f7f0000000c002e200b0003000000000000000058020000f0ff533d"
+                "eca0",
+            ),
+        )
+        assert status[DeviceAttributes.power] is True
+        assert status[DeviceAttributes.indoor_temperature] == -2.3
+        assert status[DeviceAttributes.outdoor_temperature] == -9.0
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="hardware verification"),
+        ):
+            device.set_attribute(DeviceAttributes.power, True)
+        send.assert_not_called()
+
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.set_countdown_timer(DeviceAttributes.power_on_timer, 30)
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.set_target_temperature(24, None)
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.set_swing(True, False)
+
     def test_build_query_fallback_uses_bb_family(self) -> None:
         """A silent B5 family is followed by the BB subprotocol family."""
         self.device._message_protocol_version = 8
-        assert [type(q) for q in self.device.build_query_fallback()] == [
+        fallback = self.device.build_query_fallback()
+        assert isinstance(fallback[0], ToshibaMessageRequest)
+        assert [type(q) for q in fallback[1:]] == [
+            SubProtocolQuery10,
+            SubProtocolQuery11,
+            SubProtocolQuery30,
+        ]
+        stages = self.device.build_query_fallback_stages()
+        assert len(stages) == 2
+        assert isinstance(stages[0][0], ToshibaMessageRequest)
+        assert [type(q) for q in stages[1]] == [
             SubProtocolQuery10,
             SubProtocolQuery11,
             SubProtocolQuery30,
@@ -444,11 +506,91 @@ class TestMideaACDevice:
 
         self.device._used_subprotocol = True
         assert self.device.build_query_fallback() == []
+        assert self.device.build_query_fallback_stages() == []
         assert [type(q) for q in self.device.build_query()] == [
             SubProtocolQuery10,
             SubProtocolQuery11,
             SubProtocolQuery30,
         ]
+
+    def test_toshiba_fallback_requires_a_supported_valid_status(self) -> None:
+        """Select Toshiba fallback only after a valid AC body is decoded."""
+        fallback = self.device.build_query_fallback()[0]
+        assert isinstance(fallback, ToshibaMessageRequest)
+
+        invalid = encode_toshiba_frame(
+            DeviceType.AC,
+            MessageType.query,
+            MODEL_220F4047_C0_BODY,
+        )
+        invalid[-1] ^= 1
+        assert self.device.process_message(bytes(invalid)) == {}
+        assert self.device._is_query_response_valid(fallback) is False
+        assert self.device.toshiba_protocol is False
+
+        wrong_type = encode_toshiba_frame(
+            DeviceType.BF,
+            MessageType.query,
+            MODEL_220F4047_C0_BODY,
+        )
+        assert self.device.process_message(bytes(wrong_type)) == {}
+        assert self.device.toshiba_protocol is False
+
+        unsupported = encode_toshiba_frame(
+            DeviceType.AC,
+            MessageType.query,
+            b"\xff",
+        )
+        assert self.device.process_message(bytes(unsupported)) == {}
+        assert self.device.toshiba_protocol is False
+
+        valid = bytes.fromhex(
+            "55aacc332e0001ac0000000000000300"
+            "c00150667f7f0000000c002e200b0003000000000000000058020000f0ff533d"
+            "eca0",
+        )
+        assert self.device.process_message(valid)[DeviceAttributes.power] is True
+        assert self.device._is_query_response_valid(fallback) is True
+        assert self.device.toshiba_protocol is True
+
+    @pytest.mark.parametrize(
+        ("frame_type", "body_type", "accepted"),
+        [
+            (MessageType.query, ListTypes.B5, False),
+            (MessageType.notify1, ListTypes.A0, True),
+            (MessageType.notify2, ListTypes.D0, True),
+            (MessageType.notify2, ListTypes.A0, False),
+        ],
+    )
+    def test_toshiba_frame_body_combinations(
+        self,
+        frame_type: MessageType,
+        body_type: ListTypes,
+        accepted: bool,
+    ) -> None:
+        """Accept only frame/body combinations documented by Toshiba Lua."""
+        body = bytearray(MODEL_220F4047_C0_BODY)
+        body[0] = body_type
+        frame = encode_toshiba_frame(DeviceType.AC, frame_type, body)
+        status = self.device.process_message(bytes(frame))
+        assert bool(status) is accepted
+
+    @pytest.mark.parametrize(
+        ("frame_type", "body"),
+        [
+            (MessageType.query, b""),
+            (MessageType.notify1, bytes([ListTypes.A0])),
+            (MessageType.notify2, bytes([ListTypes.D0])),
+        ],
+    )
+    def test_toshiba_rejects_incomplete_status_bodies(
+        self,
+        frame_type: MessageType,
+        body: bytes,
+    ) -> None:
+        """Reject empty or truncated AC bodies before invoking the AA decoder."""
+        frame = encode_toshiba_frame(DeviceType.AC, frame_type, body)
+        assert self.device.process_message(bytes(frame)) == {}
 
     def test_query_probe_hooks_validate_bb_and_defer_b5(self) -> None:
         """BB replies are validated and timed-out B5 probes get a cooldown."""

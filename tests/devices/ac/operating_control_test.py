@@ -763,7 +763,7 @@ def test_exact_screen_route_and_existing_boolean_light_encoding(enabled: bool) -
         device.set_attribute(A.screen_display, enabled)
         device.set_attribute(A.light_sensitive, enabled)
     assert send.call_count == 2
-    screen, light = [item.args[0] for item in send.call_args_list]
+    screen, light = (item.args[0] for item in send.call_args_list)
     assert isinstance(screen, PropertiesSet)
     assert _written_properties(screen)[0x0017] == bytes([0x64 if enabled else 0])
     assert _written_properties(light)[0x0208] == bytes([3 if enabled else 0])

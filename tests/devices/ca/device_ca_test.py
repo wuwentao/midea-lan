@@ -2,10 +2,14 @@
 
 import pytest
 
-from midealan.const import ProtocolVersion
-from midealan.devices.ca import DeviceAttributes, MideaCADevice
+from midealan.const import DeviceType, ProtocolVersion
+from midealan.devices.ca import (
+    DeviceAttributes,
+    MideaCADevice,
+    ToshibaCAQuery,
+)
 from midealan.devices.ca.message import MessageQuery
-from midealan.message import MessageType
+from midealan.message import MessageType, encode_toshiba_frame
 
 DIAGNOSTIC_FLAGS = (
     (DeviceAttributes.code_mode, 1, 0x01),
@@ -107,6 +111,98 @@ class TestMideaCADevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_toshiba_query_and_base_status(self) -> None:
+        """Query and decode the base group shared by every CA profile."""
+        device = MideaCADevice(
+            name="Toshiba CA",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        queries = device.build_query()
+        assert [type(query) for query in queries] == [ToshibaCAQuery]
+        assert [query.body for query in queries] == [bytearray([0])]
+        status = device.process_message(
+            bytes.fromhex(
+                "55aacc33200001ca0000000000000300"
+                "00010205030000000f0000436400000000001375",
+            ),
+        )
+        assert status[DeviceAttributes.mode] == 2
+        assert status[DeviceAttributes.energy_saving_mode] is True
+        assert status[DeviceAttributes.refrigerator_actual_temp] == 5
+        assert status[DeviceAttributes.freezer_actual_temp] == 3
+        assert status[DeviceAttributes.refrigerator_door] is True
+        assert status[DeviceAttributes.freezer_door] is True
+        assert status[DeviceAttributes.bar_door] is True
+        assert status[DeviceAttributes.flex_zone_door] is True
+        assert status[DeviceAttributes.energy_consumption] == 0x6443
+        with pytest.raises(ValueError, match="hardware verification"):
+            device.set_attribute(attr=DeviceAttributes.mode, value="eco")
+
+    def test_toshiba_shifted_model_status(self) -> None:
+        """Decode the documented shifted Toshiba CA model layout."""
+        device = MideaCADevice(
+            name="Toshiba CA",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="0000000D",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        status = device.process_message(
+            bytes.fromhex(
+                "55aacc33220001ca0000000000000300"
+                "00010000020503000000000f00006443000000006e09",
+            ),
+        )
+        assert status[DeviceAttributes.mode] == 2
+        assert status[DeviceAttributes.refrigerator_actual_temp] == 5
+        assert status[DeviceAttributes.freezer_actual_temp] == 3
+        assert status[DeviceAttributes.flex_zone_door] is True
+        assert status[DeviceAttributes.energy_consumption] == 0x4364
+
+    def test_toshiba_partial_set_response_is_not_base_status(self) -> None:
+        """Reject a short set echo instead of treating it as full CA status."""
+        device = MideaCADevice(
+            name="Toshiba CA",
+            device_id=1,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="00",
+            key="00",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            manufacturer_code="0008",
+            customize="",
+        )
+        body = bytes([0, 1, 2, 5, 3, 0, 0])
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.CA, MessageType.set, body)),
+            )
+            == {}
+        )
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.CA, MessageType.query, body)),
+            )
+            == {}
+        )
 
     def test_process_message_general(self) -> None:
         """Test process message with a full general body."""

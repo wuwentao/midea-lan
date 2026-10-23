@@ -290,6 +290,24 @@ class PowerFormats(IntEnum):
     BCD_ENERGY_BINARY_POWER = 101
 
 
+MODE_POWER_TEMPERATURE_SCALE = 2
+MODEL_220F4047_POWER_TAG = 0x0001
+MODEL_220F4047_MODE_TAG = 0x0002
+MODEL_220F4047_TARGET_TEMPERATURE_TAG = 0x0003
+MODEL_220F4047_FAN_SPEED_TAG = 0x0006
+MODEL_220F4047_MIN_MODE = 1
+MODEL_220F4047_MAX_MODE = 6
+MODEL_220F4047_MIN_TARGET_TEMPERATURE = 16
+MODEL_220F4047_MAX_TARGET_TEMPERATURE = 32
+MODEL_220F4047_TARGET_TEMPERATURE_OFFSET = 50
+MODEL_220F4047_MAX_FAN_SPEED = 102
+MODEL_220F4047_OPERATING_SNAPSHOT_LENGTH = 4
+OPERATING_RESPONSE_PREFIX_LENGTH = 2
+OPERATING_RESPONSE_HEADER_LENGTH = 4
+OPERATING_RESPONSE_TRAILER_LENGTH = 2
+PERSON_AIRFLOW_TOWARD_ON_VALUE = 0x01
+
+
 class CapabilityTag(IntEnum):
     """New protocol tags in query and response."""
 
@@ -767,6 +785,38 @@ class PropertiesDefaultQuery(MessageACBase):
         return _body
 
 
+class PropertiesOperatingQuery(PropertiesDefaultQuery):
+    """Query the verified subtype-8 operating fields independently."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Keep a stable identity for the exact-model operating query."""
+        super().__init__(protocol_version)
+        self.properties = (
+            MODEL_220F4047_POWER_TAG,
+            MODEL_220F4047_MODE_TAG,
+            MODEL_220F4047_TARGET_TEMPERATURE_TAG,
+            MODEL_220F4047_FAN_SPEED_TAG,
+        )
+
+
+class PropertiesPersonTowardQuery(PropertiesDefaultQuery):
+    """Query the person-toward setting independently."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Keep unsupported queries isolated from the other person feature."""
+        super().__init__(protocol_version)
+        self.properties = (int(CapabilityTag.wind_straight),)
+
+
+class PropertiesPersonAvoidQuery(PropertiesDefaultQuery):
+    """Query the person-avoid setting independently."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Keep unsupported queries isolated from the other person feature."""
+        super().__init__(protocol_version)
+        self.properties = (int(CapabilityTag.wind_avoid),)
+
+
 class _PropertiesCapsQueryBase(MessageACBase):
     """Base class for capability-based properties queries.
 
@@ -1197,6 +1247,29 @@ class StateSet(MessageACBase):
         )
 
 
+def validate_operating_snapshot(snapshot: tuple[bool, int, float, int]) -> None:
+    """Reject incomplete or out-of-domain exact-model operating writes."""
+    power, mode, temperature, fan = snapshot
+    if not isinstance(power, bool):
+        raise TypeError("Operating power must be boolean")
+    if not isinstance(mode, int) or isinstance(mode, bool):
+        raise TypeError("Operating mode must be an integer")
+    if not MODEL_220F4047_MIN_MODE <= mode <= MODEL_220F4047_MAX_MODE:
+        raise ValueError("Operating mode out of range")
+    if not (
+        MODEL_220F4047_MIN_TARGET_TEMPERATURE
+        <= temperature
+        <= MODEL_220F4047_MAX_TARGET_TEMPERATURE
+    ) or temperature * MODE_POWER_TEMPERATURE_SCALE != round(
+        temperature * MODE_POWER_TEMPERATURE_SCALE,
+    ):
+        raise ValueError("Operating temperature must be a valid half-degree")
+    if not isinstance(fan, int) or isinstance(fan, bool):
+        raise TypeError("Operating fan speed must be an integer")
+    if not 0 <= fan <= MODEL_220F4047_MAX_FAN_SPEED:
+        raise ValueError("Operating fan speed out of range")
+
+
 class PropertiesSet(MessageACBase):
     """AC message new protocol set."""
 
@@ -1224,14 +1297,94 @@ class PropertiesSet(MessageACBase):
         self.light_sensitive: bool | None = None
         self.ieco: bool | None = None
         self.ieco_number: int = 1
+        self.mode_power: tuple[bool, int, float, int] | None = None
+        self.operating_power: bool | None = None
+        self.operating_mode: int | None = None
+        self.operating_target_temperature: float | None = None
+        self.operating_fan_speed: int | None = None
+        self.wind_straight: bool | None = None
+        self.wind_avoid: bool | None = None
         # Countdown timers in minutes (0 = disarm).
         self.power_on_timer: int | None = None
         self.power_off_timer: int | None = None
 
+    def _pack_220f4047_operating_properties(self) -> tuple[int, bytearray]:
+        """Pack either independent fallback or grouped operating properties."""
+        values = (
+            (
+                MODEL_220F4047_POWER_TAG,
+                None if self.operating_power is None else int(self.operating_power),
+            ),
+            (MODEL_220F4047_MODE_TAG, self.operating_mode),
+            (
+                MODEL_220F4047_TARGET_TEMPERATURE_TAG,
+                None
+                if self.operating_target_temperature is None
+                else round(
+                    self.operating_target_temperature * MODE_POWER_TEMPERATURE_SCALE,
+                )
+                + MODEL_220F4047_TARGET_TEMPERATURE_OFFSET,
+            ),
+            (MODEL_220F4047_FAN_SPEED_TAG, self.operating_fan_speed),
+        )
+        pack_count = 0
+        payload = bytearray()
+        for param, value in values:
+            if value is None:
+                continue
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=param,
+                    value=bytearray([int(value)]),
+                ),
+            )
+        snapshot = self.mode_power
+        if snapshot is None:
+            return pack_count, payload
+        if pack_count:
+            raise ValueError("Grouped and independent operating writes conflict")
+        validate_operating_snapshot(snapshot)
+        # Pylint infers only the attribute's None initializer despite the guard.
+        power, mode, temperature, fan = snapshot  # pylint: disable=unpacking-non-sequence
+        return 1, NewProtocolMessageBody.pack(
+            param=MODEL_220F4047_POWER_TAG,
+            value=bytearray(
+                [
+                    int(power),
+                    mode,
+                    round(temperature * MODE_POWER_TEMPERATURE_SCALE),
+                    fan,
+                ],
+            ),
+        )
+
+    def _pack_person_airflow_properties(self) -> tuple[int, bytearray]:
+        """Pack only explicitly requested person-airflow flags."""
+        pack_count = 0
+        payload = bytearray()
+        for tag, value in (
+            (CapabilityTag.wind_straight, self.wind_straight),
+            (CapabilityTag.wind_avoid, self.wind_avoid),
+        ):
+            if value is not None:
+                pack_count += 1
+                payload.extend(
+                    NewProtocolMessageBody.pack(
+                        param=tag,
+                        value=bytearray([int(value)]),
+                    ),
+                )
+        return pack_count, payload
+
     @property
     def _body(self) -> bytearray:
-        pack_count = 0
+        pack_count, operating_payload = self._pack_220f4047_operating_properties()
         payload = bytearray([0x00])
+        payload.extend(operating_payload)
+        person_count, person_payload = self._pack_person_airflow_properties()
+        pack_count += person_count
+        payload.extend(person_payload)
         if self.breezeless is not None:
             pack_count += 1
             payload.extend(
@@ -1551,6 +1704,120 @@ def encode_properties_timer(minutes: int) -> bytearray:
 class PropertiesBody(NewProtocolMessageBody):
     """AC Bx message body. body[0] b0/b1, body[1] propertyNumber, cursor 2."""
 
+    @staticmethod
+    def _validated_operating_parameters(
+        body: bytearray,
+    ) -> dict[int, bytearray] | None:
+        """Validate the complete B1 TLV envelope before using any core state."""
+        if (
+            len(body)
+            < OPERATING_RESPONSE_PREFIX_LENGTH + OPERATING_RESPONSE_TRAILER_LENGTH
+            or body[0] != ListTypes.B1
+            or calculate(body[:-1]) != body[-1]
+        ):
+            return None
+        params: dict[int, bytearray] = {}
+        cursor = OPERATING_RESPONSE_PREFIX_LENGTH
+        end = len(body) - OPERATING_RESPONSE_TRAILER_LENGTH
+        for _ in range(body[1]):
+            if cursor + OPERATING_RESPONSE_HEADER_LENGTH > end:
+                return None
+            tag = body[cursor] | (body[cursor + 1] << 8)
+            status, length = body[
+                cursor + 2 : cursor + OPERATING_RESPONSE_HEADER_LENGTH
+            ]
+            cursor += OPERATING_RESPONSE_HEADER_LENGTH
+            if status != 0 or tag in params or cursor + length > end:
+                return None
+            params[tag] = body[cursor : cursor + length]
+            cursor += length
+        if cursor != end:
+            return None
+        return params
+
+    @staticmethod
+    def _validated_operating_snapshot(
+        body: bytearray,
+    ) -> tuple[bool, int, float, int] | None:
+        """Accept only a complete, CRC-valid, nonconflicting B1 core frame."""
+        params = PropertiesBody._validated_operating_parameters(body)
+        if params is None:
+            return None
+        power_data = params.get(MODEL_220F4047_POWER_TAG, bytearray())
+        if len(power_data) != MODEL_220F4047_OPERATING_SNAPSHOT_LENGTH:
+            return None
+        power, mode, temperature_raw, fan = power_data
+        if power not in (0, 1):
+            return None
+        snapshot = (
+            bool(power),
+            mode,
+            temperature_raw / MODE_POWER_TEMPERATURE_SCALE,
+            fan,
+        )
+        try:
+            validate_operating_snapshot(snapshot)
+        except (TypeError, ValueError):
+            return None
+        for tag, expected in (
+            (MODEL_220F4047_MODE_TAG, mode),
+            (
+                MODEL_220F4047_TARGET_TEMPERATURE_TAG,
+                temperature_raw + MODEL_220F4047_TARGET_TEMPERATURE_OFFSET,
+            ),
+            (MODEL_220F4047_FAN_SPEED_TAG, fan),
+        ):
+            if tag in params and params[tag] != bytearray([expected]):
+                return None
+        return snapshot
+
+    def _parse_220f4047_operating_snapshot(self, power_data: bytearray) -> None:
+        """Decode the four-byte aggregate operating snapshot when present."""
+        if len(power_data) < MODEL_220F4047_OPERATING_SNAPSHOT_LENGTH:
+            return
+        mode = power_data[1]
+        if MODEL_220F4047_MIN_MODE <= mode <= MODEL_220F4047_MAX_MODE:
+            self.mode = mode
+        target_temperature = power_data[2] / MODE_POWER_TEMPERATURE_SCALE
+        if (
+            MODEL_220F4047_MIN_TARGET_TEMPERATURE
+            <= target_temperature
+            <= MODEL_220F4047_MAX_TARGET_TEMPERATURE
+        ):
+            self.target_temperature = target_temperature
+            self.has_core_target_temperature = True
+        fan_speed = power_data[3]
+        if 0 <= fan_speed <= MODEL_220F4047_MAX_FAN_SPEED:
+            self.fan_speed = fan_speed
+
+    def _parse_220f4047_operating_properties(
+        self,
+        params: Mapping[int, bytearray],
+    ) -> None:
+        """Decode only the verified operating properties for subtype 8."""
+        if power_data := params.get(MODEL_220F4047_POWER_TAG):
+            self.power = power_data[0] > 0
+            self._parse_220f4047_operating_snapshot(power_data)
+        if mode_data := params.get(MODEL_220F4047_MODE_TAG):
+            mode = mode_data[0]
+            if MODEL_220F4047_MIN_MODE <= mode <= MODEL_220F4047_MAX_MODE:
+                self.mode = mode
+        if temperature_data := params.get(MODEL_220F4047_TARGET_TEMPERATURE_TAG):
+            target_temperature = (
+                temperature_data[0] - MODEL_220F4047_TARGET_TEMPERATURE_OFFSET
+            ) / MODE_POWER_TEMPERATURE_SCALE
+            if (
+                MODEL_220F4047_MIN_TARGET_TEMPERATURE
+                <= target_temperature
+                <= MODEL_220F4047_MAX_TARGET_TEMPERATURE
+            ):
+                self.target_temperature = target_temperature
+                self.has_core_target_temperature = True
+        if fan_data := params.get(MODEL_220F4047_FAN_SPEED_TAG):
+            fan_speed = fan_data[0]
+            if 0 <= fan_speed <= MODEL_220F4047_MAX_FAN_SPEED:
+                self.fan_speed = fan_speed
+
     def _parse_queried_states(self, params: dict[int, bytearray]) -> None:
         """Parse live states from queried property tags (B0/B1 bodies only).
 
@@ -1566,10 +1833,46 @@ class PropertiesBody(NewProtocolMessageBody):
             # 0x7e payload byte).
             self.light_sensitive_active = params[CapabilityTag.light_sensitive][0] > 0
 
+    def _parse_model_properties(
+        self,
+        body: bytearray,
+        params: dict[int, bytearray],
+        *,
+        supports_220f4047_operating: bool,
+        supports_person_airflow: bool,
+    ) -> None:
+        """Parse model-gated fields without changing the common decoder."""
+        if supports_220f4047_operating and self.body_type in (
+            ListTypes.B0,
+            ListTypes.B1,
+        ):
+            operating_params = (
+                self._validated_operating_parameters(body)
+                if self.body_type == ListTypes.B1
+                else params
+            )
+            if operating_params is not None:
+                self._parse_220f4047_operating_properties(operating_params)
+            self.core_operating_snapshot = self._validated_operating_snapshot(body)
+        if supports_person_airflow and self.body_type != ListTypes.B5:
+            person_params = (
+                self._validated_operating_parameters(body)
+                if self.body_type == ListTypes.B1
+                else params
+            )
+            if person_params is None:
+                return
+            if data := person_params.get(CapabilityTag.wind_straight):
+                self.wind_straight = data[0] == PERSON_AIRFLOW_TOWARD_ON_VALUE
+            if data := person_params.get(CapabilityTag.wind_avoid):
+                self.wind_avoid = data[0] > 0
+
     def __init__(
         self,
         body: bytearray,
         new_protocol_temperature: bool = False,
+        supports_220f4047_operating: bool = False,
+        supports_person_airflow: bool = False,
     ) -> None:
         """Initialize AC BX message body."""
         super().__init__(body)
@@ -1684,6 +1987,13 @@ class PropertiesBody(NewProtocolMessageBody):
             )
         ):
             self.has_new_protocol_temperature = True
+        # Validated model-specific fields remain authoritative over generic 0x7e.
+        self._parse_model_properties(
+            body,
+            params,
+            supports_220f4047_operating=supports_220f4047_operating,
+            supports_person_airflow=supports_person_airflow,
+        )
 
     def _parse_new_protocol_extensions(
         self,
@@ -2389,6 +2699,8 @@ class MessageACResponse(MessageResponse):
         message: bytearray,
         power_analysis_method: int = 3,
         new_protocol_temperature: bool = False,
+        supports_220f4047_operating: bool = False,
+        supports_person_airflow: bool = False,
     ) -> None:
         """Initialize AC message response."""
         super().__init__(message)
@@ -2429,7 +2741,12 @@ class MessageACResponse(MessageResponse):
             MessageType.notify2,
         ] and self.body_type in [ListTypes.B0, ListTypes.B1, ListTypes.B5]:
             self.set_body(
-                PropertiesBody(super().body, new_protocol_temperature),
+                PropertiesBody(
+                    super().body,
+                    new_protocol_temperature,
+                    supports_220f4047_operating,
+                    supports_person_airflow,
+                ),
             )
         # dataType 0x02 and messageBytes[0] 0xC0
         # dataType 0x03 and messageBytes[0] 0xC0

@@ -24,6 +24,7 @@ from midealan.devices.ac.message import (
     GroupZeroQuery,
     HumidityQuery,
     MessageACResponse,
+    MessageSubProtocolSet,
     PowerFormats,
     PowerQuery,
     PropertiesCapsQuery,
@@ -305,6 +306,132 @@ class TestMideaACDevice:
             assert message.sleep_mode is False
             assert message.comfort_mode is False
             assert message.frost_protect is False
+
+    def test_set_aux_heat_mode_aux_only(self) -> None:
+        """aux_only sets independent_ptc and forces heat + power on."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.independent_ptc is True
+            assert message.aux_heating is False
+            assert message.power is True
+            assert message.mode == 4  # HEAT_MODE
+
+    def test_set_aux_heat_mode_aux_heat(self) -> None:
+        """aux_heat sets PTCValue (aux_heating), not independent_ptc."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_heat",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.aux_heating is True
+            assert message.independent_ptc is False
+            assert message.power is True
+            assert message.mode == 4  # HEAT_MODE
+
+    def test_set_aux_heat_mode_off(self) -> None:
+        """Turn off clears both electric aux-heat flags without forcing heat."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.aux_heat_mode.value, "off")
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.aux_heating is False
+            assert message.independent_ptc is False
+
+    def test_set_aux_heat_mode_unknown_is_ignored(self) -> None:
+        """An unknown aux_heat_mode value sends nothing."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "bogus",
+            )
+            mock_build_send.assert_not_called()
+
+    def test_set_aux_heat_mode_syncs_cache_after_send(self) -> None:
+        """A successful aux_only send updates the cache so a follow-up keeps it."""
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+        # Cache now reflects the commanded state ...
+        assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "aux_only"
+        assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.mode] == 4  # HEAT_MODE
+        # ... so an unrelated full-state write rebuilt from the cache keeps the
+        # independent_ptc bit instead of clearing it.
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_target_temperature(24, None)
+            follow_up = mock_build_send.call_args[0][0]
+            assert isinstance(follow_up, StateSet)
+            assert follow_up.independent_ptc is True
+
+    def test_set_aux_heat_mode_not_cached_when_send_fails(self) -> None:
+        """A failed send must not commit power/mode to the cache."""
+        self.device._attributes[DeviceAttributes.power] = False
+        self.device._attributes[DeviceAttributes.mode] = 1
+        with (
+            patch.object(self.device, "build_send", side_effect=OSError("send failed")),
+            pytest.raises(OSError, match="send failed"),
+        ):
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+        assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "off"
+        assert self.device.attributes[DeviceAttributes.power] is False
+        assert self.device.attributes[DeviceAttributes.mode] == 1
+
+    def test_legacy_aux_heating_overrides_aux_only(self) -> None:
+        """An explicit aux_heating=False clears a cached aux_only state."""
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+        assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "aux_only"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.aux_heating.value, False)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.independent_ptc is False
+            assert message.aux_heating is False
+        # The cache follows the legacy command, so aux_only is cleared.
+        assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "off"
+
+    def test_set_aux_heat_mode_aux_only_subprotocol_fallback(self) -> None:
+        """The BB subprotocol has no independent_ptc, so aux_only uses PTC."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSubProtocolSet)
+            # No independent_ptc field on the subprotocol frame; the ordinary
+            # PTC flag is enabled instead so electric heat still turns on.
+            assert message.aux_heating is True
+            assert not hasattr(message, "independent_ptc")
+            assert message.power is True
+            assert message.mode == 4  # HEAT_MODE
+
+    def test_process_message_derives_aux_heat_mode(self) -> None:
+        """aux_heat_mode is derived from the two status flags, aux_only wins."""
+        with patch("midealan.devices.ac.MessageACResponse") as mock_response:
+            mock_message = mock_response.return_value
+            mock_message.used_subprotocol = False
+            mock_message.fresh_air_power = False
+            mock_message.independent_ptc = True
+            mock_message.aux_heating = True
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.aux_heat_mode.value] == "aux_only"
 
     def test_set_attribute_mode_change_from_dry(self) -> None:
         """Test mode change out of dry mode forces fan speed to auto."""

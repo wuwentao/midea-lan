@@ -7,10 +7,22 @@ from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
 
-from .message import Message13Response, MessageQuery, MessageSet
+from .message import (
+    MAX_FAN_SPEED,
+    MIN_FAN_SPEED,
+    Message13Response,
+    MessageQuery,
+    MessageSet,
+)
 
 _LOGGER = logging.getLogger(__name__)
+
+#: X13 models that combine the main light with a fan (fan-light products).
+#: Verified on a Light M0200008; other X13 lights keep the legacy layout
+#: (light power in byte 8, four-byte set payload, no fan state).
+FAN_LIGHT_MODELS = frozenset({"M0200008"})
 
 
 class DeviceAttributes(StrEnum):
@@ -21,6 +33,8 @@ class DeviceAttributes(StrEnum):
     rgb_color = "rgb_color"
     effect = "effect"
     power = "power"
+    fan_power = "fan_power"
+    fan_speed = "fan_speed"
 
 
 class Midea13Device(MideaDevice):
@@ -42,16 +56,21 @@ class Midea13Device(MideaDevice):
         **kwargs: Unpack[MideaDeviceInitKwargs],
     ) -> None:
         """Initialize Midea x13 Device."""
+        self._fan_light = kwargs["model"] in FAN_LIGHT_MODELS
+        attributes: dict[DeviceAttributes, bool | int | str | None] = {
+            DeviceAttributes.brightness: None,
+            DeviceAttributes.color_temperature: None,
+            DeviceAttributes.rgb_color: None,
+            DeviceAttributes.effect: None,
+            DeviceAttributes.power: False,
+        }
+        if self._fan_light:
+            attributes[DeviceAttributes.fan_power] = False
+            attributes[DeviceAttributes.fan_speed] = 0
         super().__init__(
             device_type=DeviceType.X13,
             **kwargs,
-            attributes={
-                DeviceAttributes.brightness: None,
-                DeviceAttributes.color_temperature: None,
-                DeviceAttributes.rgb_color: None,
-                DeviceAttributes.effect: None,
-                DeviceAttributes.power: False,
-            },
+            attributes=attributes,
         )
         self._color_temp_range: list[int] = []
         self._default_color_temp_range: list[int] = [2700, 6500]
@@ -88,7 +107,7 @@ class Midea13Device(MideaDevice):
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea x13 Device process message."""
-        message = Message13Response(msg)
+        message = Message13Response(msg, self._fan_light)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
         if hasattr(message, "control_success"):
@@ -110,13 +129,19 @@ class Midea13Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea x13 Device set attribute."""
+        if self._fan_light and attr in (
+            DeviceAttributes.fan_power,
+            DeviceAttributes.fan_speed,
+        ):
+            self._set_fan_attribute(attr, value)
+            return
         if attr in [
             DeviceAttributes.brightness,
             DeviceAttributes.color_temperature,
             DeviceAttributes.effect,
             DeviceAttributes.power,
         ]:
-            message = MessageSet(self._message_protocol_version)
+            message = MessageSet(self._message_protocol_version, self._fan_light)
             if attr == DeviceAttributes.effect and value in self._effects:
                 setattr(message, str(attr), Midea13Device._effects.index(str(value)))
             elif attr == DeviceAttributes.color_temperature:
@@ -124,6 +149,33 @@ class Midea13Device(MideaDevice):
             else:
                 setattr(message, str(attr), value)
             self.build_send(message)
+
+    def _set_fan_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Send a fan control command to a fan-light appliance."""
+        message = MessageSet(self._message_protocol_version, fan_light=True)
+        if attr == DeviceAttributes.fan_power:
+            if not isinstance(value, bool):
+                raise ValueWrongType(f"[x13] {attr} expects a bool")
+            message.fan_power = value
+        else:
+            message.fan_speed = self._coerce_fan_speed(attr, value)
+        self.build_send(message)
+
+    @staticmethod
+    def _coerce_fan_speed(attr: str, value: bool | float | str) -> int:
+        """Validate a fan speed percentage against the device's range."""
+        # Reject bools and non-numbers up front; bool is an int subclass.
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            raise ValueWrongType(f"[x13] {attr} expects a number")
+        # Reject fractional values instead of silently truncating them.
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueWrongType(f"[x13] {attr} must be a whole number")
+        speed = int(value)
+        if not MIN_FAN_SPEED <= speed <= MAX_FAN_SPEED:
+            raise ValueOutOfRange(
+                f"[x13] {attr} must be in [{MIN_FAN_SPEED}, {MAX_FAN_SPEED}]",
+            )
+        return speed
 
     def set_customize(self, customize: str) -> None:
         """Midea x13 Device set customize."""

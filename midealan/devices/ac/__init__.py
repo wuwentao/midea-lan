@@ -207,11 +207,11 @@ STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.indoor_temperature,
     DeviceAttributes.outdoor_temperature,
 )
-# These models report the live display state in A0 notifications; their C0
-# query replies can contain an older value for the same field. Keep this
-# model-specific until other devices are confirmed to share the behavior.
+# These models report an unreliable display state in A0 notifications while
+# their C0 replies track the physical display. Ignore only the A0 display field
+# and keep processing the notification's other state attributes.
 # https://github.com/wuwentao/midea_ac_lan/issues/1147
-A0_SCREEN_DISPLAY_MODELS = frozenset(
+STALE_A0_SCREEN_DISPLAY_MODELS = frozenset(
     {
         ("00000Q1B", 44204),
         ("00000Q1F", 44204),
@@ -411,9 +411,9 @@ class MideaACDevice(MideaDevice):
         self._uses_new_protocol_temperature = (
             str(self.model) in NEW_PROTOCOL_TEMPERATURE_MODELS
         )
-        # Prefer verified live sources over stale fields in later C0 replies.
+        # Once 0x7e-derived temperatures are seen, ignore stale C0 temperature
+        # fields to avoid brief UI flicker caused by query ordering.
         self._prefer_new_protocol_temperature: bool = False
-        self._prefer_a0_screen_display: bool = False
         self.set_customize(customize)
 
     @property
@@ -682,14 +682,12 @@ class MideaACDevice(MideaDevice):
         if getattr(message, "has_new_protocol_temperature", False):
             self._prefer_new_protocol_temperature = True
 
-        if self._model_key in A0_SCREEN_DISPLAY_MODELS and body_type == ListTypes.A0:
-            self._prefer_a0_screen_display = True
-
         is_stale_c0_temperature = (
             self._prefer_new_protocol_temperature and body_type == ListTypes.C0
         )
-        is_stale_c0_screen_display = (
-            self._prefer_a0_screen_display and body_type == ListTypes.C0
+        is_stale_a0_screen_display = (
+            self._model_key in STALE_A0_SCREEN_DISPLAY_MODELS
+            and body_type == ListTypes.A0
         )
         if body_type in NEW_PROTOCOL_BODY_TYPES and hasattr(
             message,
@@ -749,7 +747,7 @@ class MideaACDevice(MideaDevice):
                 if is_stale_c0_temperature and attr in STALE_C0_TEMPERATURE_ATTRIBUTES:
                     continue
                 if (
-                    is_stale_c0_screen_display
+                    is_stale_a0_screen_display
                     and attr == DeviceAttributes.screen_display
                 ):
                     continue

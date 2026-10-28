@@ -156,6 +156,9 @@ class MideaCDDevice(MideaDevice):
         {"RSJRAC06", "RSJRAC07", "2530001N"},
     )
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
+    _negative_temperature_models: ClassVar[frozenset[str]] = frozenset(
+        {"2530001N"},
+    )
 
     _modes: ClassVar[dict[int, str]] = {
         MODE_NONE: "none",
@@ -307,8 +310,8 @@ class MideaCDDevice(MideaDevice):
         return (value - offset) / MIXED_SENSOR_TEMPERATURE_DIVISOR
 
     @staticmethod
-    def _2530001n_temperature(value: float) -> float:
-        """Decode 2530001N water/outdoor sensor values from its official UI."""
+    def _negative_temperature_value(value: float) -> float:
+        """Decode a capability-gated signed temperature sensor value."""
         if NEGATIVE_TEMPERATURE_RAW_MIN <= value <= NEGATIVE_TEMPERATURE_RAW_MAX:
             return (
                 value - NEGATIVE_TEMPERATURE_RAW_OFFSET
@@ -317,35 +320,35 @@ class MideaCDDevice(MideaDevice):
             OLD_PROTOCOL_TEMPERATURE_DIVISOR
         )
 
-    def _process_2530001n_temperature(
+    def _process_negative_temperature(
         self,
         message: MessageCDResponse,
         attr: DeviceAttributes,
         raw_value: float,
         new_status: dict[str, Any],
     ) -> bool:
-        """Decode and store a 2530001N tank or outdoor temperature.
+        """Decode and store a capability-gated signed temperature.
 
-        Protocol and plugin evidence:
+        The initial model registry entry is verified by this protocol and
+        plugin evidence:
         https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315383580
         https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315783800
         """
-        if self.model != "2530001N" or attr not in [
+        if self.model not in self._negative_temperature_models or attr not in [
             DeviceAttributes.current_temperature,
             DeviceAttributes.outdoor_temperature,
         ]:
             return False
 
-        # The 2530001N plugin gates its sensor conversion on minus_support.
-        # Preserve half-degree precision and the special signed-byte encoding
-        # for supported devices.
+        # Verified plugins gate their sensor conversion on minus_support.
+        # Preserve half-degree precision and the special signed-byte encoding.
         negative_temperature_supported = getattr(
             message,
             DeviceAttributes.support_negative_temperature,
             None,
         )
         if negative_temperature_supported is True:
-            parsed = self._2530001n_temperature(raw_value)
+            parsed = self._negative_temperature_value(raw_value)
         elif (
             negative_temperature_supported is False
             and attr == DeviceAttributes.current_temperature
@@ -373,6 +376,10 @@ class MideaCDDevice(MideaDevice):
             # negative decoded values are valid only when the device
             # advertises negative-temperature support.
             if raw_value == 0:
+                existing = self._attributes.get(attr)
+                if isinstance(existing, int | float) and existing != 0:
+                    new_status[str(attr)] = existing
+                    return True
                 parsed = 0.0
             if parsed <= 0 and not (
                 raw_value > 0 and negative_temperature_supported is True
@@ -579,7 +586,7 @@ class MideaCDDevice(MideaDevice):
                     self._attributes[attr] = parsed
                     new_status[str(attr)] = parsed
                     continue
-                if self._process_2530001n_temperature(
+                if self._process_negative_temperature(
                     message,
                     attr,
                     raw_value,

@@ -769,6 +769,62 @@ class TestMideaCDDevice:
 
         assert status[DeviceAttributes.current_temperature.value] == 128.0
 
+    def test_negative_temperature_model_registry_applies_decoder(self) -> None:
+        """Models added to the registry reuse the signed decoder."""
+        device = _make_device(model="verified_signed_model")
+        body = _general_body()
+        body[4] = 129
+        body[55] = 1
+
+        with patch.object(
+            MideaCDDevice,
+            "_negative_temperature_models",
+            frozenset({"verified_signed_model"}),
+        ):
+            status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.5
+
+    def test_2530001n_initial_zero_current_temperature_is_stored(self) -> None:
+        """An initial uninitialized tank reading remains zero."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 0
+        body[55] = 1
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 0.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 0.0
+
+    def test_2530001n_short_status_preserves_positive_current_temperature(
+        self,
+    ) -> None:
+        """Fallback decoding does not replace a known tank reading."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.current_temperature] = 49.0
+        body = _general_body()[:55]
+        body[4] = 0
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
+    def test_2530001n_short_status_preserves_value_on_invalid_conversion(
+        self,
+    ) -> None:
+        """A nonpositive fallback conversion preserves a known reading."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.current_temperature] = 49.0
+        body = _general_body()[:55]
+        body[4] = 10
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
     def test_2530001n_zero_current_temperature_preserves_positive_value(self) -> None:
         """An uninitialized tank reading does not replace a known value."""
         device = _make_device(model="2530001N")
@@ -782,6 +838,20 @@ class TestMideaCDDevice:
 
         assert status[DeviceAttributes.current_temperature.value] == 49.0
         assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
+    def test_2530001n_zero_current_temperature_preserves_negative_value(self) -> None:
+        """An uninitialized tank reading preserves a signed value."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 190
+        body[55] = 1
+        device.process_message(_build_message(MessageType.query, body))
+
+        body[4] = 0
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == -48.0
+        assert device.attributes[DeviceAttributes.current_temperature] == -48.0
 
     @pytest.mark.parametrize(
         ("negative_support", "raw", "expected"),

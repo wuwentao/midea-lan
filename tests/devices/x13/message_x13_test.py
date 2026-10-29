@@ -130,6 +130,7 @@ class TestMessageMainLightBody:
         assert parsed.power is True
         assert parsed.fan_speed is None
         assert parsed.fan_power is False
+        assert parsed.fan_state_valid is False
 
     @pytest.mark.parametrize(("power_byte", "expected"), [(1, True), (0, False)])
     def test_fan_light_layout(self, power_byte: int, expected: bool) -> None:
@@ -140,6 +141,15 @@ class TestMessageMainLightBody:
         assert parsed.power is expected
         assert parsed.fan_speed == 41
         assert parsed.fan_power is True
+        assert parsed.fan_state_valid is True
+
+    def test_fan_light_truncated_body(self) -> None:
+        """Test a truncated fan-light body does not expose the fan state."""
+        body = _build_status_body(fan_light=True)[:10]
+        parsed = MessageMainLightBody(body, fan_light=True)
+        assert parsed.fan_state_valid is False
+        assert parsed.fan_speed is None
+        assert parsed.fan_power is False
 
     def test_response_propagates_fan_light(self) -> None:
         """Test Message13Response parses the fan-light layout when asked."""

@@ -21,6 +21,9 @@ LIGHT_POWER_BYTE = 8
 LIGHT_POWER_BYTE_FAN_LIGHT = 5
 FAN_SPEED_BYTE = 6
 FAN_POWER_BYTE = 10
+#: Payload written to the fan power register (0x31).
+FAN_POWER_ON = 0x01
+FAN_POWER_OFF = 0x00
 
 
 class Message13Base(MessageRequest):
@@ -100,7 +103,7 @@ class MessageSet(Message13Base):
             body_byte = self.brightness
         elif self.fan_power is not None:
             self.body_type = ListTypes.X31
-            body_byte = 0x01 if self.fan_power else 0x00
+            body_byte = FAN_POWER_ON if self.fan_power else FAN_POWER_OFF
         elif self.fan_speed is not None:
             self.body_type = ListTypes.X34
             body_byte = self.fan_speed
@@ -124,11 +127,15 @@ class MessageMainLightBody(MessageBody):
         power_byte = LIGHT_POWER_BYTE_FAN_LIGHT if fan_light else LIGHT_POWER_BYTE
         self.power = self.read_byte(body, power_byte) > 0
         # Fan-light models append the fan state to the report; other X13
-        # lights do not report a fan at all.
-        self.fan_speed = self.read_byte(body, FAN_SPEED_BYTE) if fan_light else None
-        self.fan_power = (
-            self.read_byte(body, FAN_POWER_BYTE) > 0 if fan_light else False
-        )
+        # lights do not report a fan at all. Only trust the fan state when the
+        # body is long enough to carry it: read_byte returns 0 for a truncated
+        # body, which must not be reported as "fan off, speed 0".
+        self.fan_speed: int | None = None
+        self.fan_power: bool = False
+        self.fan_state_valid: bool = fan_light and len(body) > FAN_POWER_BYTE
+        if self.fan_state_valid:
+            self.fan_speed = self.read_byte(body, FAN_SPEED_BYTE)
+            self.fan_power = self.read_byte(body, FAN_POWER_BYTE) > 0
 
 
 class MessageMainLightResponseBody(MessageBody):

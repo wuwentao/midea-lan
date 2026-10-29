@@ -20,8 +20,8 @@ from .message import (
 _LOGGER = logging.getLogger(__name__)
 
 #: X13 models that combine the main light with a fan (fan-light products).
-#: Verified on a Light M0200008; other X13 lights keep the legacy layout
-#: (light power in byte 8, four-byte set payload, no fan state).
+#: Verified on a Light M0200008, subtype 0; other subtypes keep the legacy
+#: layout (light power in byte 8, four-byte set payload, no fan state).
 FAN_LIGHT_MODELS = frozenset({"M0200008"})
 
 
@@ -56,7 +56,7 @@ class Midea13Device(MideaDevice):
         **kwargs: Unpack[MideaDeviceInitKwargs],
     ) -> None:
         """Initialize Midea x13 Device."""
-        self._fan_light = kwargs["model"] in FAN_LIGHT_MODELS
+        self._fan_light = kwargs["model"] in FAN_LIGHT_MODELS and kwargs["subtype"] == 0
         attributes: dict[DeviceAttributes, bool | int | str | None] = {
             DeviceAttributes.brightness: None,
             DeviceAttributes.color_temperature: None,
@@ -115,7 +115,16 @@ class Midea13Device(MideaDevice):
             if message.control_success:
                 self.refresh_status()
         else:
+            # Fan state is only meaningful when the report actually carried it;
+            # a truncated fan-light body must not overwrite the device state.
+            fan_state_valid = getattr(message, "fan_state_valid", False)
+            fan_attrs = (
+                DeviceAttributes.fan_power,
+                DeviceAttributes.fan_speed,
+            )
             for status in self._attributes:
+                if status in fan_attrs and not fan_state_valid:
+                    continue
                 if hasattr(message, str(status)):
                     value = getattr(message, str(status))
                     if status == DeviceAttributes.effect:

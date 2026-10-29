@@ -280,6 +280,29 @@ class TestMidea13FanLightDevice:
         assert new_status[DeviceAttributes.fan_speed.value] == 41
         assert new_status[DeviceAttributes.fan_power.value] is True
 
+    def test_process_message_truncated_fan_light(self) -> None:
+        """Test a truncated fan-light report keeps the previous fan state."""
+        self.device._attributes[DeviceAttributes.fan_speed] = 55
+        self.device._attributes[DeviceAttributes.fan_power] = True
+        header = bytearray(
+            [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [MessageType.query],
+        )
+        body = bytearray(10)  # stops before the fan power byte (offset 10)
+        body[0] = 0xA4  # main light body type
+        body[1] = 0  # brightness
+        body[2] = 127  # color temperature
+        body[3] = 1  # effect raw value
+        body[5] = 1  # light power
+        body[6] = 41  # fan speed
+        body[8] = 0  # constant on fan-light models
+        new_status = self.device.process_message(
+            bytes(header + body + bytearray([0x00])),
+        )
+        assert self.device.attributes[DeviceAttributes.fan_speed] == 55
+        assert self.device.attributes[DeviceAttributes.fan_power] is True
+        assert DeviceAttributes.fan_speed.value not in new_status
+        assert DeviceAttributes.fan_power.value not in new_status
+
     @pytest.mark.parametrize(("value", "expected"), [(True, 0x01), (False, 0x00)])
     def test_set_fan_power(self, value: bool, expected: int) -> None:
         """Test set fan power sends the fan power register."""
@@ -330,4 +353,39 @@ class TestMidea13FanLightDevice:
             pytest.raises(ValueWrongType),
         ):
             self.device.set_attribute(DeviceAttributes.fan_power.value, 1)
+        mock_build_send.assert_not_called()
+
+
+class TestMidea13FanLightSubtypeGate:
+    """Fan-light support is limited to model M0200008 with subtype 0."""
+
+    device: Midea13Device
+
+    @pytest.fixture(autouse=True)
+    def _setup_device(self) -> None:
+        """Midea x13 fan-light device opened with a non-zero subtype."""
+        self.device = Midea13Device(
+            name="Test Device",
+            device_id=1,
+            ip_address="192.168.1.1",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="M0200008",
+            subtype=1,
+            customize="",
+        )
+
+    def test_other_subtype_keeps_legacy_layout(self) -> None:
+        """Test other subtypes do not get the fan-light layout."""
+        assert self.device._fan_light is False
+        assert DeviceAttributes.fan_power not in self.device.attributes
+        assert DeviceAttributes.fan_speed not in self.device.attributes
+
+    def test_fan_attribute_ignored_for_other_subtype(self) -> None:
+        """Test fan controls are ignored for other subtypes."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.fan_power.value, True)
+            self.device.set_attribute(DeviceAttributes.fan_speed.value, 41)
         mock_build_send.assert_not_called()

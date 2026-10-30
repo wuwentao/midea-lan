@@ -5,11 +5,12 @@ import logging
 import time
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, ClassVar, Unpack, cast
+from threading import RLock
+from typing import TYPE_CHECKING, Any, ClassVar, Unpack, cast
 
 from midealan.const import MAX_BYTE_VALUE, DeviceType
-from midealan.device import MideaDevice, MideaDeviceInitKwargs
-from midealan.message import ListTypes
+from midealan.device import QUERY_TIMEOUT, MideaDevice, MideaDeviceInitKwargs
+from midealan.message import ListTypes, MessageRequest, MessageType
 
 from .message import (
     _B1_MAX_CAPABILITY_BATCHES,
@@ -28,6 +29,9 @@ from .message import (
     PropertiesCapsQuery,
     PropertiesCapsQuery1,
     PropertiesDefaultQuery,
+    PropertiesOperatingQuery,
+    PropertiesPersonAvoidQuery,
+    PropertiesPersonTowardQuery,
     PropertiesSet,
     StateQuery,
     StateSet,
@@ -39,7 +43,11 @@ from .message import (
     ToggleDisplay,
     _PropertiesCapsQueryBase,
     format_property_tags,
+    validate_operating_snapshot,
 )
+
+if TYPE_CHECKING:
+    import socket
 
 _LOGGER = logging.getLogger(__name__)
 CAPABILITY_QUERY_RETRY_INTERVAL = 60.0
@@ -62,6 +70,14 @@ ACQuery = (
 
 # AC mode constants
 DRY_MODE = 3
+PERSON_AIRFLOW_OFF = "off"
+PERSON_AIRFLOW_TOWARD = "toward"
+PERSON_AIRFLOW_AVOID = "avoid"
+PERSON_AIRFLOW_MODES = (
+    PERSON_AIRFLOW_OFF,
+    PERSON_AIRFLOW_TOWARD,
+    PERSON_AIRFLOW_AVOID,
+)
 
 # Maps the reported mode value to the capabilities["temperature"] range key.
 # auto=1, cool=2, dry=3, heat=4, fan=5; dry and fan reuse the cool range.
@@ -99,6 +115,8 @@ class DeviceAttributes(StrEnum):
     indoor_temperature = "indoor_temperature"
     outdoor_temperature = "outdoor_temperature"
     indirect_wind = "indirect_wind"
+    wind_straight = "wind_straight"
+    wind_avoid = "wind_avoid"
     indoor_humidity = "indoor_humidity"
     breezeless = "breezeless"
     fresh_air_power = "fresh_air_power"
@@ -175,6 +193,9 @@ class ACModelCapabilities:
     attributes: frozenset[DeviceAttributes] = frozenset()
     uses_bb_protocol: bool = False
     has_bb_fresh_air: bool = False
+    has_new_operating_property_control: bool = False
+    has_person_airflow_control: bool = False
+    has_absolute_screen_display_control: bool = False
 
 
 DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
@@ -182,6 +203,14 @@ DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
 # exact model/subtype pairs. Keep unrelated devices hidden from attributes and
 # commands whose bytes may have a different meaning on other firmware.
 AC_MODEL_CAPABILITIES = {
+    ("220F4047", 8): ACModelCapabilities(
+        attributes=frozenset(
+            {DeviceAttributes.wind_straight, DeviceAttributes.wind_avoid},
+        ),
+        has_new_operating_property_control=True,
+        has_person_airflow_control=True,
+        has_absolute_screen_display_control=True,
+    ),
     ("23096633", 1): ACModelCapabilities(
         attributes=frozenset(
             {
@@ -404,7 +433,80 @@ class MideaACDevice(MideaDevice):
         # Once 0x7e-derived temperatures are seen, ignore stale C0 temperature
         # fields to avoid brief UI flicker caused by query ordering.
         self._prefer_new_protocol_temperature: bool = False
+        # Exact-model B1 operating queries carry the verified setpoint, unlike C0.
+        # Keep C0 as a startup fallback until a valid B1 target is decoded.
+        self._prefer_core_target_temperature: bool = False
+        self._operating_lock = RLock()
+        self._operating_context_enabled = True
+        self._confirmed_operating: tuple[tuple[bool, int, float, int], float] | None = (
+            None
+        )
+        self._pending_operating: tuple[tuple[bool, int, float, int], float] | None = (
+            None
+        )
+        self._pending_person_airflow: tuple[tuple[bool, bool], float] | None = None
+        self._person_reported_at: dict[str, float] = {}
+        self._person_reported_values: dict[str, bool] = {}
         self.set_customize(customize)
+
+    def _invalidate_operating_context(self) -> None:
+        """Invalidate the connection-bound state while holding the core lock."""
+        self._operating_context_enabled = False
+        self._confirmed_operating = None
+        self._pending_operating = None
+        self._pending_person_airflow = None
+        self._person_reported_at.clear()
+
+    def set_available(self, available: bool = True) -> None:
+        """Drop lost-connection context and re-arm only new complete readback."""
+        with self._operating_lock:
+            if available:
+                self._operating_context_enabled = True
+            else:
+                self._invalidate_operating_context()
+        super().set_available(available)
+
+    def close(self) -> None:
+        """Invalidate core context even when teardown skips availability callbacks."""
+        with self._operating_lock:
+            self._invalidate_operating_context()
+        # Never hold the core lock while entering the base socket lock.
+        super().close()
+
+    def close_socket(self, sock: "socket.socket | None" = None) -> None:
+        """Invalidate only teardown of the active socket, not an older socket."""
+        with self._operating_lock:
+            if sock is None or self._socket is sock:
+                self._invalidate_operating_context()
+        super().close_socket(sock)
+
+    def _operating_timeout(self) -> float:
+        """Allow one existing refresh interval plus the query timeout."""
+        return max(float(self._refresh_interval), QUERY_TIMEOUT) + QUERY_TIMEOUT
+
+    def _observe_operating_snapshot(self, message: MessageACResponse) -> None:
+        """Keep confirmed wire state separate from submitted control intent."""
+        observed = getattr(message, "core_operating_snapshot", None)
+        if (
+            not self._model_capabilities.has_new_operating_property_control
+            or message.message_type != MessageType.query
+            or observed is None
+        ):
+            return
+        snapshot = cast(
+            "tuple[bool, int, float, int]",
+            observed,
+        )
+        with self._operating_lock:
+            if not self._operating_context_enabled:
+                return
+            now = time.monotonic()
+            self._confirmed_operating = (snapshot, now)
+            if self._pending_operating is not None:
+                expected, sent_at = self._pending_operating
+                if snapshot == expected or now - sent_at >= self._operating_timeout():
+                    # Equality witnesses state only, not transaction association.
+                    self._pending_operating = None
 
     @property
     def temperature_step(self) -> float | None:
@@ -474,6 +576,17 @@ class MideaACDevice(MideaDevice):
             len(default_query.properties),
             format_property_tags(default_query.properties),
         )
+
+        if self._model_capabilities.has_new_operating_property_control:
+            queries.append(PropertiesOperatingQuery(self._message_protocol_version))
+        if self._model_capabilities.has_person_airflow_control:
+            # Independent classes preserve per-feature unsupported-query identity.
+            queries.extend(
+                [
+                    PropertiesPersonTowardQuery(self._message_protocol_version),
+                    PropertiesPersonAvoidQuery(self._message_protocol_version),
+                ],
+            )
 
         # Dynamically build capability-based properties queries
         # Collect all capability properties and split into batches
@@ -662,12 +775,26 @@ class MideaACDevice(MideaDevice):
             bytearray(msg),
             power_analysis_method=self._power_analysis_method,
             new_protocol_temperature=self._uses_new_protocol_temperature,
+            supports_220f4047_operating=(
+                self._model_capabilities.has_new_operating_property_control
+            ),
+            supports_person_airflow=(
+                self._model_capabilities.has_person_airflow_control
+            ),
         )
         self._fix_c0_temperature(message)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         has_fresh_air = False
         body_type = getattr(message, "body_type", None)
+        self._observe_operating_snapshot(message)
+        if (
+            self._model_capabilities.has_new_operating_property_control
+            and body_type == ListTypes.B1
+            and message.message_type == MessageType.query
+            and getattr(message, "has_core_target_temperature", False)
+        ):
+            self._prefer_core_target_temperature = True
 
         if getattr(message, "has_new_protocol_temperature", False):
             self._prefer_new_protocol_temperature = True
@@ -733,6 +860,12 @@ class MideaACDevice(MideaDevice):
                 if is_stale_c0_temperature and attr in STALE_C0_TEMPERATURE_ATTRIBUTES:
                     continue
                 if is_stale_c0_timer and attr in TIMER_ATTRIBUTES:
+                    continue
+                if (
+                    body_type == ListTypes.C0
+                    and self._prefer_core_target_temperature
+                    and attr == DeviceAttributes.target_temperature
+                ):
                     continue
                 value = getattr(message, str(attr))
                 if attr == DeviceAttributes.fresh_air_power:
@@ -808,7 +941,43 @@ class MideaACDevice(MideaDevice):
         # merged map before the setpoint limits are resolved from it.
         new_status.update(self._update_capabilities(message))
         new_status.update(self._refresh_temperature_limits())
+        self._observe_person_airflow(message, new_status)
         return new_status
+
+    def _observe_person_airflow(
+        self,
+        message: MessageACResponse,
+        status: dict[str, Any],
+    ) -> None:
+        """Track fresh query observations separately from person control intent."""
+        if (
+            not self._model_capabilities.has_person_airflow_control
+            or message.message_type != MessageType.query
+            or getattr(message, "body_type", None) != ListTypes.B1
+        ):
+            return
+        with self._operating_lock:
+            if not self._operating_context_enabled:
+                return
+            now = time.monotonic()
+            for attr in (DeviceAttributes.wind_straight, DeviceAttributes.wind_avoid):
+                if attr in status:
+                    self._person_reported_at[attr] = now
+                    self._person_reported_values[attr] = bool(status[attr])
+            if self._pending_person_airflow is not None:
+                expected, sent_at = self._pending_person_airflow
+                observed = (
+                    self._person_reported_values.get(DeviceAttributes.wind_straight),
+                    self._person_reported_values.get(DeviceAttributes.wind_avoid),
+                )
+                if observed == expected and all(
+                    self._person_reported_at.get(attr, float("-inf")) >= sent_at
+                    for attr in (
+                        DeviceAttributes.wind_straight,
+                        DeviceAttributes.wind_avoid,
+                    )
+                ):
+                    self._pending_person_airflow = None
 
     @staticmethod
     def _fresh_air_mode(
@@ -1268,6 +1437,127 @@ class MideaACDevice(MideaDevice):
 
         return message
 
+    def _current_operating_snapshot(self) -> tuple[bool, int, float, int]:
+        """Require the same bounded context for every complete-state writer."""
+        now = time.monotonic()
+        base = self._pending_operating or self._confirmed_operating
+        if (
+            not self._operating_context_enabled
+            or base is None
+            or now - base[1] >= self._operating_timeout()
+        ):
+            self._confirmed_operating = None
+            self._pending_operating = None
+            raise RuntimeError("A fresh complete B1 operating snapshot is required")
+        return base[0]
+
+    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+        """Reconcile full-state core fields at the actual serialized boundary."""
+        if not (
+            self._model_capabilities.has_new_operating_property_control
+            and isinstance(cmd, StateSet)
+        ):
+            super().build_send(cmd, query=query)
+            return
+        with self._operating_lock:
+            (
+                cmd.power,
+                cmd.mode,
+                cmd.target_temperature,
+                cmd.fan_speed,
+            ) = self._current_operating_snapshot()
+            try:
+                super().build_send(cmd, query=query)
+            except Exception:
+                self._confirmed_operating = None
+                self._pending_operating = None
+                self._pending_person_airflow = None
+                self._person_reported_at.clear()
+                raise
+
+    def _make_operating_property_message_set(
+        self,
+        *,
+        power: bool | None = None,
+        mode: int | None = None,
+        target_temperature: float | None = None,
+        fan_speed: int | None = None,
+    ) -> PropertiesSet:
+        """Build one grouped operating write from confirmed or pending state."""
+        old_power, old_mode, old_temperature, old_fan = (
+            self._current_operating_snapshot()
+        )
+        snapshot = (
+            old_power if power is None else power,
+            old_mode if mode is None else mode,
+            old_temperature if target_temperature is None else target_temperature,
+            old_fan if fan_speed is None else fan_speed,
+        )
+        validate_operating_snapshot(snapshot)
+        message = PropertiesSet(self._message_protocol_version)
+        message.mode_power = snapshot
+        return message
+
+    def _make_operating_attribute_message(
+        self,
+        attr: str,
+        value: bool | float | str,
+    ) -> PropertiesSet:
+        """Resolve the explicit field without changing observed state."""
+        power: bool | None = None
+        mode: int | None = None
+        target_temperature: float | None = None
+        fan_speed: int | None = None
+        if attr == DeviceAttributes.power:
+            power = bool(value)
+        elif attr == DeviceAttributes.mode:
+            power = True
+            mode = int(value)
+            if mode != float(value):
+                raise ValueError("Operating mode must be an integer")
+        elif attr == DeviceAttributes.target_temperature:
+            target_temperature = float(value)
+        else:
+            fan_speed = int(value)
+            if fan_speed != float(value):
+                raise ValueError("Operating fan speed must be an integer")
+        return self._make_operating_property_message_set(
+            power=power,
+            mode=mode,
+            target_temperature=target_temperature,
+            fan_speed=fan_speed,
+        )
+
+    def _send_operating_message(self, message: PropertiesSet) -> None:
+        """Submit once; failed sends invalidate the unconfirmed write context."""
+        if message.mode_power is not None:
+            # A continuous command stream must not renew unconfirmed intent forever.
+            first_sent_at = (
+                self._pending_operating[1]
+                if self._pending_operating is not None
+                else time.monotonic()
+            )
+            self._pending_operating = (message.mode_power, first_sent_at)
+        try:
+            self.build_send(message)
+        except Exception:
+            self._confirmed_operating = None
+            self._pending_operating = None
+            raise
+
+    def _set_operating_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Serialize exact-model core controls, including an emergency off path."""
+        with self._operating_lock:
+            try:
+                message = self._make_operating_attribute_message(attr, value)
+            except RuntimeError:
+                if attr != DeviceAttributes.power or bool(value):
+                    raise
+                # Safety off remains available without guessing remembered fields.
+                message = PropertiesSet(self._message_protocol_version)
+                message.operating_power = False
+            self._send_operating_message(message)
+
     def make_subprotocol_message_set(self) -> MessageSubProtocolSet:
         """Midea AC device make subprotocol message set."""
         message = MessageSubProtocolSet(self._message_protocol_version)
@@ -1443,8 +1733,51 @@ class MideaACDevice(MideaDevice):
         self._attributes.update(cleared)
         self.update_all({str(key): value for key, value in cleared.items()})
 
+    def _set_model_attribute(self, attr: str, value: bool | float | str) -> bool:
+        """Handle exact-model controls before the common attribute path."""
+        if self._model_capabilities.has_new_operating_property_control and attr in {
+            DeviceAttributes.power,
+            DeviceAttributes.mode,
+            DeviceAttributes.target_temperature,
+            DeviceAttributes.fan_speed,
+        }:
+            self._set_operating_attribute(attr, value)
+            return True
+        if self._model_capabilities.has_person_airflow_control and attr in {
+            DeviceAttributes.wind_straight,
+            DeviceAttributes.wind_avoid,
+        }:
+            if bool(value):
+                self.set_person_airflow_mode(
+                    PERSON_AIRFLOW_TOWARD
+                    if attr == DeviceAttributes.wind_straight
+                    else PERSON_AIRFLOW_AVOID,
+                )
+            else:
+                self._disable_person_airflow_attribute(attr)
+            return True
+        return False
+
+    def _make_screen_display_message(
+        self,
+        value: bool,
+    ) -> PropertiesSet | ToggleDisplay | None:
+        """Use verified absolute display writes or the common idempotent toggle."""
+        if self._model_capabilities.has_absolute_screen_display_control:
+            return self.make_newprotocol_message_set(
+                attr=DeviceAttributes.screen_display_alternate,
+                value=value,
+            )
+        if value == bool(self._attributes[DeviceAttributes.screen_display]):
+            return None
+        message = ToggleDisplay(self._message_protocol_version)
+        message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
+        return message
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
+        if self._set_model_attribute(attr, value):
+            return
         # if nat a sensor
         message: (
             ToggleDisplay
@@ -1488,11 +1821,7 @@ class MideaACDevice(MideaDevice):
                 # Otherwise repeated turn_on/turn_off service calls alternate
                 # the physical display instead of setting an absolute state.
                 # https://github.com/wuwentao/midea_ac_lan/issues/623
-                if bool(value) != bool(
-                    self._attributes[DeviceAttributes.screen_display],
-                ):
-                    message = ToggleDisplay(self._message_protocol_version)
-                    message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
+                message = self._make_screen_display_message(bool(value))
             elif self._model_capabilities.has_bb_fresh_air and attr in {
                 DeviceAttributes.fresh_air_power,
                 DeviceAttributes.fresh_air_fan_speed,
@@ -1576,6 +1905,112 @@ class MideaACDevice(MideaDevice):
                     {DeviceAttributes.self_clean.value: optimistic_self_clean},
                 )
 
+    def set_person_airflow_mode(self, mode: str) -> None:
+        """Set the mutually exclusive person-airflow mode for a verified model."""
+        if not self._model_capabilities.has_person_airflow_control:
+            raise NotImplementedError(
+                "Person-airflow control is unsupported for "
+                f"{self.model}/{self.subtype}",
+            )
+        if mode not in PERSON_AIRFLOW_MODES:
+            raise ValueError(f"Unsupported person-airflow mode: {mode}")
+
+        with self._operating_lock:
+            self._set_person_airflow_mode(mode)
+
+    def _person_airflow_state(self) -> tuple[bool | None, bool | None]:
+        """Use bounded submitted intent without changing observed flags."""
+        if not self._operating_context_enabled:
+            return (None, None)
+        if self._pending_person_airflow is not None:
+            state, sent_at = self._pending_person_airflow
+            if time.monotonic() - sent_at < self._operating_timeout():
+                return state
+            self._pending_person_airflow = None
+        if any(
+            time.monotonic() - self._person_reported_at.get(attr, float("-inf"))
+            >= self._operating_timeout()
+            for attr in (DeviceAttributes.wind_straight, DeviceAttributes.wind_avoid)
+        ):
+            return (None, None)
+        return (
+            self._person_reported_values.get(DeviceAttributes.wind_straight),
+            self._person_reported_values.get(DeviceAttributes.wind_avoid),
+        )
+
+    def _send_person_airflow(
+        self,
+        message: PropertiesSet,
+        state: tuple[bool, bool] | None,
+    ) -> None:
+        """Retain only successful, connection-bound submitted person intent."""
+        if not self._operating_context_enabled:
+            raise RuntimeError("Person-airflow connection context is unavailable")
+        now = time.monotonic()
+        if (
+            self._pending_person_airflow is not None
+            and now - self._pending_person_airflow[1] >= self._operating_timeout()
+        ):
+            self._pending_person_airflow = None
+        first_sent_at = (
+            self._pending_person_airflow[1]
+            if self._pending_person_airflow is not None
+            else now
+        )
+        message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
+        self._pending_person_airflow = (
+            (state, first_sent_at) if state is not None else None
+        )
+        # Only queries after the latest write can confirm its result or serve
+        # as fallback after the first intent deadline. Do not renew that deadline.
+        self._person_reported_at.clear()
+        try:
+            self.build_send(message)
+        except Exception:
+            self._pending_person_airflow = None
+            self._person_reported_at.clear()
+            raise
+
+    def _disable_person_airflow_attribute(self, attr: str) -> None:
+        """Keep an explicit boolean-off request bound to its original tag."""
+        with self._operating_lock:
+            toward, avoid = self._person_airflow_state()
+            message = PropertiesSet(self._message_protocol_version)
+            if attr == DeviceAttributes.wind_straight:
+                message.wind_straight = False
+                state = (False, avoid) if avoid is not None else None
+            else:
+                message.wind_avoid = False
+                state = (toward, False) if toward is not None else None
+            self._send_person_airflow(message, state)
+
+    def _set_person_airflow_mode(self, mode: str) -> None:
+        """Resolve generic off from valid intent or unambiguous observed state."""
+        message = PropertiesSet(self._message_protocol_version)
+        if mode == PERSON_AIRFLOW_OFF:
+            toward, avoid = self._person_airflow_state()
+            if toward is None or avoid is None:
+                raise RuntimeError("Fresh complete person-airflow state is required")
+            # The App writes the two person-airflow features as independent
+            # toggles. For off, write only the flag currently reported active
+            # and avoid a redundant two-tag all-off packet.
+            if toward and avoid:
+                raise RuntimeError("Conflicting person-airflow state; use explicit off")
+            if avoid:
+                message.wind_avoid = False
+            elif toward:
+                message.wind_straight = False
+            else:
+                return
+            state = (False, False)
+        else:
+            # Enabling a mode remains atomic so the opposite mode cannot stay
+            # active during a toward/avoid transition.
+            message.wind_straight = mode == PERSON_AIRFLOW_TOWARD
+            message.wind_avoid = mode == PERSON_AIRFLOW_AVOID
+            state = (mode == PERSON_AIRFLOW_TOWARD, mode == PERSON_AIRFLOW_AVOID)
+        self._send_person_airflow(message, state)
+
     def set_target_temperature(
         self,
         target_temperature: float,
@@ -1583,12 +2018,21 @@ class MideaACDevice(MideaDevice):
         zone: int | None = None,  # noqa: ARG002
     ) -> None:
         """Midea AC device set target temperature."""
-        message: MessageSubProtocolSet | StateSet = self.make_message_uniq_set()
-        message.target_temperature = target_temperature
+        if self._model_capabilities.has_new_operating_property_control:
+            with self._operating_lock:
+                message = self._make_operating_property_message_set(
+                    power=True if mode is not None else None,
+                    mode=mode,
+                    target_temperature=target_temperature,
+                )
+                self._send_operating_message(message)
+            return
+        legacy_message = self.make_message_uniq_set()
+        legacy_message.target_temperature = target_temperature
         if mode is not None:
-            message.power = True
-            message.mode = mode
-        self.build_send(message)
+            legacy_message.power = True
+            legacy_message.mode = mode
+        self.build_send(legacy_message)
 
     def set_swing(self, swing_vertical: bool, swing_horizontal: bool) -> None:
         """Midea AC device set swing."""

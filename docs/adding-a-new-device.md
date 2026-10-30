@@ -542,8 +542,8 @@ uv run prek run --all-files
 ```
 
 CI runs the full `prek` suite across the OS/Python matrix (Python 3.12–3.14) and
-blocks merge on any failure. Aim for 100% line + branch coverage on the new
-package — D9 landed at 100% with 41 tests.
+blocks merge on any failure. Codecov requires 100% patch coverage for added or
+changed executable lines. The D9 package landed at 100% with 41 tests.
 
 ---
 
@@ -558,9 +558,21 @@ Follow the repository conventions (see
   commitlint/commitizen and CI validate the format.
 - **PR description**: summarise the device, link the Lua file(s) in
   `wuwentao/midea-lua`, and note coverage. State plainly what was verified.
+- **Lua availability**: if the required Lua is not already in `midea-lua`, follow
+  that repository's README to download it and submit it there first. Link that PR
+  from the `midea-lan` PR.
+- **Home Assistant PR**: open the matching `midea_ac_lan` PR at the same time and
+  link it back to the current PR. Do not update the `midea-lan` version in its
+  `custom_components/midea_ac_lan/manifest.json`; maintainers do that centrally
+  after release. Link any related `midea_ac_lan` issue regardless of the change
+  type, or explain why no issue applies.
 - **CodeRabbit**: the AI reviewer skips draft PRs. To get a review on a draft,
   comment `@coderabbitai review`. Address every finding and reply in-thread
-  documenting the fix and the covering test.
+  documenting the fix and the covering test, then resolve the conversation.
+
+Merging the PR does not publish an immediate release. Maintainers accumulate a
+set of merged changes, publish `midea-lan` manually on a periodic basis, and then
+synchronize `midea_ac_lan` centrally.
 
 Reference worked examples to model your PR on:
 
@@ -836,10 +848,12 @@ for the matching D9 integration.
 - [ ] `message.py`: named constants, base request, one class per command, a
       response body parser that only handles recognised body types.
 - [ ] Registered the type in `const.py` `DeviceType` (and `ListTypes` if needed).
-- [ ] Tests mirror the source tree; 100% coverage on the new package.
+- [ ] Tests mirror the source tree; Codecov reports 100% patch coverage.
 - [ ] `uv run prek run --all-files` passes.
 - [ ] PR on a feature branch, Conventional Commit title, Lua linked, CodeRabbit
-      findings resolved.
+      findings answered and conversations resolved.
+- [ ] Related `midea_ac_lan` issue and matching PR linked without changing the
+      manifest dependency, or reasons given when either link does not apply.
 - [ ] (If exposing in HA) `midea_ac_lan` device entry, translations, docs, and
     README updated.
 </content>

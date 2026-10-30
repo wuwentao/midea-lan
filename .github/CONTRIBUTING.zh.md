@@ -171,6 +171,25 @@ export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral
    GitHub Actions 会自动校验你的提交信息。
    请勿直接向 `main` 提交（`no-commit-to-branch` 钩子会阻止）。
 
+5. 填写 PR 模板中的每个部分；链接不适用时填写 N/A 并简要说明原因：
+   - PR 涉及设备协议时，应链接 [`wuwentao/midea-lua`](https://github.com/wuwentao/midea-lua)
+     中准确的 Lua 来源。如果尚未收录，请按照该仓库 README 下载并先向
+     `midea-lua` 提交 PR，然后链接该 PR；如果没有适用的 Lua 协议，请说明原因。
+   - PR 应链接任何相关的
+     [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) Issue，不区分标题或
+     改动类型；如果没有相关 Issue，请说明原因。
+   - 改动会影响 Home Assistant 行为或设备支持时，PR 应链接对应的
+     `midea_ac_lan` PR；如果不需要，请说明原因。不要修改
+     `custom_components/midea_ac_lan/manifest.json` 中的 `midea-lan` 版本；
+     维护者会在库发布后统一更新。
+
+6. GitHub Actions 执行完毕后，确认 Codecov 增量覆盖率为 100%。等待 CodeRabbit
+   自动评审（若未触发则评论 `@coderabbitai review`）。逐条修复可执行的意见，
+   在对应线程回复修复方式和测试依据，然后点击 **Resolve conversation**。
+
+PR 合并后不会立即发布新版本。维护者会积累一批变更后定期手工发布
+`midea-lan`，再统一同步 `midea_ac_lan` 中的依赖版本。
+
 ---
 
 ## 9. 代码风格、prek 与测试
@@ -182,6 +201,7 @@ export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral
 - 随时可用 `uv run prek run --all-files` 运行完整套件，提交前请修复所有报告的问题。
 - 测试使用 `pytest`。CI 会在 Python 3.12/3.13/3.14 × Linux/macOS/Windows 矩阵上运行完整的
   prek 套件与测试，失败则阻止合并。
+- Codecov 要求新增或修改的可执行代码达到 100% 增量覆盖率。
 
 ---
 

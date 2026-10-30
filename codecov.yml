@@ -11,7 +11,9 @@ coverage:
         target: auto
     patch:
       default:
-        target: auto
+        # Added or changed executable lines must remain fully covered.
+        target: 100%
+        threshold: 0%
 
 comment:
   layout: "reach, diff, flags, files"

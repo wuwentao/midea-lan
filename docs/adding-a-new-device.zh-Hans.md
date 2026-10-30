@@ -503,7 +503,8 @@ uv run prek run --all-files
 ```
 
 CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` 套件，任一失败
-都会阻止合并。争取让新包达到 100% 行 + 分支覆盖率 —— D9 以 41 个测试达到了 100%。
+都会阻止合并。Codecov 要求新增或修改的可执行代码达到 100% 增量覆盖率；D9 包以
+41 个测试达到了 100%。
 
 ---
 
@@ -517,9 +518,18 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
   commitlint/commitizen 与 CI 会校验格式。
 - **PR 描述**：概述该设备，链接 `wuwentao/midea-lua` 中的 Lua 文件，并说明
   覆盖率。如实陈述你验证了什么。
+- **Lua 收录**：如果所需 Lua 尚未收录到 `midea-lua`，请按照该仓库 README 下载并
+  先向该仓库提交 PR，然后在 `midea-lan` PR 中链接它。
+- **Home Assistant PR**：同时提交对应的 `midea_ac_lan` PR，并在其中链接当前 PR。
+  不要修改其 `custom_components/midea_ac_lan/manifest.json` 中的 `midea-lan`
+  版本；维护者会在发布后统一处理。不区分改动类型，应链接任何相关的
+  `midea_ac_lan` Issue；不适用时请说明原因。
 - **CodeRabbit**：该 AI 评审会跳过草稿 PR。要让草稿获得评审，评论
   `@coderabbitai review`。逐条处理所有意见，并在对应线程中回复，说明修复方式与
-  覆盖它的测试。
+  覆盖它的测试，然后 resolve 对话。
+
+PR 合并后不会立即发布新版本。维护者会积累一批已合并变更后定期手工发布
+`midea-lan`，再统一同步 `midea_ac_lan`。
 
 可参照的范例 PR：
 
@@ -772,9 +782,11 @@ D9 对应的集成参见
 - [ ] `message.py`：命名常量、基类请求、每命令一个类、只处理已识别 body type 的
       响应解析。
 - [ ] 在 `const.py` 的 `DeviceType` 中注册了类型（如有需要也在 `ListTypes`）。
-- [ ] 测试镜像源码树；新包 100% 覆盖率。
+- [ ] 测试镜像源码树；Codecov 增量覆盖率为 100%。
 - [ ] `uv run prek run --all-files` 通过。
-- [ ] 在特性分支上提 PR，标题为 Conventional Commit，链接 Lua，处理完 CodeRabbit
-      意见。
+- [ ] 在特性分支上提 PR，标题为 Conventional Commit，链接 Lua，回复 CodeRabbit
+      意见并 resolve 全部对话。
+- [ ] 链接相关的 `midea_ac_lan` Issue 和对应 PR，且不修改 manifest 依赖版本；
+      任一链接不适用时说明原因。
 - [ ] （若在 HA 中暴露）更新 `midea_ac_lan` 的设备条目、翻译、文档与 README。
 </content>

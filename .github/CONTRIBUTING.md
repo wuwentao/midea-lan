@@ -173,6 +173,31 @@ persist these in your shell profile.
    GitHub Actions will validate your commit messages automatically.
    Do not commit directly to `main` (the `no-commit-to-branch` hook blocks it).
 
+5. Complete every section of the pull request template, using N/A with a short
+   reason when a link does not apply:
+   - PRs should link their exact Lua source in
+     [`wuwentao/midea-lua`](https://github.com/wuwentao/midea-lua) when it relies
+     on a device protocol. If the Lua is not present, follow that repository's
+     README to download it and submit it there first, then link the `midea-lua`
+     PR. If no Lua protocol applies, explain why.
+   - PRs should link any related
+     [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, regardless
+     of the PR title or change type. If there is no related issue, explain why.
+   - PRs should link a matching `midea_ac_lan` PR when the change affects
+     Home Assistant behavior or device support. Otherwise, explain why none is
+     needed. Do not change the `midea-lan` version in
+     `custom_components/midea_ac_lan/manifest.json`; maintainers update it after
+     the library release.
+
+6. After GitHub Actions finish, confirm that Codecov reports 100% patch coverage.
+   Wait for the automatic CodeRabbit review (or comment `@coderabbitai review` if
+   it did not start). Address every actionable finding, reply in its thread with
+   the fix and test evidence, and click **Resolve conversation**.
+
+Merging a PR does not publish an immediate release. Maintainers accumulate a set
+of changes, release `midea-lan` manually on a periodic basis, and then synchronize
+the dependency version in `midea_ac_lan` centrally.
+
 ---
 
 ## 9. Code Style, prek & Testing
@@ -186,6 +211,7 @@ persist these in your shell profile.
   issues before committing.
 - Tests use `pytest`. CI runs the full prek suite and the tests across the
   Python 3.12/3.13/3.14 × Linux/macOS/Windows matrix and blocks merge on failure.
+- Codecov requires 100% patch coverage for added or changed executable lines.
 
 ---
 

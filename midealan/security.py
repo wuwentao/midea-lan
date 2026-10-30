@@ -26,6 +26,10 @@ HEADER_8370_1ST_BYTE = 0x83
 HEADER_8370_2ND_BYTE = 0x70
 HEADER_8370_4TH_BYTE = 0x20
 MIN_DECODE_8370_DATA_LENGTH = 6
+COUNTER_8370_LENGTH = 2
+SIGNATURE_8370_LENGTH = 32
+AES_BLOCK_SIZE = AES.block_size
+AES_BLOCK_MASK = AES_BLOCK_SIZE - 1
 MSGTYPE_HANDSHAKE_REQUEST = 0x0
 MSGTYPE_HANDSHAKE_RESPONSE = 0x1
 MSGTYPE_ENCRYPTED_RESPONSE = 0x3
@@ -398,17 +402,20 @@ class LocalSecurity:
 
     def encode_8370(self, data: bytes, msgtype: int) -> bytes:
         """Encode 8370 data."""
-        header = bytearray([0x83, 0x70])
+        header = bytearray([HEADER_8370_1ST_BYTE, HEADER_8370_2ND_BYTE])
         size, padding = len(data), 0
-        if (msgtype in (MSGTYPE_ENCRYPTED_RESPONSE, MSGTYPE_ENCRYPTED_REQUEST)) and (
-            (size + 2) % 16 != 0
-        ):
-            padding = 16 - (size + 2 & 0xF)
-            size += padding + 32
-            data += get_random_bytes(padding)
+        if msgtype in (MSGTYPE_ENCRYPTED_RESPONSE, MSGTYPE_ENCRYPTED_REQUEST):
+            if (size + COUNTER_8370_LENGTH) % AES_BLOCK_SIZE != 0:
+                padding = AES_BLOCK_SIZE - (
+                    (size + COUNTER_8370_LENGTH) & AES_BLOCK_MASK
+                )
+                size += padding
+                data += get_random_bytes(padding)
+            # The signature is present even when the payload needs no padding.
+            size += SIGNATURE_8370_LENGTH
         header += size.to_bytes(2, "big")
-        header += bytearray([0x20, padding << 4 | msgtype])
-        data = self._request_count.to_bytes(2, "big") + data
+        header += bytearray([HEADER_8370_4TH_BYTE, padding << 4 | msgtype])
+        data = self._request_count.to_bytes(COUNTER_8370_LENGTH, "big") + data
         self._request_count += 1
         if self._request_count >= MAX_DOUBLE_BYTE_VALUE:
             self._request_count = 0
@@ -437,15 +444,15 @@ class LocalSecurity:
         msgtype = header[5] & 0xF
         data = data[6:]
         if msgtype in (MSGTYPE_ENCRYPTED_RESPONSE, MSGTYPE_ENCRYPTED_REQUEST):
-            sign = data[-32:]
-            data = data[:-32]
+            sign = data[-SIGNATURE_8370_LENGTH:]
+            data = data[:-SIGNATURE_8370_LENGTH]
             data = self.aes_cbc_decrypt(raw=data, key=self._tcp_key)
             if sha256(header + data).digest() != sign:
                 raise DataSignDoesntMatch
             if padding:
                 data = data[:-padding]
-        self._response_count = int.from_bytes(data[:2], "big")
-        data = data[2:]
+        self._response_count = int.from_bytes(data[:COUNTER_8370_LENGTH], "big")
+        data = data[COUNTER_8370_LENGTH:]
         if leftover:
             packets, incomplete = self.decode_8370(leftover)
             return [data, *packets], incomplete

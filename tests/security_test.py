@@ -15,6 +15,7 @@ from midealan.exceptions import (
 )
 from midealan.security import (
     MSGTYPE_ENCRYPTED_REQUEST,
+    MSGTYPE_ENCRYPTED_RESPONSE,
     MSGTYPE_HANDSHAKE_REQUEST,
     CloudSecurity,
     LocalSecurity,
@@ -388,6 +389,36 @@ class TestLocalSecurity:
         assert packets == [data]
         assert incomplete == b""
 
+    @pytest.mark.parametrize(
+        "msgtype",
+        [MSGTYPE_ENCRYPTED_REQUEST, MSGTYPE_ENCRYPTED_RESPONSE],
+    )
+    @pytest.mark.parametrize("payload_length", range(48))
+    def test_encode_8370_encrypted_length_round_trip(
+        self,
+        msgtype: int,
+        payload_length: int,
+    ) -> None:
+        """Test encrypted frame lengths across padding and block boundaries."""
+        self._authenticate()
+        data = bytes(range(payload_length))
+        packet = self.security.encode_8370(data, msgtype)
+        padding = (-(payload_length + 2)) % 16
+        assert len(packet) == 6 + 2 + payload_length + padding + 32
+        assert int.from_bytes(packet[2:4], "big") + 8 == len(packet)
+        assert packet[:2] == b"\x83\x70"
+        assert packet[4] == 0x20
+        assert packet[5] == (padding << 4) | msgtype
+        plain = self.security.aes_cbc_decrypt(packet[6:-32], self.security._tcp_key)
+        assert plain[:2] == b"\x00\x00"
+        assert plain[2 : 2 + payload_length] == data
+        assert packet[-32:] == sha256(packet[:6] + plain).digest()
+        packets, incomplete = self.security.decode_8370(packet)
+        assert packets == [data]
+        assert incomplete == b""
+        assert self.security._request_count == 1
+        assert self.security._response_count == 0
+
     def test_encode_8370_request_count_rollover(self) -> None:
         """Test the request count rolls over at the maximum value."""
         self._authenticate()
@@ -395,11 +426,17 @@ class TestLocalSecurity:
         self.security.encode_8370(bytes(range(20)), MSGTYPE_ENCRYPTED_REQUEST)
         assert self.security._request_count == 0
 
-    def test_decode_8370_multiple_packets_and_incomplete(self) -> None:
+    @pytest.mark.parametrize("first_length", [14, 20])
+    @pytest.mark.parametrize("second_length", [25, 30])
+    def test_decode_8370_multiple_packets_and_incomplete(
+        self,
+        first_length: int,
+        second_length: int,
+    ) -> None:
         """Test decoding two concatenated packets plus an incomplete tail."""
         self._authenticate()
-        data1 = bytes(range(20))
-        data2 = bytes(range(20, 45))
+        data1 = bytes(range(first_length))
+        data2 = bytes(range(20, 20 + second_length))
         packet1 = self.security.encode_8370(data1, MSGTYPE_ENCRYPTED_REQUEST)
         packet2 = self.security.encode_8370(data2, MSGTYPE_ENCRYPTED_REQUEST)
         packets, incomplete = self.security.decode_8370(packet1 + packet2 + b"\x83")

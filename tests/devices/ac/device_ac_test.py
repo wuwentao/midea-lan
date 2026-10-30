@@ -1473,6 +1473,93 @@ class TestMideaACDevice:
             assert self.device.attributes[DeviceAttributes.target_temperature] == 27.0
             assert self.device.attributes[DeviceAttributes.indoor_temperature] == 28.8
 
+    @pytest.mark.parametrize("model", ["00000Q1B", "00000Q1F"])
+    def test_process_message_ignores_stale_a0_screen_display(
+        self,
+        model: str,
+    ) -> None:
+        """Keep C0 display state while accepting other A0 attributes."""
+        device = self._make_device(model, 44204)
+        c0_off_message = SimpleNamespace(
+            body_type=ListTypes.C0,
+            power=True,
+            screen_display=False,
+        )
+        stale_a0_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            power=True,
+            target_temperature=25.0,
+            screen_display=True,
+        )
+        b1_message = SimpleNamespace(
+            body_type=ListTypes.B1,
+            screen_display_alternate=True,
+        )
+        c0_on_message = SimpleNamespace(
+            body_type=ListTypes.C0,
+            power=True,
+            screen_display=True,
+        )
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            side_effect=[
+                c0_off_message,
+                stale_a0_message,
+                b1_message,
+            ],
+        ):
+            c0_off = device.process_message(b"")
+            stale_a0 = device.process_message(b"")
+            b1 = device.process_message(b"")
+
+        assert c0_off[DeviceAttributes.screen_display.value] is False
+        assert DeviceAttributes.screen_display.value not in stale_a0
+        assert stale_a0[DeviceAttributes.target_temperature.value] == 25.0
+        assert b1[DeviceAttributes.screen_display_alternate.value]
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.screen_display.value, True)
+            mock_build_send.assert_called_once()
+            assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            return_value=c0_on_message,
+        ):
+            c0_on = device.process_message(b"")
+
+        assert c0_on[DeviceAttributes.screen_display.value]
+        assert device.attributes[DeviceAttributes.screen_display]
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.screen_display.value, True)
+            mock_build_send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("other_model", 44204), ("00000Q1B", 1), ("00000Q1F", 1)],
+    )
+    def test_process_message_accepts_a0_display_for_other_models(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Keep A0 display updates enabled outside exact affected keys."""
+        device = self._make_device(model, subtype)
+        a0_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            power=True,
+            screen_display=True,
+        )
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            return_value=a0_message,
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.screen_display.value]
+        assert device.attributes[DeviceAttributes.screen_display]
+
     @staticmethod
     def _new_protocol_temperature_response() -> bytes:
         """Build a B1 query frame carrying a valid 0x7e temperature payload."""

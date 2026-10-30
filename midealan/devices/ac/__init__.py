@@ -207,6 +207,16 @@ STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.indoor_temperature,
     DeviceAttributes.outdoor_temperature,
 )
+# These models report an unreliable display state in A0 notifications while
+# their C0 replies track the physical display. Ignore only the A0 display field
+# and keep processing the notification's other state attributes.
+# https://github.com/wuwentao/midea_ac_lan/issues/1147
+STALE_A0_SCREEN_DISPLAY_MODELS = frozenset(
+    {
+        ("00000Q1B", 44204),
+        ("00000Q1F", 44204),
+    },
+)
 TIMER_ATTRIBUTES = (
     DeviceAttributes.power_on_timer,
     DeviceAttributes.power_off_timer,
@@ -675,6 +685,10 @@ class MideaACDevice(MideaDevice):
         is_stale_c0_temperature = (
             self._prefer_new_protocol_temperature and body_type == ListTypes.C0
         )
+        is_stale_a0_screen_display = (
+            self._model_key in STALE_A0_SCREEN_DISPLAY_MODELS
+            and body_type == ListTypes.A0
+        )
         if body_type in NEW_PROTOCOL_BODY_TYPES and hasattr(
             message,
             "power_off_timer",
@@ -731,6 +745,11 @@ class MideaACDevice(MideaDevice):
         for attr in self._attributes:
             if hasattr(message, str(attr)):
                 if is_stale_c0_temperature and attr in STALE_C0_TEMPERATURE_ATTRIBUTES:
+                    continue
+                if (
+                    is_stale_a0_screen_display
+                    and attr == DeviceAttributes.screen_display
+                ):
                     continue
                 if is_stale_c0_timer and attr in TIMER_ATTRIBUTES:
                     continue

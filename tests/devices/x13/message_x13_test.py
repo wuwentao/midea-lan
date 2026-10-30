@@ -79,6 +79,11 @@ class TestMessageSetFanLight:
         [
             ("power", True, 0x01, ListTypes.X01),
             ("power", False, 0x00, ListTypes.X01),
+            ("effect", 0, 0x01, ListTypes.X02),
+            ("effect", 1, 0x02, ListTypes.X02),
+            ("effect", 2, 0x03, ListTypes.X02),
+            ("effect", 3, 0x04, ListTypes.X02),
+            ("effect", 4, 0x05, ListTypes.X02),
             ("brightness", 100, 0x64, ListTypes.X04),
             ("color_temperature", 128, 0x80, ListTypes.X03),
             ("fan_power", True, 0x01, ListTypes.X31),
@@ -97,12 +102,22 @@ class TestMessageSetFanLight:
         msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
         setattr(msg, attr, value)
         assert msg._body == bytearray([expected_byte, 0x00, 0x00, 0x00, 0x00, 0x00])
+        assert msg.body == bytearray(
+            [expected_body_type, expected_byte, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
         assert msg.body_type == expected_body_type
 
     def test_set_body_default(self) -> None:
         """Test the default fan-light payload is six bytes long."""
         msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
         assert msg._body == bytearray(6)
+        assert msg.body_type == ListTypes.X00
+
+    def test_set_invalid_effect_uses_default_body(self) -> None:
+        """Test a fan-light scene outside the Lua range is not encoded."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
+        msg.effect = 5
+        assert msg.body == bytearray(7)
         assert msg.body_type == ListTypes.X00
 
 
@@ -129,8 +144,7 @@ class TestMessageMainLightBody:
         parsed = MessageMainLightBody(_build_status_body(fan_light=False))
         assert parsed.power is True
         assert parsed.fan_speed is None
-        assert parsed.fan_power is False
-        assert parsed.fan_state_valid is False
+        assert parsed.fan_power is None
 
     @pytest.mark.parametrize(("power_byte", "expected"), [(1, True), (0, False)])
     def test_fan_light_layout(self, power_byte: int, expected: bool) -> None:
@@ -141,15 +155,42 @@ class TestMessageMainLightBody:
         assert parsed.power is expected
         assert parsed.fan_speed == 41
         assert parsed.fan_power is True
-        assert parsed.fan_state_valid is True
 
-    def test_fan_light_truncated_body(self) -> None:
-        """Test a truncated fan-light body does not expose the fan state."""
-        body = _build_status_body(fan_light=True)[:10]
+    @pytest.mark.parametrize(
+        ("raw_effect", "expected_effect"),
+        [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4), (6, 0)],
+    )
+    def test_fan_light_effect_mapping(
+        self,
+        raw_effect: int,
+        expected_effect: int,
+    ) -> None:
+        """Test fan-light scene values follow the model's Lua protocol."""
+        body = _build_status_body(fan_light=True)
+        body[3] = raw_effect
         parsed = MessageMainLightBody(body, fan_light=True)
-        assert parsed.fan_state_valid is False
-        assert parsed.fan_speed is None
-        assert parsed.fan_power is False
+        assert parsed.effect == expected_effect
+
+    @pytest.mark.parametrize(
+        ("length", "expected_speed", "expected_power"),
+        [
+            (6, None, None),
+            (7, 41, None),
+            (10, 41, None),
+            (11, 41, True),
+        ],
+    )
+    def test_fan_light_fields_require_their_own_byte(
+        self,
+        length: int,
+        expected_speed: int | None,
+        expected_power: bool | None,
+    ) -> None:
+        """Test each fan field is exposed only when its byte is present."""
+        body = _build_status_body(fan_light=True)[:length]
+        parsed = MessageMainLightBody(body, fan_light=True)
+        assert parsed.fan_speed == expected_speed
+        assert parsed.fan_power is expected_power
 
     def test_response_propagates_fan_light(self) -> None:
         """Test Message13Response parses the fan-light layout when asked."""
@@ -161,6 +202,6 @@ class TestMessageMainLightBody:
             bytes(header + body + bytearray([0x00])),
             fan_light=True,
         )
-        assert response.power is True
-        assert response.fan_speed == 41
-        assert response.fan_power is True
+        assert response.power is True  # type: ignore[attr-defined]
+        assert response.fan_speed == 41  # type: ignore[attr-defined]
+        assert response.fan_power is True  # type: ignore[attr-defined]

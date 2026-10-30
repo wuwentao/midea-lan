@@ -48,6 +48,13 @@ class Midea13Device(MideaDevice):
         "cinema",
         "night",
     ]
+    _fan_light_effects: ClassVar[list[str]] = [
+        "manual",
+        "work",
+        "eating",
+        "night",
+        "film",
+    ]
 
     def __init__(
         self,
@@ -79,7 +86,7 @@ class Midea13Device(MideaDevice):
     @property
     def effects(self) -> list[str]:
         """Midea x13 Device effects."""
-        return Midea13Device._effects
+        return self._fan_light_effects if self._fan_light else self._effects
 
     @property
     def color_temp_range(self) -> list[int]:
@@ -115,20 +122,19 @@ class Midea13Device(MideaDevice):
             if message.control_success:
                 self.refresh_status()
         else:
-            # Fan state is only meaningful when the report actually carried it;
-            # a truncated fan-light body must not overwrite the device state.
-            fan_state_valid = getattr(message, "fan_state_valid", False)
             fan_attrs = (
                 DeviceAttributes.fan_power,
                 DeviceAttributes.fan_speed,
             )
             for status in self._attributes:
-                if status in fan_attrs and not fan_state_valid:
-                    continue
                 if hasattr(message, str(status)):
                     value = getattr(message, str(status))
+                    # A truncated fan-light report must not overwrite an
+                    # independently missing fan field.
+                    if status in fan_attrs and value is None:
+                        continue
                     if status == DeviceAttributes.effect:
-                        self._attributes[status] = Midea13Device._effects[value]
+                        self._attributes[status] = self.effects[value]
                     elif status == DeviceAttributes.color_temperature:
                         self._attributes[status] = self.midea_to_kelvin(value)
                     else:
@@ -151,8 +157,8 @@ class Midea13Device(MideaDevice):
             DeviceAttributes.power,
         ]:
             message = MessageSet(self._message_protocol_version, self._fan_light)
-            if attr == DeviceAttributes.effect and value in self._effects:
-                setattr(message, str(attr), Midea13Device._effects.index(str(value)))
+            if attr == DeviceAttributes.effect and value in self.effects:
+                setattr(message, str(attr), self.effects.index(str(value)))
             elif attr == DeviceAttributes.color_temperature:
                 setattr(message, str(attr), self.kelvin_to_midea(int(value)))
             else:

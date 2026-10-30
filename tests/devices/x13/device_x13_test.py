@@ -8,7 +8,7 @@ from midealan.const import ProtocolVersion
 from midealan.devices.x13 import DeviceAttributes, Midea13Device
 from midealan.devices.x13.message import MessageQuery, MessageSet
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
-from midealan.message import MessageType
+from midealan.message import ListTypes, MessageType
 
 
 class TestMidea13Device:
@@ -258,6 +258,10 @@ class TestMidea13FanLightDevice:
         assert self.device.attributes[DeviceAttributes.fan_power] is False
         assert self.device.attributes[DeviceAttributes.fan_speed] == 0
 
+    def test_effects_follow_lua_protocol(self) -> None:
+        """Test the fan-light model exposes its protocol scene names."""
+        assert self.device.effects == ["manual", "work", "eating", "night", "film"]
+
     def test_process_message_fan_light(self) -> None:
         """Test process message parses the fan-light layout."""
         header = bytearray(
@@ -275,13 +279,29 @@ class TestMidea13FanLightDevice:
         crc = bytearray([0x00])
         new_status = self.device.process_message(bytes(header + body + crc))
         assert self.device.attributes[DeviceAttributes.power] is True
+        assert self.device.attributes[DeviceAttributes.effect] == "manual"
         assert self.device.attributes[DeviceAttributes.fan_speed] == 41
         assert self.device.attributes[DeviceAttributes.fan_power] is True
         assert new_status[DeviceAttributes.fan_speed.value] == 41
         assert new_status[DeviceAttributes.fan_power.value] is True
 
+    @pytest.mark.parametrize(
+        ("effect", "expected"),
+        [("manual", 1), ("work", 2), ("eating", 3), ("night", 4), ("film", 5)],
+    )
+    def test_set_effect(self, effect: str, expected: int) -> None:
+        """Test fan-light scenes use register 0x02 and Lua values 1..5."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.effect.value, effect)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSet)
+            assert message.serialize()[10:-1] == bytearray(
+                [ListTypes.X02, expected, 0x00, 0x00, 0x00, 0x00, 0x00],
+            )
+            assert message.body_type == ListTypes.X02
+
     def test_process_message_truncated_fan_light(self) -> None:
-        """Test a truncated fan-light report keeps the previous fan state."""
+        """Test a truncated report updates only the present fan speed."""
         self.device._attributes[DeviceAttributes.fan_speed] = 55
         self.device._attributes[DeviceAttributes.fan_power] = True
         header = bytearray(
@@ -298,9 +318,9 @@ class TestMidea13FanLightDevice:
         new_status = self.device.process_message(
             bytes(header + body + bytearray([0x00])),
         )
-        assert self.device.attributes[DeviceAttributes.fan_speed] == 55
+        assert self.device.attributes[DeviceAttributes.fan_speed] == 41
         assert self.device.attributes[DeviceAttributes.fan_power] is True
-        assert DeviceAttributes.fan_speed.value not in new_status
+        assert new_status[DeviceAttributes.fan_speed.value] == 41
         assert DeviceAttributes.fan_power.value not in new_status
 
     @pytest.mark.parametrize(("value", "expected"), [(True, 0x01), (False, 0x00)])

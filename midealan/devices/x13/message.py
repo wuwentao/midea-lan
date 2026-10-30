@@ -10,10 +10,13 @@ from midealan.message import (
 )
 
 MAX_EFFECT = 5
+MAX_FAN_LIGHT_EFFECT = 4
+EFFECT_VALUE_OFFSET = 1
 MIN_FAN_SPEED = 1
 MAX_FAN_SPEED = 100
-# Fan-light models expect a six-byte set payload; the legacy layout uses four
-# and the appliance silently ignores the shorter one (verified on M0200008).
+# The downloaded M0200008 Lua emits the legacy four-byte payload, but the live
+# appliance silently ignores it and requires six bytes. MessageRequest prepends
+# the register, so these lengths correspond to five and seven UART body bytes.
 FAN_LIGHT_PAYLOAD_LENGTH = 6
 # A4 status body offsets. Fan-light models report the light power in a
 # different byte and append the fan state to the same report.
@@ -92,9 +95,21 @@ class MessageSet(Message13Base):
         if self.power is not None:
             self.body_type = ListTypes.X01
             body_byte = 0x01 if self.power else 0x00
-        elif self.effect is not None and self.effect in range(1, 6):
+        elif (
+            self.fan_light
+            and self.effect is not None
+            and self.effect in range(MAX_FAN_LIGHT_EFFECT + 1)
+        ):
+            self.body_type = ListTypes.X02
+            body_byte = self.effect + EFFECT_VALUE_OFFSET
+        elif (
+            not self.fan_light
+            and self.effect is not None
+            and self.effect in range(1, MAX_EFFECT + 1)
+        ):
+            # Preserve the existing scene encoding for legacy X13 models.
             self.body_type = ListTypes.X01
-            body_byte = self.effect + 1
+            body_byte = self.effect + EFFECT_VALUE_OFFSET
         elif self.color_temperature is not None:
             self.body_type = ListTypes.X03
             body_byte = self.color_temperature
@@ -121,20 +136,22 @@ class MessageMainLightBody(MessageBody):
         super().__init__(body)
         self.brightness = self.read_byte(body, 1)
         self.color_temperature = self.read_byte(body, 2)
-        self.effect = self.read_byte(body, 3) - 1
-        if self.effect > MAX_EFFECT:
+        self.effect = self.read_byte(body, 3) - EFFECT_VALUE_OFFSET
+        if fan_light and not 0 <= self.effect <= MAX_FAN_LIGHT_EFFECT:
+            self.effect = 0
+        elif self.effect > MAX_EFFECT:
             self.effect = 1
         power_byte = LIGHT_POWER_BYTE_FAN_LIGHT if fan_light else LIGHT_POWER_BYTE
         self.power = self.read_byte(body, power_byte) > 0
         # Fan-light models append the fan state to the report; other X13
-        # lights do not report a fan at all. Only trust the fan state when the
-        # body is long enough to carry it: read_byte returns 0 for a truncated
-        # body, which must not be reported as "fan off, speed 0".
+        # lights do not report a fan at all. Guard each field independently:
+        # read_byte returns 0 for a truncated body, which must not be reported
+        # as a device value.
         self.fan_speed: int | None = None
-        self.fan_power: bool = False
-        self.fan_state_valid: bool = fan_light and len(body) > FAN_POWER_BYTE
-        if self.fan_state_valid:
+        self.fan_power: bool | None = None
+        if fan_light and len(body) > FAN_SPEED_BYTE:
             self.fan_speed = self.read_byte(body, FAN_SPEED_BYTE)
+        if fan_light and len(body) > FAN_POWER_BYTE:
             self.fan_power = self.read_byte(body, FAN_POWER_BYTE) > 0
 
 

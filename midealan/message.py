@@ -2,12 +2,14 @@
 
 import logging
 import warnings
+from collections.abc import Collection
+from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, SupportsIndex, cast
 
 from typing_extensions import deprecated
 
-from midealan.const import DeviceType
+from midealan.const import MAX_BYTE_VALUE, MAX_DOUBLE_BYTE_VALUE, DeviceType
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -313,6 +315,123 @@ class MessageCheckSumError(Exception):
     """Message checksum exception."""
 
 
+TOSHIBA_FRAME_MAGIC = b"\x55\xaa\xcc\x33"
+TOSHIBA_HEADER_LENGTH = 16
+TOSHIBA_TRAILER_LENGTH = 2
+TOSHIBA_FRAME_VERSION = 1
+TOSHIBA_QUERY_FRAME_TYPE = 0x0003
+TOSHIBA_LENGTH_START = 4
+TOSHIBA_LENGTH_END = 6
+TOSHIBA_LENGTH_WIDTH = TOSHIBA_LENGTH_END - TOSHIBA_LENGTH_START
+TOSHIBA_VERSION_OFFSET = 6
+TOSHIBA_DEVICE_TYPE_OFFSET = 7
+TOSHIBA_CRC_POLYNOMIAL = 0x1021
+TOSHIBA_CRC_HIGH_BIT = 0x8000
+TOSHIBA_CRC_MASK = 0xFFFF
+TOSHIBA_CRC_BIT_WIDTH = 8
+TOSHIBA_RESERVED_START = 8
+TOSHIBA_RESERVED_END = 14
+TOSHIBA_FRAME_TYPE_START = 14
+TOSHIBA_FRAME_TYPE_END = 16
+TOSHIBA_FRAME_TYPE_WIDTH = TOSHIBA_FRAME_TYPE_END - TOSHIBA_FRAME_TYPE_START
+
+
+@dataclass(frozen=True, slots=True)
+class ToshibaFrame:
+    """Validated Toshiba UART frame."""
+
+    device_type: int
+    frame_type: int
+    body: bytes
+
+
+def toshiba_crc16(data: bytes | bytearray) -> int:
+    """Calculate the Toshiba CRC16-CCITT checksum."""
+    crc = 0
+    for value in data:
+        crc ^= value << 8
+        for _ in range(TOSHIBA_CRC_BIT_WIDTH):
+            crc = (
+                (crc << 1) ^ TOSHIBA_CRC_POLYNOMIAL
+                if crc & TOSHIBA_CRC_HIGH_BIT
+                else crc << 1
+            ) & TOSHIBA_CRC_MASK
+    return crc
+
+
+def encode_toshiba_frame(
+    device_type: DeviceType | int,
+    frame_type: int,
+    body: bytes | bytearray,
+    *,
+    wire_device_type: DeviceType | int | None = None,
+) -> bytearray:
+    """Wrap a device-specific body in the shared Toshiba UART envelope."""
+    logical_type = int(device_type)
+    wire_type = logical_type if wire_device_type is None else int(wire_device_type)
+    if (
+        not 0 <= logical_type <= MAX_BYTE_VALUE
+        or not 0 <= wire_type <= MAX_BYTE_VALUE
+        or not 0 <= frame_type <= MAX_DOUBLE_BYTE_VALUE
+    ):
+        raise ValueError("Toshiba device and frame types must fit their wire fields")
+    frame = bytearray(TOSHIBA_FRAME_MAGIC)
+    frame.extend((0).to_bytes(TOSHIBA_LENGTH_WIDTH, "little"))
+    frame.extend((TOSHIBA_FRAME_VERSION, wire_type))
+    frame.extend(bytes(TOSHIBA_RESERVED_END - TOSHIBA_RESERVED_START))
+    frame.extend(frame_type.to_bytes(TOSHIBA_FRAME_TYPE_WIDTH, "little"))
+    frame.extend(body)
+    frame.extend(bytes(TOSHIBA_TRAILER_LENGTH))
+    frame[TOSHIBA_LENGTH_START:TOSHIBA_LENGTH_END] = (
+        len(frame) - len(TOSHIBA_FRAME_MAGIC)
+    ).to_bytes(TOSHIBA_LENGTH_WIDTH, "little")
+    frame[-TOSHIBA_TRAILER_LENGTH:] = toshiba_crc16(
+        frame[:-TOSHIBA_TRAILER_LENGTH],
+    ).to_bytes(TOSHIBA_TRAILER_LENGTH, "little")
+    return frame
+
+
+def decode_toshiba_frame(
+    data: bytes | bytearray,
+    *,
+    expected_device_type: DeviceType | int,
+    allowed_frame_types: Collection[int] | None = None,
+    wire_device_type: DeviceType | int | None = None,
+) -> ToshibaFrame | None:
+    """Validate and decode a complete Toshiba UART frame."""
+    minimum_length = TOSHIBA_HEADER_LENGTH + TOSHIBA_TRAILER_LENGTH
+    expected_wire_type = (
+        int(expected_device_type) if wire_device_type is None else int(wire_device_type)
+    )
+    if (
+        len(data) < minimum_length
+        or data[: len(TOSHIBA_FRAME_MAGIC)] != TOSHIBA_FRAME_MAGIC
+        or int.from_bytes(
+            data[TOSHIBA_LENGTH_START:TOSHIBA_LENGTH_END],
+            "little",
+        )
+        != len(data) - len(TOSHIBA_FRAME_MAGIC)
+        or data[TOSHIBA_VERSION_OFFSET] != TOSHIBA_FRAME_VERSION
+        or data[TOSHIBA_DEVICE_TYPE_OFFSET] != expected_wire_type
+        or any(data[TOSHIBA_RESERVED_START:TOSHIBA_RESERVED_END])
+    ):
+        return None
+    frame_type = int.from_bytes(
+        data[TOSHIBA_FRAME_TYPE_START:TOSHIBA_FRAME_TYPE_END],
+        "little",
+    )
+    if allowed_frame_types is not None and frame_type not in allowed_frame_types:
+        return None
+    expected_crc = int.from_bytes(data[-TOSHIBA_TRAILER_LENGTH:], "little")
+    if toshiba_crc16(data[:-TOSHIBA_TRAILER_LENGTH]) != expected_crc:
+        return None
+    return ToshibaFrame(
+        device_type=int(expected_device_type),
+        frame_type=frame_type,
+        body=bytes(data[TOSHIBA_HEADER_LENGTH:-TOSHIBA_TRAILER_LENGTH]),
+    )
+
+
 class MessageType(IntEnum):
     """Message type."""
 
@@ -503,6 +622,53 @@ class MessageRequest(MessageBase):
         stream = self.header + self.body
         stream.append(MessageBase.checksum(stream[1:]))
         return stream
+
+
+class ToshibaMessageRequest(MessageRequest):
+    """Request using the Toshiba UART envelope instead of the Midea AA frame."""
+
+    def __init__(
+        self,
+        device_type: DeviceType,
+        protocol_version: int,
+        body: bytes | bytearray,
+        *,
+        frame_type: int = TOSHIBA_QUERY_FRAME_TYPE,
+        wire_device_type: DeviceType | int | None = None,
+    ) -> None:
+        """Store the device-specific body and optional wire-type override."""
+        super().__init__(
+            device_type=device_type,
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X00,
+        )
+        self._toshiba_body = bytearray(body)
+        self._toshiba_frame_type = frame_type
+        self._wire_device_type = wire_device_type
+
+    @property
+    def _body(self) -> bytearray:
+        return self._toshiba_body
+
+    @property
+    def body(self) -> bytearray:
+        """Return the device-specific body without an AA body-type prefix."""
+        return self._body
+
+    @property
+    def header(self) -> bytearray:
+        """Return the real Toshiba header, including the advertised length."""
+        return self.serialize()[:TOSHIBA_HEADER_LENGTH]
+
+    def serialize(self) -> bytearray:
+        """Serialize the complete Toshiba UART frame."""
+        return encode_toshiba_frame(
+            self.device_type,
+            self._toshiba_frame_type,
+            self.body,
+            wire_device_type=self._wire_device_type,
+        )
 
 
 class MessageQuestCustom(MessageRequest):

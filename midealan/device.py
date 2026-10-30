@@ -13,11 +13,15 @@ from typing_extensions import deprecated
 from .const import DeviceType, ProtocolVersion
 from .exceptions import SocketException
 from .message import (
+    TOSHIBA_FRAME_MAGIC,
     MessageApplianceResponse,
     MessageQueryAppliance,
     MessageQuestCustom,
     MessageRequest,
     MessageType,
+    ToshibaFrame,
+    ToshibaMessageRequest,
+    decode_toshiba_frame,
 )
 from .packet_builder import PacketBuilder
 from .security import (
@@ -109,6 +113,13 @@ class MideaDeviceInitKwargs(TypedDict):
 class MideaDevice(threading.Thread):
     """Midea device."""
 
+    TOSHIBA_MANUFACTURER_CODE = "0008"
+    # Identity selects the protocol; each family opts in its body decoder.
+    TOSHIBA_SUPPORTED: ClassVar[bool] = False
+    TOSHIBA_RESPONSE_FRAME_TYPES: ClassVar[frozenset[int]] = frozenset(
+        (MessageType.query,),
+    )
+
     def __init__(
         self,
         *,
@@ -171,6 +182,11 @@ class MideaDevice(threading.Thread):
         # add the device at setup time (it is not part of the device payload).
         cloud_name = kwargs.get("cloud_name")
         self._cloud_name = (cloud_name.strip() or None) if cloud_name else None
+        self._toshiba_protocol = (
+            self.manufacturer_code == self.TOSHIBA_MANUFACTURER_CODE
+        )
+        self._last_response_toshiba: bool | None = False
+        self._selected_toshiba_wire_type: DeviceType | int | None = None
 
     _fahrenheit_default: ClassVar[bool] = False
 
@@ -600,8 +616,13 @@ class MideaDevice(threading.Thread):
             return real_cmds, True, True
         return real_cmds, status_appended, False
 
-    def _use_query_fallback(self, cmds: list, queued: set[str]) -> list:
-        """Append the alternative query family to ``cmds`` and return it.
+    def _use_query_fallback(
+        self,
+        cmds: list,
+        queued: set[str],
+        candidates: list,
+    ) -> list:
+        """Append one alternative query-family stage to ``cmds`` and return it.
 
         Called from refresh_status() once every query of the primary family has
         timed out and before the device is declared unsupported. The fallback
@@ -612,15 +633,31 @@ class MideaDevice(threading.Thread):
         device has no alternative family, in which case the caller keeps the
         primary result and raises NoSupportedProtocol as before.
         """
-        fallback = [
-            cmd
-            for cmd in self.build_query_fallback()
-            if cmd.__class__.__name__ not in queued
-        ]
+        fallback = [cmd for cmd in candidates if cmd.__class__.__name__ not in queued]
         for cmd in fallback:
             queued.add(cmd.__class__.__name__)
             cmds.append(cmd)
         return fallback
+
+    def _use_next_query_fallback(
+        self,
+        cmds: list,
+        queued: set[str],
+        stages: list[list],
+        stage_index: int,
+    ) -> tuple[list, int]:
+        """Append the next non-empty fallback stage and return its new index."""
+        fallback = []
+        while stage_index < len(stages):
+            fallback = self._use_query_fallback(
+                cmds,
+                queued,
+                stages[stage_index],
+            )
+            stage_index += 1
+            if fallback:
+                break
+        return fallback, stage_index
 
     def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status.
@@ -690,10 +727,8 @@ class MideaDevice(threading.Thread):
         # Index-based so the next stage, built only once the current reply is
         # parsed, can be appended and validated within this same checked pass.
         index = 0
-        # Set once the alternative family has been probed, so a device that
-        # answers neither family fails out to the reconnect path instead of
-        # being re-probed for the rest of the connection.
-        fallback_probed = False
+        fallback_stages: list[list] | None = None
+        fallback_stage_index = 0
         while index < len(cmds):
             cmd = cmds[index]
             index += 1
@@ -749,11 +784,7 @@ class MideaDevice(threading.Thread):
             # `real_cmds and` keeps the check vacuously false for a device whose
             # build_query() is empty, which would otherwise raise on 0 == 0.
             if real_cmds and error_count == len(real_cmds):
-                if (
-                    check_protocol
-                    and not fallback_probed
-                    and timeout_count == len(real_cmds)
-                ):
+                if check_protocol and timeout_count == len(real_cmds):
                     # Every query of the primary family is silent, which is not
                     # proof that the appliance serves no status protocol: it
                     # may answer a different family (see
@@ -762,8 +793,14 @@ class MideaDevice(threading.Thread):
                     # that was merely unreachable answers neither family,
                     # nothing switches and the primary family is probed again
                     # on the next connect.
-                    fallback_probed = True
-                    fallback_cmds = self._use_query_fallback(cmds, queued)
+                    if fallback_stages is None:
+                        fallback_stages = self.build_query_fallback_stages()
+                    fallback_cmds, fallback_stage_index = self._use_next_query_fallback(
+                        cmds,
+                        queued,
+                        fallback_stages,
+                        fallback_stage_index,
+                    )
                     if fallback_cmds:
                         _LOGGER.debug(
                             "[%s] no reply to %s, probing the alternative "
@@ -910,9 +947,13 @@ class MideaDevice(threading.Thread):
         """Return the delay between periodic query sends."""
         return PERIODIC_QUERY_DELAY
 
-    def _is_query_response_valid(self, _cmd: MessageRequest) -> bool:
+    def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
         """Return whether the received response belongs to the queried family."""
-        return True
+        if not self.TOSHIBA_SUPPORTED or isinstance(cmd, MessageQueryAppliance):
+            return True
+        if isinstance(cmd, ToshibaMessageRequest):
+            return self._last_response_toshiba is True
+        return self._last_response_toshiba is False
 
     def _should_defer_query(self, _cmd: MessageRequest) -> bool:
         """Return whether a timed-out query should be retried later."""
@@ -932,10 +973,17 @@ class MideaDevice(threading.Thread):
         queries). Before declaring the protocol unsupported, refresh_status()
         probes this list once per connection, so such a device is detected
         instead of being left unavailable until the integration is reloaded.
-        The base class has no alternative family, which keeps the previous
-        behaviour for every other device.
+        Only families with a Toshiba body decoder opt in the Toshiba probe.
+        Other families retain their previous behaviour.
         """
+        if self.TOSHIBA_SUPPORTED and not self.toshiba_protocol:
+            return self.build_toshiba_query()
         return []
+
+    def build_query_fallback_stages(self) -> list[list]:
+        """Return alternative query families in the order they should be probed."""
+        fallback = self.build_query_fallback()
+        return [fallback] if fallback else []
 
     def build_init_query(self) -> list:
         """Build one-time queries to run once at connect time.
@@ -1265,3 +1313,76 @@ class MideaDevice(threading.Thread):
         for status in self._attributes:
             ret[str(status)] = self._attributes[status]
         return ret
+
+    @property
+    def toshiba_protocol(self) -> bool:
+        """Return whether validated identity or traffic selected Toshiba framing."""
+        return self._toshiba_protocol
+
+    def toshiba_wire_device_type(self) -> DeviceType | int:
+        """Return the device type written in Toshiba frames."""
+        return self._selected_toshiba_wire_type or self.device_type
+
+    def toshiba_wire_device_types(self) -> tuple[DeviceType | int, ...]:
+        """Return accepted wire device types while detecting a profile."""
+        if self._selected_toshiba_wire_type is not None:
+            return (self._selected_toshiba_wire_type,)
+        return (self.device_type,)
+
+    def build_toshiba_query(self) -> list[MessageRequest]:
+        """Build the common one-byte base query used by most Toshiba families."""
+        return [
+            ToshibaMessageRequest(
+                self.device_type,
+                self._message_protocol_version,
+                b"\x00",
+                wire_device_type=self.toshiba_wire_device_type(),
+            ),
+        ]
+
+    def process_toshiba_message(self, msg: bytes) -> dict[str, Any] | None:
+        """Validate, parse, and atomically select the Toshiba protocol family."""
+        if not self.TOSHIBA_SUPPORTED:
+            return None
+        is_toshiba_frame = msg.startswith(TOSHIBA_FRAME_MAGIC)
+        if not self.toshiba_protocol and not is_toshiba_frame:
+            self._last_response_toshiba = False
+            return None
+        frame = None
+        selected_wire_type: DeviceType | int | None = None
+        for wire_type in self.toshiba_wire_device_types():
+            frame = decode_toshiba_frame(
+                msg,
+                expected_device_type=self.device_type,
+                allowed_frame_types=self.TOSHIBA_RESPONSE_FRAME_TYPES,
+                wire_device_type=wire_type,
+            )
+            if frame is not None:
+                selected_wire_type = wire_type
+                break
+        if frame is None:
+            self._last_response_toshiba = None
+            _LOGGER.debug("[%s] Ignored invalid Toshiba frame", self.device_id)
+            return {}
+        status = self.process_toshiba_frame(frame)
+        if status is None:
+            self._last_response_toshiba = None
+            _LOGGER.debug(
+                "[%s] Ignored unsupported Toshiba body %s",
+                self.device_id,
+                frame.body.hex(),
+            )
+            return {}
+        self._last_response_toshiba = True
+        self._selected_toshiba_wire_type = selected_wire_type
+        self._toshiba_protocol = True
+        return status
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Parse a Toshiba body when the appliance family provides a decoder."""
+        raise NotImplementedError
+
+    def reject_toshiba_write(self) -> None:
+        """Reject unverified writes while a device uses Toshiba framing."""
+        if self.toshiba_protocol:
+            raise ValueError("Toshiba device writes require hardware verification")

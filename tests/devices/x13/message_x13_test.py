@@ -3,7 +3,13 @@
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.devices.x13.message import Message13Base, MessageQuery, MessageSet
+from midealan.devices.x13.message import (
+    Message13Base,
+    Message13Response,
+    MessageMainLightBody,
+    MessageQuery,
+    MessageSet,
+)
 from midealan.message import ListTypes, MessageType
 
 
@@ -63,3 +69,139 @@ class TestMessageSet:
         msg = MessageSet(protocol_version=ProtocolVersion.V1)
         assert msg._body == bytearray([0x00, 0x00, 0x00, 0x00])
         assert msg.body_type == ListTypes.X00
+
+
+class TestMessageSetFanLight:
+    """Test x13 Message Set for fan-light models."""
+
+    @pytest.mark.parametrize(
+        ("attr", "value", "expected_byte", "expected_body_type"),
+        [
+            ("power", True, 0x01, ListTypes.X01),
+            ("power", False, 0x00, ListTypes.X01),
+            ("effect", 0, 0x01, ListTypes.X02),
+            ("effect", 1, 0x02, ListTypes.X02),
+            ("effect", 2, 0x03, ListTypes.X02),
+            ("effect", 3, 0x04, ListTypes.X02),
+            ("effect", 4, 0x05, ListTypes.X02),
+            ("brightness", 100, 0x64, ListTypes.X04),
+            ("color_temperature", 128, 0x80, ListTypes.X03),
+            ("fan_power", True, 0x01, ListTypes.X31),
+            ("fan_power", False, 0x00, ListTypes.X31),
+            ("fan_speed", 41, 0x29, ListTypes.X34),
+        ],
+    )
+    def test_set_body(
+        self,
+        attr: str,
+        value: bool | int,
+        expected_byte: int,
+        expected_body_type: ListTypes,
+    ) -> None:
+        """Test the six-byte payload used by fan-light models."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
+        setattr(msg, attr, value)
+        assert msg._body == bytearray([expected_byte, 0x00, 0x00, 0x00, 0x00, 0x00])
+        assert msg.body == bytearray(
+            [expected_body_type, expected_byte, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
+        assert msg.body_type == expected_body_type
+
+    def test_set_body_default(self) -> None:
+        """Test the default fan-light payload is six bytes long."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
+        assert msg._body == bytearray(6)
+        assert msg.body_type == ListTypes.X00
+
+    def test_set_invalid_effect_uses_default_body(self) -> None:
+        """Test a fan-light scene outside the Lua range is not encoded."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1, fan_light=True)
+        msg.effect = 5
+        assert msg.body == bytearray(7)
+        assert msg.body_type == ListTypes.X00
+
+
+def _build_status_body(fan_light: bool) -> bytearray:
+    """Build an A4 status body in either layout."""
+    body = bytearray(11)
+    body[0] = 0xA4  # main light body type
+    body[1] = 100  # brightness
+    body[2] = 255  # color temperature
+    body[3] = 3  # effect raw value
+    body[5] = 1 if fan_light else 0  # light power on fan-light models
+    body[6] = 41  # fan speed raw value
+    body[8] = 0 if fan_light else 1  # light power on legacy models
+    body[10] = 1  # fan power
+
+    return body
+
+
+class TestMessageMainLightBody:
+    """Test x13 main light body parsing."""
+
+    def test_legacy_layout(self) -> None:
+        """Test the legacy layout reads light power from byte 8."""
+        parsed = MessageMainLightBody(_build_status_body(fan_light=False))
+        assert parsed.power is True
+        assert parsed.fan_speed is None
+        assert parsed.fan_power is None
+
+    @pytest.mark.parametrize(("power_byte", "expected"), [(1, True), (0, False)])
+    def test_fan_light_layout(self, power_byte: int, expected: bool) -> None:
+        """Test the fan-light layout reads power, speed and fan state."""
+        body = _build_status_body(fan_light=True)
+        body[5] = power_byte
+        parsed = MessageMainLightBody(body, fan_light=True)
+        assert parsed.power is expected
+        assert parsed.fan_speed == 41
+        assert parsed.fan_power is True
+
+    @pytest.mark.parametrize(
+        ("raw_effect", "expected_effect"),
+        [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4), (6, 0)],
+    )
+    def test_fan_light_effect_mapping(
+        self,
+        raw_effect: int,
+        expected_effect: int,
+    ) -> None:
+        """Test fan-light scene values follow the model's Lua protocol."""
+        body = _build_status_body(fan_light=True)
+        body[3] = raw_effect
+        parsed = MessageMainLightBody(body, fan_light=True)
+        assert parsed.effect == expected_effect
+
+    @pytest.mark.parametrize(
+        ("length", "expected_speed", "expected_power"),
+        [
+            (6, None, None),
+            (7, 41, None),
+            (10, 41, None),
+            (11, 41, True),
+        ],
+    )
+    def test_fan_light_fields_require_their_own_byte(
+        self,
+        length: int,
+        expected_speed: int | None,
+        expected_power: bool | None,
+    ) -> None:
+        """Test each fan field is exposed only when its byte is present."""
+        body = _build_status_body(fan_light=True)[:length]
+        parsed = MessageMainLightBody(body, fan_light=True)
+        assert parsed.fan_speed == expected_speed
+        assert parsed.fan_power is expected_power
+
+    def test_response_propagates_fan_light(self) -> None:
+        """Test Message13Response parses the fan-light layout when asked."""
+        header = bytearray(
+            [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [MessageType.query],
+        )
+        body = _build_status_body(fan_light=True)
+        response = Message13Response(
+            bytes(header + body + bytearray([0x00])),
+            fan_light=True,
+        )
+        assert response.power is True  # type: ignore[attr-defined]
+        assert response.fan_speed == 41  # type: ignore[attr-defined]
+        assert response.fan_power is True  # type: ignore[attr-defined]

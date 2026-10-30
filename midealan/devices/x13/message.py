@@ -10,6 +10,23 @@ from midealan.message import (
 )
 
 MAX_EFFECT = 5
+MAX_FAN_LIGHT_EFFECT = 4
+EFFECT_VALUE_OFFSET = 1
+MIN_FAN_SPEED = 1
+MAX_FAN_SPEED = 100
+# The downloaded M0200008 Lua emits the legacy four-byte payload, but the live
+# appliance silently ignores it and requires six bytes. MessageRequest prepends
+# the register, so these lengths correspond to five and seven UART body bytes.
+FAN_LIGHT_PAYLOAD_LENGTH = 6
+# A4 status body offsets. Fan-light models report the light power in a
+# different byte and append the fan state to the same report.
+LIGHT_POWER_BYTE = 8
+LIGHT_POWER_BYTE_FAN_LIGHT = 5
+FAN_SPEED_BYTE = 6
+FAN_POWER_BYTE = 10
+#: Payload written to the fan power register (0x31).
+FAN_POWER_ON = 0x01
+FAN_POWER_OFF = 0x00
 
 
 class Message13Base(MessageRequest):
@@ -53,17 +70,24 @@ class MessageQuery(Message13Base):
 class MessageSet(Message13Base):
     """X13 message set."""
 
-    def __init__(self, protocol_version: int) -> None:
+    def __init__(
+        self,
+        protocol_version: int,
+        fan_light: bool = False,
+    ) -> None:
         """Initialize X13 message set."""
         super().__init__(
             protocol_version=protocol_version,
             message_type=MessageType.set,
             body_type=ListTypes.X00,
         )
+        self.fan_light = fan_light
         self.brightness: int | None = None
         self.color_temperature: int | None = None
         self.effect: int | None = None
         self.power: bool | None = None
+        self.fan_power: bool | None = None
+        self.fan_speed: int | None = None
 
     @property
     def _body(self) -> bytearray:
@@ -71,30 +95,64 @@ class MessageSet(Message13Base):
         if self.power is not None:
             self.body_type = ListTypes.X01
             body_byte = 0x01 if self.power else 0x00
-        elif self.effect is not None and self.effect in range(1, 6):
+        elif (
+            self.fan_light
+            and self.effect is not None
+            and self.effect in range(MAX_FAN_LIGHT_EFFECT + 1)
+        ):
+            self.body_type = ListTypes.X02
+            body_byte = self.effect + EFFECT_VALUE_OFFSET
+        elif (
+            not self.fan_light
+            and self.effect is not None
+            and self.effect in range(1, MAX_EFFECT + 1)
+        ):
+            # Preserve the existing scene encoding for legacy X13 models.
             self.body_type = ListTypes.X01
-            body_byte = self.effect + 1
+            body_byte = self.effect + EFFECT_VALUE_OFFSET
         elif self.color_temperature is not None:
             self.body_type = ListTypes.X03
             body_byte = self.color_temperature
         elif self.brightness is not None:
             self.body_type = ListTypes.X04
             body_byte = self.brightness
-        return bytearray([body_byte, 0x00, 0x00, 0x00])
+        elif self.fan_power is not None:
+            self.body_type = ListTypes.X31
+            body_byte = FAN_POWER_ON if self.fan_power else FAN_POWER_OFF
+        elif self.fan_speed is not None:
+            self.body_type = ListTypes.X34
+            body_byte = self.fan_speed
+        body = bytearray([body_byte, 0x00, 0x00, 0x00])
+        if self.fan_light:
+            body += bytearray(FAN_LIGHT_PAYLOAD_LENGTH - len(body))
+        return body
 
 
 class MessageMainLightBody(MessageBody):
     """X13 message main light body."""
 
-    def __init__(self, body: bytearray) -> None:
+    def __init__(self, body: bytearray, fan_light: bool = False) -> None:
         """Initialize X13 message main light body."""
         super().__init__(body)
         self.brightness = self.read_byte(body, 1)
         self.color_temperature = self.read_byte(body, 2)
-        self.effect = self.read_byte(body, 3) - 1
-        if self.effect > MAX_EFFECT:
+        self.effect = self.read_byte(body, 3) - EFFECT_VALUE_OFFSET
+        if fan_light and not 0 <= self.effect <= MAX_FAN_LIGHT_EFFECT:
+            self.effect = 0
+        elif self.effect > MAX_EFFECT:
             self.effect = 1
-        self.power = self.read_byte(body, 8) > 0
+        power_byte = LIGHT_POWER_BYTE_FAN_LIGHT if fan_light else LIGHT_POWER_BYTE
+        self.power = self.read_byte(body, power_byte) > 0
+        # Fan-light models append the fan state to the report; other X13
+        # lights do not report a fan at all. Guard each field independently:
+        # read_byte returns 0 for a truncated body, which must not be reported
+        # as a device value.
+        self.fan_speed: int | None = None
+        self.fan_power: bool | None = None
+        if fan_light and len(body) > FAN_SPEED_BYTE:
+            self.fan_speed = self.read_byte(body, FAN_SPEED_BYTE)
+        if fan_light and len(body) > FAN_POWER_BYTE:
+            self.fan_power = self.read_byte(body, FAN_POWER_BYTE) > 0
 
 
 class MessageMainLightResponseBody(MessageBody):
@@ -109,11 +167,11 @@ class MessageMainLightResponseBody(MessageBody):
 class Message13Response(MessageResponse):
     """X13 message response."""
 
-    def __init__(self, message: bytes) -> None:
+    def __init__(self, message: bytes, fan_light: bool = False) -> None:
         """Initialize X13 message response."""
         super().__init__(bytearray(message))
         if self.body_type == ListTypes.A4:
-            self.set_body(MessageMainLightBody(super().body))
+            self.set_body(MessageMainLightBody(super().body, fan_light))
         elif self.message_type == MessageType.set and self.body_type > ListTypes.X80:
             self.set_body(MessageMainLightResponseBody(super().body))
         self.control_success: bool

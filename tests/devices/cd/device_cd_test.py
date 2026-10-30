@@ -677,7 +677,10 @@ class TestMideaCDDevice:
         assert self.device.attributes[DeviceAttributes.auto_sterilize_hour] == 8
         assert self.device.attributes[DeviceAttributes.auto_sterilize_minute] == 15
 
-    @pytest.mark.parametrize("model", ["RSJRAC06", "RSJRAC07", "2530001N"])
+    @pytest.mark.parametrize(
+        "model",
+        ["RSJRAC06", "RSJRAC07", "RSJRAC08", "2530001N"],
+    )
     @pytest.mark.parametrize(
         ("fahrenheit", "raw_current"),
         [(False, 110), (True, 104)],
@@ -696,13 +699,61 @@ class TestMideaCDDevice:
         body[35] = 0x80 if fahrenheit else 0x00
         body[8] = 68
         body[4] = raw_current
-        if model == "2530001N":
+        signed = model in {"2530001N", "RSJRAC08"}
+        if signed:
             body[55] = 1
         status = device.process_message(_build_message(MessageType.query, body))
-        expected_outdoor = 19.0 if model == "2530001N" else 20.0
-        expected_current = 40.0 if model != "2530001N" else (40.0, 37.0)[fahrenheit]
+        expected_outdoor = 19.0 if signed else 20.0
+        expected_current = (40.0, 37.0)[fahrenheit] if signed else 40.0
         assert status[DeviceAttributes.outdoor_temperature.value] == expected_outdoor
         assert status[DeviceAttributes.current_temperature.value] == expected_current
+
+    def test_process_message_rsjrac08_real_status_frame(self) -> None:
+        """Decode a real RSJRAC08 status frame (Midea MCHW-50VN3A).
+
+        Device protocol V3, message protocol 8, minus_support (body[55]) = 1.
+        Setpoint, limits, tank and coil temperatures are raw degrees C (new
+        protocol); current and outdoor use the capability-gated half-degree
+        decoding verified for 2530001N: 148 -> 59 C (agreeing with the 58/57 C
+        top/bottom sensors) and 78 -> 24 C.
+        """
+        device = _make_device(model="RSJRAC08")
+        assert device._lua_protocol == LuaProtocol.new
+        frame = bytes.fromhex(
+            "aa4bcd000000000008030101113c943a39164e23412b0600160016000600003c"
+            "00000000000003090000000000000000413f3f3f3f3f3f01170000000000040100"
+            "01024641463c41000000ef",
+        )
+        status = device.process_message(frame)
+        assert status[DeviceAttributes.target_temperature.value] == 60.0
+        assert status[DeviceAttributes.min_temperature.value] == 43.0
+        assert status[DeviceAttributes.max_temperature.value] == 65.0
+        assert status[DeviceAttributes.current_temperature.value] == 59.0
+        assert status[DeviceAttributes.top_temperature.value] == 58.0
+        assert status[DeviceAttributes.bottom_temperature.value] == 57.0
+        assert status[DeviceAttributes.condenser_temperature.value] == 22.0
+        assert status[DeviceAttributes.compressor_temperature.value] == 35.0
+        assert status[DeviceAttributes.outdoor_temperature.value] == 24.0
+        assert status[DeviceAttributes.support_negative_temperature.value] is True
+
+    def test_rsjrac08_power_write_preserves_target_and_max(self) -> None:
+        """A write after decoding the real frame sends 60/65 C, not garbage (#1015)."""
+        device = _make_device(model="RSJRAC08")
+        frame = bytes.fromhex(
+            "aa4bcd000000000008030101113c943a39164e23412b0600160016000600003c"
+            "00000000000003090000000000000000413f3f3f3f3f3f01170000000000040100"
+            "01024641463c41000000ef",
+        )
+        device.process_message(frame)
+
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute(DeviceAttributes.power.value, False)
+
+        mock_send.assert_called_once()
+        message = mock_send.call_args[0][0]
+        assert message.use_old_protocol is False
+        assert message.body[4] == 60
+        assert message.body[23] == 65
 
     def test_2530001n_power_write_preserves_new_protocol_temperatures(self) -> None:
         """A power write keeps the model's correctly decoded target and maximum."""
@@ -732,6 +783,7 @@ class TestMideaCDDevice:
         assert message.body[4] == 50
         assert message.body[23] == 65
 
+    @pytest.mark.parametrize("model", ["2530001N", "RSJRAC08"])
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
@@ -745,11 +797,12 @@ class TestMideaCDDevice:
     )
     def test_2530001n_negative_temperature_sensor_decoding(
         self,
+        model: str,
         raw: int,
         expected: float,
     ) -> None:
-        """Decode 2530001N tank values as its official plugin does."""
-        device = _make_device(model="2530001N")
+        """Decode signed-model tank values as the official plugin does."""
+        device = _make_device(model=model)
         body = _general_body()
         body[4] = raw
         body[55] = 1
@@ -853,6 +906,7 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.current_temperature.value] == -48.0
         assert device.attributes[DeviceAttributes.current_temperature] == -48.0
 
+    @pytest.mark.parametrize("model", ["2530001N", "RSJRAC08"])
     @pytest.mark.parametrize(
         ("negative_support", "raw", "expected"),
         [
@@ -866,12 +920,13 @@ class TestMideaCDDevice:
     )
     def test_2530001n_outdoor_temperature_uses_capability_encoding(
         self,
+        model: str,
         negative_support: bool,
         raw: int,
         expected: float,
     ) -> None:
-        """Decode 2530001N outdoor values using the reported capability."""
-        device = _make_device(model="2530001N")
+        """Decode signed-model outdoor values using the reported capability."""
+        device = _make_device(model=model)
         body = _general_body()
         body[8] = raw
         body[55] = int(negative_support)
@@ -1069,7 +1124,7 @@ class TestMideaCDDevice:
 
     @pytest.mark.parametrize(
         "model",
-        ["test_model", "RSJ18RD2", "RSJRAC01", "RSJRAC06", "RSJRAC07"],
+        ["test_model", "RSJ18RD2", "RSJRAC01", "RSJRAC06", "RSJRAC07", "RSJRAC08"],
     )
     @pytest.mark.parametrize("fahrenheit", [False, True])
     def test_process_message_other_models_keep_raw_tank_temperatures(
@@ -1284,7 +1339,7 @@ class TestMideaCDDevice:
 
     @pytest.mark.parametrize(
         "model",
-        ["RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"],
+        ["RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "RSJRAC08", "2530001N"],
     )
     def test_auto_lua_protocol_resolves_new(self, model: str) -> None:
         """Known new-protocol models resolve the auto Lua protocol to new."""

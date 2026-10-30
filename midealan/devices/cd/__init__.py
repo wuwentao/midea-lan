@@ -150,14 +150,14 @@ class MideaCDDevice(MideaDevice):
     """Midea CD device."""
 
     _new_protocol_models: ClassVar[frozenset[str]] = frozenset(
-        {"RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "2530001N"},
+        {"RSJ000CB", "RSJRAC01", "RSJRAC06", "RSJRAC07", "RSJRAC08", "2530001N"},
     )
     _forced_temperature_models: ClassVar[frozenset[str]] = frozenset(
-        {"RSJRAC06", "RSJRAC07", "2530001N"},
+        {"RSJRAC06", "RSJRAC07", "RSJRAC08", "2530001N"},
     )
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
     _negative_temperature_models: ClassVar[frozenset[str]] = frozenset(
-        {"2530001N"},
+        {"RSJRAC08", "2530001N"},
     )
 
     _modes: ClassVar[dict[int, str]] = {

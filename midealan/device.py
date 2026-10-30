@@ -949,7 +949,7 @@ class MideaDevice(threading.Thread):
 
     def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
         """Return whether the received response belongs to the queried family."""
-        if not self.TOSHIBA_SUPPORTED:
+        if not self.TOSHIBA_SUPPORTED or isinstance(cmd, MessageQueryAppliance):
             return True
         if isinstance(cmd, ToshibaMessageRequest):
             return self._last_response_toshiba is True

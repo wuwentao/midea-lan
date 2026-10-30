@@ -23,6 +23,7 @@ from midealan.device import (
 )
 from midealan.exceptions import SocketException
 from midealan.message import (
+    MessageQueryAppliance,
     MessageRequest,
     MessageType,
     ToshibaFrame,
@@ -266,6 +267,8 @@ class TestMideaDevice:
         assert device.toshiba_wire_device_type() == DeviceType.DB
         assert device.toshiba_wire_device_types() == (DeviceType.DB,)
         assert device._is_query_response_valid(fallback) is True
+        assert device._is_query_response_valid(MessageQueryAppliance(DeviceType.DB))
+        assert device._is_query_response_valid(MagicMock(spec=MessageRequest)) is False
 
     def test_initial_attributes(self) -> None:
         """Test initial attributes."""

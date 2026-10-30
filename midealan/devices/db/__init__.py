@@ -6,7 +6,12 @@ from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.devices.toshiba import (
+    TOSHIBA_WASHER_STATUS_RUNNING,
+    decode_toshiba_washer_status,
+)
 from midealan.exceptions import ValueWrongType
+from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
     PROFILE_MODEL,
@@ -14,6 +19,7 @@ from .message import (
     PROFILE_V41_MODEL,
     PROFILE_V41_SUBTYPE,
     PROGRAMS,
+    TOSHIBA_PROGRAMS,
     V41_PROGRAMS,
     V41_TEMPERATURES,
     DBControls,
@@ -24,6 +30,10 @@ from .message import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+TOSHIBA_MODE_OFFSET = 2
+TOSHIBA_PROGRAM_OFFSET = 3
+TOSHIBA_TEMPERATURE_OFFSET = 14
 
 
 class DeviceAttributes(StrEnum):
@@ -67,6 +77,12 @@ class DeviceAttributes(StrEnum):
 
 class MideaDBDevice(MideaDevice):
     """Midea DB device."""
+
+    TOSHIBA_SUPPORTED = True
+
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (MessageType.set, MessageType.query, MessageType.notify1),
+    )
 
     _status: ClassVar[dict[int, str]] = {
         0: "idle",
@@ -222,6 +238,24 @@ class MideaDBDevice(MideaDevice):
         "unknown",
     ]
 
+    _toshiba_mode: ClassVar[dict[int, str]] = {
+        0x00: "none",
+        0x01: "wash_dry",
+        0x02: "wash",
+        0x03: "dry",
+        0x04: "clean_care",
+        0x05: "care",
+    }
+
+    _toshiba_status: ClassVar[dict[int, str]] = {
+        0x00: "power_off",
+        0x01: "power_on",
+        0x02: "running",
+        0x03: "pause",
+        0x04: "finish",
+        0x50: "pop_up",
+    }
+
     def __init__(
         self,
         *,
@@ -264,7 +298,8 @@ class MideaDBDevice(MideaDevice):
         self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
         self._controls = (
             DBControls()
-            if self.subtype == PROFILE_SUBTYPE
+            if not self.toshiba_protocol
+            and self.subtype == PROFILE_SUBTYPE
             and PROFILE_MODEL in (self.model, self.sn8)
             else None
         )
@@ -275,12 +310,17 @@ class MideaDBDevice(MideaDevice):
         """Return verified model options, including actual-minute time choices."""
         return self._controls.options(attr) if self._controls is not None else []
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea DB device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea DB device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageDBResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -336,6 +376,48 @@ class MideaDBDevice(MideaDevice):
             new_status.update({str(attr): value for attr, value in controls.items()})
         return new_status
 
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode the base status shared by Toshiba DB versions 24 through 33."""
+        body = frame.body
+        base_status = decode_toshiba_washer_status(body)
+        if base_status is None:
+            return None
+        values: dict[DeviceAttributes, Any] = {
+            DeviceAttributes.power: base_status.machine_status != 0,
+            DeviceAttributes.start: (
+                base_status.machine_status == TOSHIBA_WASHER_STATUS_RUNNING
+            ),
+            DeviceAttributes.status: self._toshiba_status.get(
+                base_status.machine_status,
+                base_status.machine_status,
+            ),
+            DeviceAttributes.mode: self._toshiba_mode.get(
+                body[TOSHIBA_MODE_OFFSET],
+                body[TOSHIBA_MODE_OFFSET],
+            ),
+            DeviceAttributes.program: TOSHIBA_PROGRAMS.get(
+                body[TOSHIBA_PROGRAM_OFFSET],
+                body[TOSHIBA_PROGRAM_OFFSET],
+            ),
+            DeviceAttributes.temperature: body[TOSHIBA_TEMPERATURE_OFFSET],
+            DeviceAttributes.wash_time: base_status.wash_time,
+            DeviceAttributes.dehydration_time: base_status.dehydration_time,
+            DeviceAttributes.washing_data: bytearray(body),
+            DeviceAttributes.time_remaining: base_status.time_remaining,
+        }
+        removed: dict[str, Any] = {}
+        if self._controls is not None:
+            for attr in self._controls.attributes:
+                self._attributes.pop(attr, None)
+                removed[str(attr)] = None
+            self._controls = None
+        if self._attributes[DeviceAttributes.progress] is not None:
+            self._attributes[DeviceAttributes.progress] = None
+            removed[str(DeviceAttributes.progress)] = None
+        self._attributes.update(values)
+        removed.update({str(attr): value for attr, value in values.items()})
+        return removed
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea DB device set attribute."""
         if self._is_v41_profile and attr in (
@@ -343,6 +425,7 @@ class MideaDBDevice(MideaDevice):
             DeviceAttributes.start,
         ):
             raise ValueWrongType("[db] v41 profile is read-only")
+        self.reject_toshiba_write()
         if self._controls is not None and self._controls.supports(attr):
             message_set = self._controls.make_message(
                 attr,

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import MideaDeviceInitKwargs
 from midealan.devices.db import DeviceAttributes, MideaDBDevice
 from midealan.devices.db.message import (
@@ -14,7 +14,7 @@ from midealan.devices.db.message import (
     MessageStart,
 )
 from midealan.exceptions import ValueWrongType
-from midealan.message import MessageType
+from midealan.message import MessageType, ToshibaMessageRequest, encode_toshiba_frame
 
 DB_BODY = bytes.fromhex(
     "030101001f0520010300030400400000204f0000db5933b10000002d08080000"
@@ -71,6 +71,20 @@ def verified_washer(body: bytes | bytearray | None = None) -> MideaDBDevice:
     return device
 
 
+def toshiba_body() -> bytearray:
+    """Build a Toshiba DB base-status body."""
+    body = bytearray(47)
+    body[2] = 2
+    body[3] = 1
+    body[9] = 0x82
+    body[11] = 10
+    body[14] = 40
+    body[18] = 0x02
+    body[22] = 1
+    body[23:27] = (125).to_bytes(4, "little")
+    return body
+
+
 class TestMideaDBDevice:
     """Test Midea DB Device."""
 
@@ -119,6 +133,156 @@ class TestMideaDBDevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            {"manufacturer_code": "0008"},
+            {"manufacturer_code": "0008", "cloud_name": "Toshiba Iolife"},
+            {"manufacturer_code": "0008", "cloud_name": "TSmartLife"},
+        ],
+    )
+    def test_toshiba_query_status_and_read_only_policy(
+        self,
+        identity: dict[str, str],
+    ) -> None:
+        """Select, decode, and keep the Toshiba DB profile read-only."""
+        args = device_args("toshiba", 0)
+        args["manufacturer_code"] = identity["manufacturer_code"]
+        if "cloud_name" in identity:
+            args["cloud_name"] = identity["cloud_name"]
+        device = MideaDBDevice(customize="", **args)
+        assert device._controls is None
+        query = device.build_query()[0]
+        assert isinstance(query, ToshibaMessageRequest)
+        assert query.serialize() == bytes.fromhex(
+            "55aacc330f0001db000000000000030000e687",
+        )
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert status[DeviceAttributes.power] is True
+        assert status[DeviceAttributes.status] == "power_on"
+        assert status[DeviceAttributes.mode] == "wash"
+        assert status[DeviceAttributes.program] == "standard"
+        assert status[DeviceAttributes.wash_time] == 120
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
+        assert status[DeviceAttributes.time_remaining] == 125
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="hardware verification"),
+        ):
+            device.set_attribute(DeviceAttributes.power, True)
+        send.assert_not_called()
+
+        body = toshiba_body()
+        body[18] = 0x20
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, body)),
+        )
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
+
+        body[9] = 30
+        body[18] = 0
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, body)),
+        )
+        assert status[DeviceAttributes.wash_time] == 30
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
+        assert (
+            device.process_message(
+                bytes(encode_toshiba_frame(DeviceType.DB, 3, b"\x00")),
+            )
+            == {}
+        )
+
+    def test_toshiba_fallback_switches_only_after_valid_status(self) -> None:
+        """Keep the primary protocol until a complete Toshiba status is parsed."""
+        device = MideaDBDevice(customize="", **device_args("unknown", 0))
+        primary = device.build_query()[0]
+        assert device._is_query_response_valid(primary) is True
+        fallback = device.build_query_fallback()[0]
+        assert isinstance(fallback, ToshibaMessageRequest)
+        invalid = encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())
+        invalid[-1] ^= 1
+        assert device.process_message(bytes(invalid)) == {}
+        assert device._is_query_response_valid(fallback) is False
+        assert isinstance(device.build_query()[0], MessageQuery)
+
+        device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert device._is_query_response_valid(fallback) is True
+        assert isinstance(device.build_query()[0], ToshibaMessageRequest)
+
+    def test_toshiba_fallback_skips_known_non_toshiba_identity(self) -> None:
+        """Do not probe Toshiba framing for an explicit different manufacturer."""
+        args = device_args("known-midea", 0)
+        args["manufacturer_code"] = "1234"
+        device = MideaDBDevice(customize="", **args)
+        assert isinstance(device.build_query()[0], MessageQuery)
+        assert device.build_query_fallback() == []
+        assert device.build_query_fallback_stages() == []
+
+    @pytest.mark.parametrize(
+        ("frame_type", "accepted"),
+        [
+            (MessageType.set, True),
+            (MessageType.query, True),
+            (MessageType.notify1, True),
+            (MessageType.notify2, False),
+        ],
+    )
+    def test_toshiba_base_status_frame_types(
+        self,
+        frame_type: MessageType,
+        accepted: bool,
+    ) -> None:
+        """Accept only the frame types used for DB base status in the Lua protocol."""
+        args = device_args("toshiba", 0)
+        args["manufacturer_code"] = "0008"
+        device = MideaDBDevice(customize="", **args)
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, frame_type, toshiba_body())),
+        )
+        assert bool(status) is accepted
+
+    def test_toshiba_fallback_removes_incompatible_verified_controls(self) -> None:
+        """Drop profile-specific Midea controls after Toshiba is selected."""
+        device = verified_washer()
+        controls = device._controls
+        assert controls is not None
+        control_attributes = set(controls.attributes)
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert device._controls is None
+        assert all(status[str(attr)] is None for attr in control_attributes)
+        assert all(attr not in device.attributes for attr in control_attributes)
+
+    def test_toshiba_fallback_clears_stale_midea_progress_once(self) -> None:
+        """Publish one clear when validated Toshiba traffic replaces Midea state."""
+        device = MideaDBDevice(customize="", **device_args("unknown", 0))
+        body = bytearray(31)
+        body[0] = 0x03
+        body[16] = 0x01
+        device.process_message(frame(body))
+        assert device.attributes[DeviceAttributes.progress] == "spin"
+
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert status[DeviceAttributes.progress] is None
+        assert device.attributes[DeviceAttributes.progress] is None
+
+        repeated = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert DeviceAttributes.progress not in repeated
+        assert device.attributes[DeviceAttributes.progress] is None
 
     @pytest.mark.parametrize(
         "message_type",

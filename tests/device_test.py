@@ -196,11 +196,15 @@ class TestMideaDevice:
             device.reject_toshiba_write()
 
     @pytest.mark.parametrize("cloud_name", ["Toshiba Iolife", "TSmartLife"])
-    @pytest.mark.parametrize("manufacturer_code", ["", "0000", "1234"])
+    @pytest.mark.parametrize(
+        ("manufacturer_code", "fallback_count"),
+        [("", 1), ("0000", 1), ("1234", 0)],
+    )
     def test_cloud_name_does_not_replace_manufacturer_identity(
         self,
         cloud_name: str,
         manufacturer_code: str,
+        fallback_count: int,
     ) -> None:
         """Use device identity rather than its account name to select framing."""
         device = self._toshiba_device(
@@ -208,7 +212,7 @@ class TestMideaDevice:
             cloud_name=cloud_name,
         )
         assert device.toshiba_protocol is False
-        assert len(device.build_query_fallback()) == 1
+        assert len(device.build_query_fallback()) == fallback_count
 
     @pytest.mark.parametrize("manufacturer_code", ["0008", "1234"])
     def test_family_without_toshiba_decoder_preserves_original_query_behavior(

@@ -33,6 +33,29 @@ class TestMideaC1Device:
         """Heating mode names match Lua codes (for HA / midea_ac_lan)."""
         assert device_v3.heating_modes == ["user", "activity", "sleep"]
 
+    def test_build_query(self, device_v3: MideaC1Device) -> None:
+        """Build the full-status query with the current protocol version."""
+        query = device_v3.build_query()
+        assert len(query) == 1
+        assert query[0].body == bytearray([0x01, 0x01])
+
+    @pytest.mark.parametrize(
+        ("power", "heating", "fault", "expected"),
+        [
+            (True, False, True, "fault"),
+            (False, False, False, "off"),
+        ],
+    )
+    def test_derive_status_priority(
+        self,
+        power: bool,
+        heating: bool,
+        fault: bool,
+        expected: str,
+    ) -> None:
+        """Fault and power-off states take priority over heating state."""
+        assert MideaC1Device._derive_status(power, heating, fault) == expected
+
     def test_set_customize_temperature_step_and_refresh(
         self,
         device_v3: MideaC1Device,
@@ -48,6 +71,31 @@ class TestMideaC1Device:
         """Invalid customize JSON is logged; device keeps defaults."""
         device_v3.set_customize("{")
         assert device_v3.temperature_step == 1.0
+
+    def test_set_customize_supported_temperature_step(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """The supported whole-degree temperature step is accepted."""
+        device_v3.set_customize('{"temperature_step": 1}')
+        assert device_v3.temperature_step == 1.0
+
+    def test_set_customize_invalid_refresh_interval(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """A non-numeric refresh interval leaves the default unchanged."""
+        device_v3.set_customize('{"refresh_interval": "invalid"}')
+        assert device_v3._refresh_interval == 30
+
+    def test_set_customize_ignores_unrelated_keys(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """Unrelated customization keys leave both settings unchanged."""
+        device_v3.set_customize('{"other": true}')
+        assert device_v3.temperature_step == 1.0
+        assert device_v3._refresh_interval == 30
 
     def test_process_message_syncs_protocol_version(
         self,
@@ -117,6 +165,55 @@ class TestMideaC1Device:
             sent = mock_send.call_args[0][0]
             assert sent.heating_mode == 3
             assert sent.target_temperature == 50.0
+
+    def test_set_attribute_unknown_heating_mode_uses_user_mode(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """Unknown heating mode names fall back to the user-mode code."""
+        device_v3._attributes[DeviceAttributes.heating_target_temperature] = 45.0
+        with patch.object(device_v3, "build_send") as mock_send:
+            device_v3.set_attribute(DeviceAttributes.heating_mode, "unknown")
+        assert mock_send.call_args[0][0].heating_mode == 1
+
+    def test_set_attribute_heating_target_temperature(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """A numeric target delegates to the heating command builder."""
+        with patch.object(device_v3, "set_heating_target_temperature") as mock_set:
+            device_v3.set_attribute(
+                DeviceAttributes.heating_target_temperature,
+                48.5,
+            )
+        mock_set.assert_called_once_with(48.5)
+
+    def test_set_heating_target_temperature_uses_numeric_gap(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """A numeric configured gap is included in the heating command."""
+        device_v3._attributes[DeviceAttributes.heating_gap_temperature] = 3.5
+        with patch.object(device_v3, "build_send") as mock_send:
+            device_v3.set_heating_target_temperature(50.0, heating_mode=2)
+        sent = mock_send.call_args[0][0]
+        assert sent.heating_mode == 2
+        assert sent.gap_temperature == 3
+
+    def test_set_attribute_ignores_invalid_heating_values(
+        self,
+        device_v3: MideaC1Device,
+    ) -> None:
+        """Invalid target types and mode updates without a target do not send."""
+        device_v3._attributes[DeviceAttributes.heating_target_temperature] = None
+        with patch.object(device_v3, "build_send") as mock_send:
+            device_v3.set_attribute(
+                DeviceAttributes.heating_target_temperature,
+                "50",
+            )
+            device_v3.set_attribute(DeviceAttributes.heating_mode, "user")
+            device_v3.set_attribute("unknown", True)
+        mock_send.assert_not_called()
 
     def test_set_attribute_power(
         self,

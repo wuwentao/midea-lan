@@ -1,15 +1,18 @@
 """Test C1 message."""
 
+import pytest
+
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices import device_selector
 from midealan.devices.c1.message import (
     C1GeneralMessageBody,
+    MessageC1Response,
     MessagePower,
     MessageQuery,
     MessageSetHeating,
     c1_error_code,
 )
-from midealan.message import ListTypes
+from midealan.message import ListTypes, MessageType
 
 
 class TestC1GeneralMessageBody:
@@ -97,6 +100,27 @@ class TestC1GeneralMessageBody:
         body[3] = 0x81
         assert c1_error_code(body) == "F0"
 
+    @pytest.mark.parametrize(
+        ("primary", "secondary", "expected"),
+        [
+            (0x00, 0x01, "F2"),
+            (0x40, 0x00, "E7"),
+            (0x10, 0x00, "E3"),
+            (0x04, 0x00, "E1"),
+        ],
+    )
+    def test_error_code_variants(
+        self,
+        primary: int,
+        secondary: int,
+        expected: str,
+    ) -> None:
+        """Each remaining vendor error bit maps to its Lua error code."""
+        body = bytearray(8)
+        body[3] = primary
+        body[4] = secondary
+        assert c1_error_code(body) == expected
+
     def test_extra_fields_target_30_frame(self) -> None:
         """Vendor fields at target 30 °C (user capture)."""
         body = bytearray.fromhex(
@@ -169,6 +193,19 @@ class TestMessagePower:
         mp.power = False
         _ = mp.body
         assert mp.body_type == ListTypes.X02
+
+
+class TestMessageC1Response:
+    """Test C1 response dispatch."""
+
+    def test_short_status_body_stays_unparsed(self) -> None:
+        """A recognized body type below the long-status length is ignored."""
+        header = bytearray(
+            [0xAA, 0x00, 0xC1, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
+        header += bytearray([ProtocolVersion.V3, MessageType.query])
+        response = MessageC1Response(bytes(header + bytearray([0x01, 0x00])))
+        assert response.body == bytearray([0x01])
 
 
 class TestDeviceSelector:

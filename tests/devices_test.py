@@ -4,6 +4,7 @@ from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices import device_selector
 from midealan.devices.ac import MideaACDevice
 from midealan.devices.x13 import Midea13Device
+from midealan.devices.x51 import MideaX51Device
 
 
 class TestDeviceSelector:
@@ -60,3 +61,21 @@ class TestDeviceSelector:
             customize="",
         )
         assert device is None
+
+    def test_device_selector_x51(self) -> None:
+        """Load the 0x51 package through the low-type naming rule."""
+        device = device_selector(
+            name="0x51 Device",
+            device_id=1,
+            device_type=DeviceType.X51,
+            ip_address="192.0.2.1",
+            port=6444,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V1,
+            model="test",
+            subtype=0,
+            customize="",
+            manufacturer_code="0008",
+        )
+        assert isinstance(device, MideaX51Device)

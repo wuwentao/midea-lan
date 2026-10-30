@@ -193,6 +193,50 @@ class TestMideaX51Device:
         assert device.build_query() == []
         assert device.build_query_fallback() == []
 
+        frame = encode_toshiba_frame(
+            DeviceType.X51,
+            MessageType.query,
+            _base_status(),
+        )
+        assert device.process_message(bytes(frame)) == {}
+        assert device.toshiba_protocol is False
+        assert device.build_query() == []
+
+    def test_unknown_identity_is_probed_only_during_checked_refresh(self) -> None:
+        """Probe Toshiba framing at connect time without periodic blind queries."""
+        device = _build_device(None)
+        device._appliance_query = False
+        frame = bytes(
+            encode_toshiba_frame(
+                DeviceType.X51,
+                MessageType.query,
+                _base_status(),
+            ),
+        )
+
+        with patch.object(device, "build_send") as send:
+            device.refresh_status()
+        send.assert_not_called()
+        assert device.toshiba_protocol is False
+
+        with (
+            patch.object(device, "build_send") as send,
+            patch.object(
+                device,
+                "_await_query_reply",
+                side_effect=lambda: device.process_message(frame),
+            ),
+        ):
+            device.refresh_status(check_protocol=True)
+
+        assert [type(call.args[0]) for call in send.call_args_list] == [
+            MessageQueryBase,
+            MessageQueryPhoto,
+            MessageQueryPhotoMode,
+        ]
+        assert bool(device.toshiba_protocol)
+        assert device._checking_toshiba_protocol is False
+
     def test_toshiba_fallback_requires_valid_supported_status(self) -> None:
         """Select Toshiba framing only after a valid supported 0x51 status."""
         device = _build_device(None)
@@ -241,9 +285,13 @@ class TestMideaX51Device:
         frame = encode_toshiba_frame(DeviceType.X51, frame_type, body)
         assert device.process_message(bytes(frame)) == {}
 
-    def test_toshiba_write_is_rejected_before_send(self) -> None:
+    @pytest.mark.parametrize("manufacturer_code", ["0008", None, "1234"])
+    def test_toshiba_write_is_rejected_before_send(
+        self,
+        manufacturer_code: str | None,
+    ) -> None:
         """Keep Toshiba 0x51 writes disabled until hardware verification."""
-        device = _build_device()
+        device = _build_device(manufacturer_code)
         with (
             patch.object(device, "build_send") as send,
             pytest.raises(ValueError, match="hardware verification"),

@@ -60,6 +60,7 @@ class MideaX51Device(MideaDevice):
             **kwargs,
             attributes=dict.fromkeys(DeviceAttributes),
         )
+        self._checking_toshiba_protocol = False
 
     def build_toshiba_query(self) -> list[MessageRequest]:
         """Query every documented Toshiba 0x51 function group."""
@@ -71,12 +72,26 @@ class MideaX51Device(MideaDevice):
 
     def build_query(self) -> list[MessageRequest]:
         """Build the documented 0x51 query family after Toshiba selection."""
-        if self.toshiba_protocol:
+        if self.manufacturer_code not in (None, self.TOSHIBA_MANUFACTURER_CODE):
+            return []
+        if self.toshiba_protocol or self._checking_toshiba_protocol:
             return self.build_toshiba_query()
         return []
 
+    def refresh_status(self, check_protocol: bool = False) -> None:
+        """Probe an unknown 0x51 identity only during a checked refresh."""
+        self._checking_toshiba_protocol = (
+            check_protocol and self.manufacturer_code is None
+        )
+        try:
+            super().refresh_status(check_protocol)
+        finally:
+            self._checking_toshiba_protocol = False
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Process a Toshiba 0x51 message."""
+        if self.manufacturer_code not in (None, self.TOSHIBA_MANUFACTURER_CODE):
+            return {}
         return self.process_toshiba_message(msg) or {}
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
@@ -90,7 +105,7 @@ class MideaX51Device(MideaDevice):
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Reject writes until captured traffic verifies the command profiles."""
         del attr, value
-        self.reject_toshiba_write()
+        raise ValueError("0x51 device writes require hardware verification")
 
 
 class MideaAppliance(MideaX51Device):

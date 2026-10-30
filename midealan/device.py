@@ -36,6 +36,8 @@ MESSAGE_TYPE_INDEX = 9  # offset of the message-type byte in the 10-byte header
 MIN_V2_FACTUAL_MSG_LENGTH = 6
 RESPONSE_TIMEOUT = 12  # main loop socket recv timeout, 12 * 10s = 120s
 SOCKET_TIMEOUT = 10  # socket connection default timeout
+RESPONSE_TIMEOUT_SECONDS = RESPONSE_TIMEOUT * SOCKET_TIMEOUT
+MIN_RECEIVE_TIMEOUT = 0.05
 # fix https://github.com/wuwentao/midea_ac_lan/issues/658#issuecomment-4555804288
 QUERY_TIMEOUT = (
     5  # default is 1s, 0xAC have more queries, set to 2s, latest: increase to 5s
@@ -1161,6 +1163,17 @@ class MideaDevice(threading.Thread):
             self.refresh_status()
             self._previous_refresh = now
 
+    def _uses_deadline_polling(self) -> bool:
+        """Opt in only for a verified device's fast polling path."""
+        return False
+
+    def _receive_timeout(self) -> float:
+        """Wake for a fast query without shortening the valid-response watchdog."""
+        if not self._uses_deadline_polling():
+            return SOCKET_TIMEOUT
+        remaining = self._refresh_interval - (time.time() - self._previous_refresh)
+        return max(MIN_RECEIVE_TIMEOUT, min(SOCKET_TIMEOUT, remaining))
+
     def _check_heartbeat(self, now: float) -> None:
         if now - self._previous_heartbeat >= self._heartbeat_interval:
             self.send_heartbeat()
@@ -1229,6 +1242,8 @@ class MideaDevice(threading.Thread):
                 break
             # socket recv msg timeout counter
             timeout_counter = 0
+            last_response = time.monotonic()
+            deadline_watchdog = False
             start = time.time()
             self._previous_refresh = self._previous_heartbeat = start
             # refresh/recv msg loop after connected
@@ -1238,11 +1253,14 @@ class MideaDevice(threading.Thread):
                         _LOGGER.debug("[%s] Socket is none", self._device_id)
                         raise SocketException  # noqa: TRY301
                     now = time.time()
+                    # Once fast recv has been used, its counts cannot be
+                    # interpreted as ten-second timeouts after an option change.
+                    deadline_watchdog |= self._uses_deadline_polling()
                     # refresh_status only send supported query msg
                     self._check_refresh(now)
                     self._check_heartbeat(now)
                     # set SOCKET_TIMEOUT before recv socket msg
-                    self._socket.settimeout(SOCKET_TIMEOUT)
+                    self._socket.settimeout(self._receive_timeout())
                     # refresh status after set/query
                     msg = self._socket.recv(512)
                     if len(msg) == 0:
@@ -1251,13 +1269,19 @@ class MideaDevice(threading.Thread):
                     result = self.parse_message(msg)
                     if result == MessageResult.SUCCESS:
                         timeout_counter = 0
+                        last_response = time.monotonic()
                     if result == MessageResult.ERROR:
                         _LOGGER.debug("[%s] Message 'ERROR' received", self._device_id)
                         self.close_socket()
                         break
                 except TimeoutError:
                     timeout_counter += 1
-                    if timeout_counter >= RESPONSE_TIMEOUT:
+                    response_timed_out = (
+                        time.monotonic() - last_response >= RESPONSE_TIMEOUT_SECONDS
+                        if deadline_watchdog
+                        else timeout_counter >= RESPONSE_TIMEOUT
+                    )
+                    if response_timed_out:
                         _LOGGER.debug("[%s] Heartbeat timed out", self._device_id)
                         self.close_socket()
                         break

@@ -36,6 +36,11 @@ OLD_PROTOCOL_TEMPERATURE_DIVISOR = 2.0
 MIXED_SENSOR_TEMPERATURE_OFFSET = 30.0  # T5U/body[5], T5L/body[6], T3/body[7]
 MIXED_OUTDOOR_TEMPERATURE_OFFSET = 50.0  # T4/body[8]
 MIXED_SENSOR_TEMPERATURE_DIVISOR = 2.0
+NEGATIVE_TEMPERATURE_RAW_MIN = 190
+NEGATIVE_TEMPERATURE_RAW_MAX = 254
+NEGATIVE_TEMPERATURE_RAW_OFFSET = 254.0
+NEGATIVE_TEMPERATURE_CELSIUS_OFFSET = 16.0
+LEGACY_OUTDOOR_TEMPERATURE_OFFSET = 25.0
 MODE_NONE = 0x00
 
 
@@ -151,6 +156,9 @@ class MideaCDDevice(MideaDevice):
         {"RSJRAC06", "RSJRAC07", "2530001N"},
     )
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
+    _negative_temperature_models: ClassVar[frozenset[str]] = frozenset(
+        {"2530001N"},
+    )
 
     _modes: ClassVar[dict[int, str]] = {
         MODE_NONE: "none",
@@ -300,6 +308,90 @@ class MideaCDDevice(MideaDevice):
     def _mixed_temperature_value(value: float, offset: float) -> float:
         """Decode a half-degree sensor value with its field-specific offset."""
         return (value - offset) / MIXED_SENSOR_TEMPERATURE_DIVISOR
+
+    @staticmethod
+    def _negative_temperature_value(value: float) -> float:
+        """Decode a capability-gated signed temperature sensor value."""
+        if NEGATIVE_TEMPERATURE_RAW_MIN <= value <= NEGATIVE_TEMPERATURE_RAW_MAX:
+            return (
+                value - NEGATIVE_TEMPERATURE_RAW_OFFSET
+            ) / OLD_PROTOCOL_TEMPERATURE_DIVISOR - NEGATIVE_TEMPERATURE_CELSIUS_OFFSET
+        return (value - OLD_PROTOCOL_TEMPERATURE_OFFSET) / (
+            OLD_PROTOCOL_TEMPERATURE_DIVISOR
+        )
+
+    def _process_negative_temperature(
+        self,
+        message: MessageCDResponse,
+        attr: DeviceAttributes,
+        raw_value: float,
+        new_status: dict[str, Any],
+    ) -> bool:
+        """Decode and store a capability-gated signed temperature.
+
+        The initial model registry entry is verified by this protocol and
+        plugin evidence:
+        https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315383580
+        https://github.com/wuwentao/midea_ac_lan/issues/1015#issuecomment-6315783800
+        """
+        if self.model not in self._negative_temperature_models or attr not in [
+            DeviceAttributes.current_temperature,
+            DeviceAttributes.outdoor_temperature,
+        ]:
+            return False
+
+        # Verified plugins gate their sensor conversion on minus_support.
+        # Preserve half-degree precision and the special signed-byte encoding.
+        negative_temperature_supported = getattr(
+            message,
+            DeviceAttributes.support_negative_temperature,
+            None,
+        )
+        if negative_temperature_supported is True:
+            parsed = self._negative_temperature_value(raw_value)
+        elif (
+            negative_temperature_supported is False
+            and attr == DeviceAttributes.current_temperature
+        ):
+            # The official plugin displays the raw tank value if this
+            # capability is absent.
+            parsed = raw_value
+        elif (
+            negative_temperature_supported is False
+            and attr == DeviceAttributes.outdoor_temperature
+        ):
+            parsed = (
+                raw_value / OLD_PROTOCOL_TEMPERATURE_DIVISOR
+                - LEGACY_OUTDOOR_TEMPERATURE_OFFSET
+            )
+        else:
+            parsed = self._value_to_temperature(
+                raw_value,
+                force_fahrenheit=(attr == DeviceAttributes.outdoor_temperature),
+                force_old=(attr == DeviceAttributes.current_temperature),
+            )
+
+        if attr == DeviceAttributes.current_temperature:
+            # A zero raw byte is still an invalid/uninitialized reading;
+            # negative decoded values are valid only when the device
+            # advertises negative-temperature support.
+            if raw_value == 0:
+                existing = self._attributes.get(attr)
+                if isinstance(existing, int | float) and existing != 0:
+                    new_status[str(attr)] = existing
+                    return True
+                parsed = 0.0
+            if parsed <= 0 and not (
+                raw_value > 0 and negative_temperature_supported is True
+            ):
+                existing = self._attributes.get(attr)
+                if isinstance(existing, int | float) and existing > 0:
+                    new_status[str(attr)] = existing
+                    return True
+
+        self._attributes[attr] = parsed
+        new_status[str(attr)] = parsed
+        return True
 
     def _temperature_to_value(self, value: float) -> float:
         # celsius to fahrenheit
@@ -493,6 +585,13 @@ class MideaCDDevice(MideaDevice):
                     parsed = self._mixed_temperature_value(raw_value, offset)
                     self._attributes[attr] = parsed
                     new_status[str(attr)] = parsed
+                    continue
+                if self._process_negative_temperature(
+                    message,
+                    attr,
+                    raw_value,
+                    new_status,
+                ):
                     continue
                 # process temperature family
                 if attr in [

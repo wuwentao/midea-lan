@@ -43,6 +43,7 @@ from midealan.devices.ac.message import (
     PropertiesSet,
     StateQuery,
     StateSet,
+    SubProtocolBody,
     SubProtocolFreshAirSet,
     SubProtocolQuery10,
     SubProtocolQuery11,
@@ -3018,6 +3019,27 @@ class TestMessageACResponse:
 
         MessageACResponse(self.header + body + bytearray([0]))
 
+    def test_unknown_c1_group_stays_unparsed(self) -> None:
+        """An unknown engineering-data group leaves response attributes unset."""
+        self.header[9] = 0x03
+        body = bytearray(20)
+        body[0] = 0xC1
+        body[3] = 0x46
+
+        response = MessageACResponse(self.header + body)
+
+        assert response.body[3] == 0x46
+
+    def test_short_bb_response_stays_unparsed(self) -> None:
+        """A BB response below the minimum body length is ignored safely."""
+        self.header[9] = 0x03
+        body = bytearray(21)
+        body[0] = 0xBB
+
+        response = MessageACResponse(self.header + body)
+
+        assert not hasattr(response, "used_subprotocol")
+
     def test_message_query_bb_0x20(self) -> None:
         """Test Message parse query BB 0x20."""
         self.header[9] = 0x03
@@ -3070,6 +3092,17 @@ class TestMessageACResponse:
         assert response.bb_fresh_air_exhaust_power is True
         assert hasattr(response, "bb_fresh_air_exhaust_speed")
         assert response.bb_fresh_air_exhaust_speed == 100
+
+    def test_message_query_bb_short_basic_status(self) -> None:
+        """A basic BB body can omit the optional fresh-air offsets."""
+        self.header[9] = 0x03
+        body = bytearray(22)
+        body[:6] = bytearray([0xBB, 0, 0, 0, 0, 0x11])
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "power")
+        assert not hasattr(response, "bb_fresh_air_power")
 
     def test_captured_bb_0x11_fresh_air_response(self) -> None:
         """Test a complete fresh-air response captured from model 23096633."""
@@ -3135,6 +3168,24 @@ class TestMessageACResponse:
         response = MessageACResponse(self.header + body)
         assert hasattr(response, "outdoor_temperature")
         assert response.outdoor_temperature == 258.9
+
+    def test_short_subprotocol_bodies_skip_optional_fields(self) -> None:
+        """Short indoor/outdoor and unknown BB groups parse without attributes."""
+        indoor = bytearray(14)
+        indoor[5] = ListTypes.X10
+        indoor_body = SubProtocolBody(indoor)
+        assert not hasattr(indoor_body, "indoor_temperature")
+
+        outdoor = bytearray(12)
+        outdoor[5] = ListTypes.X30
+        outdoor_body = SubProtocolBody(outdoor)
+        assert not hasattr(outdoor_body, "outdoor_temperature")
+        assert not hasattr(outdoor_body, "compressor_frequency")
+
+        unknown = bytearray(7)
+        unknown[5] = ListTypes.X99
+        unknown_body = SubProtocolBody(unknown)
+        assert unknown_body.data == unknown
 
     def test_captured_bb_0x30_frequency_response(self) -> None:
         """Test a complete frequency response captured from model 23096633."""

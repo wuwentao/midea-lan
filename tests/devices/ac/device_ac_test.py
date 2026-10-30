@@ -13,6 +13,7 @@ from midealan.devices.ac import (
     DeviceAttributes,
     MideaACDevice,
 )
+from midealan.devices.ac.colmo import ColmoAirQuery, ColmoAirState
 from midealan.devices.ac.message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
@@ -131,6 +132,165 @@ class TestMideaACDevice:
         frame = header + body
         frame.append(MessageBase.checksum(frame[1:]))
         return bytes(frame)
+
+    def test_colmo_air_features_from_captured_notification(self) -> None:
+        """Decode separate air switches and their shared auxiliary speed."""
+        device = self._make_device("22019023", 44204)
+        status = device.process_message(
+            bytes.fromhex(
+                "aa34ac00000000000105"
+                "b5042700003202090150001e001e001d0033020a0250000058028a022a02"
+                "3502070150002d2d4639011730",
+            ),
+        )
+        assert status["humidify"] is False
+        assert status["purify"] is False
+        assert status["fresh_air_power"] is True
+        assert status["auxiliary_fan_mode"] == "high"
+        assert status["fresh_air_mode"] == "high"
+        assert device.fresh_air_fan_speeds == ["off", "low", "medium", "high", "full"]
+
+    def test_colmo_purify_push_and_write_preserves_reported_fields(self) -> None:
+        """Keep the shared speed and non-control fields when switching purify."""
+        device = self._make_device("22019023", 44204)
+        device.process_message(
+            bytes.fromhex(
+                "aa1aac00000000000105b5013202090228001e001e001c0001a21c",
+            ),
+        )
+        assert device.get_attribute("purify") is True
+        assert device.get_attribute("auxiliary_fan_mode") == "low"
+        with patch.object(device, "build_send") as send:
+            device.set_attribute("purify", False)
+        message = send.call_args.args[0]
+        assert message.body[0] == ListTypes.B0
+        assert message.body[1:-2] == bytes.fromhex("013202090128001e001e001c00")
+
+    def test_colmo_shared_speed_does_not_start_any_air_feature(self) -> None:
+        """Set speed while retaining an all-off three-switch state."""
+        device = self._make_device("22019023", 44204)
+        device.process_message(
+            bytes.fromhex(
+                "aa34ac00000000000103b103320200090164001e001e001f00"
+                "3302000a0164000058028a023602350200070164002d2d463900bb00",
+            ),
+        )
+        with patch.object(device, "build_send") as send:
+            device.set_attribute("auxiliary_fan_mode", "medium")
+        message = send.call_args.args[0]
+        assert message.body[1:-2] == bytes.fromhex("01350207013c002d2d4639")
+        assert device.get_attribute("power") is False
+        assert device.get_attribute("fresh_air_power") is False
+        assert device.get_attribute("purify") is False
+
+    def test_colmo_air_controls_need_a_reported_state(self) -> None:
+        """Refuse commands that could overwrite an unknown state."""
+        device = self._make_device("22019023", 44204)
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="state"),
+        ):
+            device.set_attribute("humidify", True)
+        send.assert_not_called()
+        other = self._make_device("22019023", 1)
+        assert "humidify" not in other.attributes
+        assert "purify" not in other.attributes
+
+    def test_colmo_build_query_polls_the_three_air_records(self) -> None:
+        """Append the shared-blower B1 query for COLMO models only."""
+        device = self._make_device("22019023", 44204)
+        query = next(q for q in device.build_query() if isinstance(q, ColmoAirQuery))
+        assert bytes(query.body)[:8] == bytes.fromhex("b103320233023502")
+        assert device.auxiliary_fan_modes == ["low", "medium", "high", "full"]
+        other = self._make_device("22019023", 1)
+        assert not any(isinstance(q, ColmoAirQuery) for q in other.build_query())
+        assert other.auxiliary_fan_modes == []
+
+    def test_colmo_state_ignores_frames_without_live_records(self) -> None:
+        """Skip short, foreign, capability-query and unparsable frames."""
+        state = ColmoAirState()
+        assert state.process_message(bytes(10)) == {}
+        assert state.process_message(bytes(12)) == {}
+        caps_query = bytearray(13)
+        caps_query[9] = MessageType.query
+        caps_query[10] = ListTypes.B5
+        assert state.process_message(bytes(caps_query)) == {}
+        truncated = bytearray(11)
+        truncated[10] = ListTypes.B1
+        assert state.process_message(bytes(truncated)) == {}
+        empty = bytearray(14)
+        empty[9] = MessageType.notify2
+        empty[10] = ListTypes.B1
+        assert state.process_message(bytes(empty)) == {}
+        # B5 notify carrying a purify record with an invalid power byte.
+        invalid = bytearray(10)
+        invalid[9] = MessageType.notify2
+        invalid.extend(bytes.fromhex("b5013202090050001e001e001d00"))
+        invalid.append(0)
+        assert state.process_message(bytes(invalid)) == {}
+
+    def test_colmo_write_validation_and_fresh_air_aliases(self) -> None:
+        """Validate set values and map fresh-air aliases onto shared records."""
+        device = self._make_device("22019023", 44204)
+        device.process_message(
+            bytes.fromhex(
+                "aa34ac00000000000103b103320200090164001e001e001f00"
+                "3302000a0164000058028a023602350200070164002d2d463900bb00",
+            ),
+        )
+        with patch.object(device, "build_send") as send:
+            with pytest.raises(ValueError, match="boolean"):
+                device.set_attribute("humidify", "on")
+            with pytest.raises(ValueError, match="speed"):
+                device.set_attribute("fresh_air_fan_speed", True)
+            with pytest.raises(ValueError, match="speed"):
+                device.set_attribute("fresh_air_fan_speed", 50)
+            with pytest.raises(ValueError, match="mode"):
+                device.set_attribute("auxiliary_fan_mode", "turbo")
+            send.assert_not_called()
+            device.set_attribute("fresh_air_mode", "off")
+            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
+                "0133020a0164000058028a023602",
+            )
+            device.set_attribute("fresh_air_fan_speed", 60)
+            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
+                "01350207013c002d2d4639",
+            )
+
+    def test_colmo_shared_speed_targets_an_active_record(self) -> None:
+        """Write the shared speed through a switch that is currently on."""
+        device = self._make_device("22019023", 44204)
+        device.process_message(
+            bytes.fromhex(
+                "aa34ac00000000000105"
+                "b5042700003202090150001e001e001d0033020a0250000058028a022a02"
+                "3502070150002d2d4639011730",
+            ),
+        )
+        with patch.object(device, "build_send") as send:
+            device.set_attribute("auxiliary_fan_mode", "low")
+        assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
+            "0133020a0228000058028a022a02",
+        )
+
+    def test_colmo_commands_need_their_own_reported_record(self) -> None:
+        """Refuse writes whose target record the device never reported."""
+        device = self._make_device("22019023", 44204)
+        device.process_message(
+            bytes.fromhex("aa1aac00000000000105b50133020a0164000058028a023602bc"),
+        )
+        assert device.get_attribute("auxiliary_fan_mode") == "full"
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="state"),
+        ):
+            device.set_attribute("auxiliary_fan_mode", "low")
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="state"),
+        ):
+            device.set_attribute("humidify", True)
+        send.assert_not_called()
 
     def test_customize_accepts_bcd_energy_binary_power_format(self) -> None:
         """Test customize can select BCD energy with binary realtime power."""

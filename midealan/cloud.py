@@ -444,13 +444,24 @@ class MideaCloud:
             msg = f"Cloud {self._api_url} does not provide usage reports"
             raise CloudError(msg)
         url = f"{self._api_url}{DAY_REPORT_ALIAS}"
-        headers = {
-            "content-type": "application/json; charset=utf-8",
-            "accessToken": self._access_token,
-        }
         payload = {
             "msg": DAY_REPORT_MESSAGE,
             "params": {"applianceId": str(appliance_id)},
+        }
+        # The proxy validates the same request signature as the rest of the cloud
+        # API; without these headers it answers 44001 "sign is empty".
+        random = str(int(time.time()))
+        dump_data = json.dumps(payload)
+        sign = self._security.sign("", dump_data, random)
+        if sign is None:
+            msg = f"Cloud {self._api_url} cannot sign usage report requests"
+            raise CloudError(msg)
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "accessToken": self._access_token,
+            "secretVersion": "1",
+            "sign": sign,
+            "random": random,
         }
         try:
             async with self._api_lock:
@@ -458,7 +469,7 @@ class MideaCloud:
                     "POST",
                     url,
                     headers=headers,
-                    json=payload,
+                    data=dump_data,
                     timeout=DAY_REPORT_TIMEOUT,
                     allow_redirects=False,
                 )

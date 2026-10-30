@@ -696,9 +696,13 @@ class TestMideaCDDevice:
         body[35] = 0x80 if fahrenheit else 0x00
         body[8] = 68
         body[4] = raw_current
+        if model == "2530001N":
+            body[55] = 1
         status = device.process_message(_build_message(MessageType.query, body))
-        assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
-        assert status[DeviceAttributes.current_temperature.value] == 40
+        expected_outdoor = 19.0 if model == "2530001N" else 20.0
+        expected_current = 40.0 if model != "2530001N" else (40.0, 37.0)[fahrenheit]
+        assert status[DeviceAttributes.outdoor_temperature.value] == expected_outdoor
+        assert status[DeviceAttributes.current_temperature.value] == expected_current
 
     def test_2530001n_power_write_preserves_new_protocol_temperatures(self) -> None:
         """A power write keeps the model's correctly decoded target and maximum."""
@@ -707,6 +711,7 @@ class TestMideaCDDevice:
         body[3] = 50
         body[4] = 128
         body[8] = 68
+        body[55] = 1
         body[10] = 65
         body[11] = 35
 
@@ -714,7 +719,7 @@ class TestMideaCDDevice:
 
         assert status[DeviceAttributes.target_temperature.value] == 50
         assert status[DeviceAttributes.current_temperature.value] == 49
-        assert status[DeviceAttributes.outdoor_temperature.value] == 20
+        assert status[DeviceAttributes.outdoor_temperature.value] == 19
         assert status[DeviceAttributes.max_temperature.value] == 65
         assert status[DeviceAttributes.min_temperature.value] == 35
 
@@ -726,6 +731,164 @@ class TestMideaCDDevice:
         assert message.use_old_protocol is False
         assert message.body[4] == 50
         assert message.body[23] == 65
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (128, 49.0),
+            (129, 49.5),
+            (189, 79.5),
+            (190, -48.0),
+            (254, -16.0),
+            (255, 112.5),
+        ],
+    )
+    def test_2530001n_negative_temperature_sensor_decoding(
+        self,
+        raw: int,
+        expected: float,
+    ) -> None:
+        """Decode 2530001N tank values as its official plugin does."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = raw
+        body[55] = 1
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == expected
+
+    def test_2530001n_current_temperature_is_raw_without_negative_support(self) -> None:
+        """The official plugin displays raw tank values without the flag."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 128
+        body[55] = 0
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 128.0
+
+    def test_negative_temperature_model_registry_applies_decoder(self) -> None:
+        """Models added to the registry reuse the signed decoder."""
+        device = _make_device(model="verified_signed_model")
+        body = _general_body()
+        body[4] = 129
+        body[55] = 1
+
+        with patch.object(
+            MideaCDDevice,
+            "_negative_temperature_models",
+            frozenset({"verified_signed_model"}),
+        ):
+            status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.5
+
+    def test_2530001n_initial_zero_current_temperature_is_stored(self) -> None:
+        """An initial uninitialized tank reading remains zero."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 0
+        body[55] = 1
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 0.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 0.0
+
+    def test_2530001n_short_status_preserves_positive_current_temperature(
+        self,
+    ) -> None:
+        """Fallback decoding does not replace a known tank reading."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.current_temperature] = 49.0
+        body = _general_body()[:55]
+        body[4] = 0
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
+    def test_2530001n_short_status_preserves_value_on_invalid_conversion(
+        self,
+    ) -> None:
+        """A nonpositive fallback conversion preserves a known reading."""
+        device = _make_device(model="2530001N")
+        device._attributes[DeviceAttributes.current_temperature] = 49.0
+        body = _general_body()[:55]
+        body[4] = 10
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
+    def test_2530001n_zero_current_temperature_preserves_positive_value(self) -> None:
+        """An uninitialized tank reading does not replace a known value."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 128
+        body[55] = 1
+        device.process_message(_build_message(MessageType.query, body))
+
+        body[4] = 0
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == 49.0
+        assert device.attributes[DeviceAttributes.current_temperature] == 49.0
+
+    def test_2530001n_zero_current_temperature_preserves_negative_value(self) -> None:
+        """An uninitialized tank reading preserves a signed value."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[4] = 190
+        body[55] = 1
+        device.process_message(_build_message(MessageType.query, body))
+
+        body[4] = 0
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.current_temperature.value] == -48.0
+        assert device.attributes[DeviceAttributes.current_temperature] == -48.0
+
+    @pytest.mark.parametrize(
+        ("negative_support", "raw", "expected"),
+        [
+            (True, 68, 19.0),
+            (True, 189, 79.5),
+            (True, 190, -48.0),
+            (True, 254, -16.0),
+            (True, 255, 112.5),
+            (False, 68, 9.0),
+        ],
+    )
+    def test_2530001n_outdoor_temperature_uses_capability_encoding(
+        self,
+        negative_support: bool,
+        raw: int,
+        expected: float,
+    ) -> None:
+        """Decode 2530001N outdoor values using the reported capability."""
+        device = _make_device(model="2530001N")
+        body = _general_body()
+        body[8] = raw
+        body[55] = int(negative_support)
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == expected
+
+    def test_2530001n_unknown_negative_support_keeps_verified_fallback(self) -> None:
+        """Keep PR #225 decoding when a short status omits the capability."""
+        device = _make_device(model="2530001N")
+        body = _general_body()[:55]
+        body[8] = 68
+
+        status = device.process_message(_build_message(MessageType.query, body))
+
+        assert status[DeviceAttributes.outdoor_temperature.value] == 20.0
 
     def test_2530001n_active_mode_powers_on_and_updates_cached_state(self) -> None:
         """Selecting an active mode starts the heater and prevents stale writes."""

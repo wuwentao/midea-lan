@@ -166,7 +166,8 @@ class TestMideaDBDevice:
         assert status[DeviceAttributes.mode] == "wash"
         assert status[DeviceAttributes.program] == "standard"
         assert status[DeviceAttributes.wash_time] == 120
-        assert status[DeviceAttributes.progress] == "wash"
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
         assert status[DeviceAttributes.time_remaining] == 125
         with (
             patch.object(device, "build_send") as send,
@@ -180,7 +181,8 @@ class TestMideaDBDevice:
         status = device.process_message(
             bytes(encode_toshiba_frame(DeviceType.DB, 3, body)),
         )
-        assert status[DeviceAttributes.progress] == "soft_keep"
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
 
         body[9] = 30
         body[18] = 0
@@ -188,7 +190,8 @@ class TestMideaDBDevice:
             bytes(encode_toshiba_frame(DeviceType.DB, 3, body)),
         )
         assert status[DeviceAttributes.wash_time] == 30
-        assert status[DeviceAttributes.progress] == "idle"
+        assert DeviceAttributes.progress not in status
+        assert device.attributes[DeviceAttributes.progress] is None
         assert (
             device.process_message(
                 bytes(encode_toshiba_frame(DeviceType.DB, 3, b"\x00")),
@@ -214,6 +217,15 @@ class TestMideaDBDevice:
         )
         assert device._is_query_response_valid(fallback) is True
         assert isinstance(device.build_query()[0], ToshibaMessageRequest)
+
+    def test_toshiba_fallback_skips_known_non_toshiba_identity(self) -> None:
+        """Do not probe Toshiba framing for an explicit different manufacturer."""
+        args = device_args("known-midea", 0)
+        args["manufacturer_code"] = "1234"
+        device = MideaDBDevice(customize="", **args)
+        assert isinstance(device.build_query()[0], MessageQuery)
+        assert device.build_query_fallback() == []
+        assert device.build_query_fallback_stages() == []
 
     @pytest.mark.parametrize(
         ("frame_type", "accepted"),

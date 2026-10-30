@@ -403,7 +403,6 @@ class MideaDBDevice(MideaDevice):
             DeviceAttributes.wash_time: base_status.wash_time,
             DeviceAttributes.dehydration_time: base_status.dehydration_time,
             DeviceAttributes.washing_data: bytearray(body),
-            DeviceAttributes.progress: base_status.progress,
             DeviceAttributes.time_remaining: base_status.time_remaining,
         }
         removed: dict[str, Any] = {}

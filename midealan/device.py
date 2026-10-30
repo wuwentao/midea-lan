@@ -976,7 +976,11 @@ class MideaDevice(threading.Thread):
         Only families with a Toshiba body decoder opt in the Toshiba probe.
         Other families retain their previous behaviour.
         """
-        if self.TOSHIBA_SUPPORTED and not self.toshiba_protocol:
+        if (
+            self.TOSHIBA_SUPPORTED
+            and self.manufacturer_code is None
+            and not self.toshiba_protocol
+        ):
             return self.build_toshiba_query()
         return []
 

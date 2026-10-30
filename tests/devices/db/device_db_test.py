@@ -263,6 +263,27 @@ class TestMideaDBDevice:
         assert all(status[str(attr)] is None for attr in control_attributes)
         assert all(attr not in device.attributes for attr in control_attributes)
 
+    def test_toshiba_fallback_clears_stale_midea_progress_once(self) -> None:
+        """Publish one clear when validated Toshiba traffic replaces Midea state."""
+        device = MideaDBDevice(customize="", **device_args("unknown", 0))
+        body = bytearray(31)
+        body[0] = 0x03
+        body[16] = 0x01
+        device.process_message(frame(body))
+        assert device.attributes[DeviceAttributes.progress] == "spin"
+
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert status[DeviceAttributes.progress] is None
+        assert device.attributes[DeviceAttributes.progress] is None
+
+        repeated = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, 3, toshiba_body())),
+        )
+        assert DeviceAttributes.progress not in repeated
+        assert device.attributes[DeviceAttributes.progress] is None
+
     @pytest.mark.parametrize(
         "message_type",
         [MessageType.query, MessageType.set],

@@ -411,6 +411,9 @@ class MideaDBDevice(MideaDevice):
                 self._attributes.pop(attr, None)
                 removed[str(attr)] = None
             self._controls = None
+        if self._attributes[DeviceAttributes.progress] is not None:
+            self._attributes[DeviceAttributes.progress] = None
+            removed[str(DeviceAttributes.progress)] = None
         self._attributes.update(values)
         removed.update({str(attr): value for attr, value in values.items()})
         return removed

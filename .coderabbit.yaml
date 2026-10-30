@@ -8,9 +8,14 @@ enable_free_tier: true
 reviews:
   # assertive surfaces more findings - appropriate for a byte-level protocol lib.
   profile: assertive
-  # Do not gate merges on CodeRabbit; CI (ruff/mypy/pylint/pytest) is the gate.
-  request_changes_workflow: false
+  # Do not auto-approve or request changes; CI and resolved review threads are
+  # the merge gates.
+  auto_approvals:
+    enabled: false
   high_level_summary: true
+  # Keep the contributor's PR description intact. Publish the summary in the
+  # walkthrough review comment instead of appending it to the description.
+  high_level_summary_in_walkthrough: true
   review_status: true
   collapse_walkthrough: true
   changed_files_summary: true
@@ -51,7 +56,8 @@ reviews:
         e.g. x13). Enforce these repo rules: no magic numbers - protocol offsets,
         lengths, and flag values must be named module-level constants (ruff PLR2004).
         New device classes extend MideaDevice, must be re-exported as MideaAppliance,
-        and implement build_query, process_message, make_message_set, set_attribute.
+        and implement build_query, process_message, and set_attribute. make_message_set
+        is an optional per-device helper, not a required override.
         Device state is exposed only through the device.attributes dict via a
         DeviceAttributes(StrEnum); never access state by raw key. Flag byte-order,
         off-by-one offset, CRC, and encrypt/frame/CRC pipeline mistakes; these cause

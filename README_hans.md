@@ -97,7 +97,9 @@ uv run python -m midealan.cli -h
 文件会写入当前工作目录；建议在专门的空目录中执行命令，以便集中保存下载结果。
 
 已收集的 Lua 文件会发布在 [wuwentao/midea-lua](https://github.com/wuwentao/midea-lua)
-作为参考，也欢迎在该仓库提交 PR 补充更多设备的 Lua 文件。
+作为参考，也欢迎在该仓库提交 PR 补充更多设备的 Lua 文件。PR 涉及设备协议时应链接
+准确的 Lua 来源，不适用时则说明原因；如果尚未收录，请按照 `midea-lua` README 下载并
+先向该仓库提交 PR，然后在 `midea-lan` PR 中链接该 PR。
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
@@ -170,6 +172,11 @@ cd midea-lan
 
 [英文版 CONTRIBUTING](.github/CONTRIBUTING.md)
 [中文版 CONTRIBUTING](.github/CONTRIBUTING.zh.md)
+
+提交 PR 时请按仓库模板填写协议来源、关联 Issue、测试、100% 增量覆盖率及 CodeRabbit
+评审处理情况。会影响 Home Assistant 集成的改动应同时提交并链接 `midea_ac_lan` PR，
+但不要修改其 `manifest.json` 中的依赖版本。合并后不会立即发版；维护者会积累一定数量的
+PR 后定期手工发布，并在发布后统一同步依赖版本。
 
 ### 新增设备支持
 

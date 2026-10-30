@@ -2,7 +2,7 @@
 
 Guidance for AI coding agents (GitHub Copilot, Claude Code, Gemini CLI, Codex, etc.)
 working in the `midea-lan` repository. This is the canonical instructions file;
-`CLAUDE.md` and `.github/copilot-instructions.md` point here.
+`CLAUDE.md`, `GEMINI.md`, and `.github/copilot-instructions.md` point here.
 
 `midea-lan` is a Python library to control Midea M-Smart appliances over the LAN
 network. It handles device discovery, the encrypted Midea LAN protocol, and per-device
@@ -77,8 +77,33 @@ user-facing harnesses.
 - **Tests** mirror the source tree under `tests/`, suffixed `_test.py`
   (e.g. `tests/devices/ac/message_ac_test.py`). Sample binary payloads live in
   `tests/responses/`. `tests/*` has relaxed ruff/mypy rules (asserts, private access, etc.).
+  Added or changed executable code must have 100% Codecov patch coverage.
 - **Commits** must follow Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`,
   `refactor:`, `test:`); commitlint/commitizen enforce this and CI validates PR messages.
   Do not commit directly to `main` (prek `no-commit-to-branch`).
 - Recommended dev environment is **uv + a local `.venv`** (`./scripts/setup.sh` or
   `scripts\setup.ps1`); see `.github/CONTRIBUTING.md`.
+
+## Pull request requirements
+
+- Complete `.github/pull_request_template.md`; use N/A with a short reason when a
+  link does not apply.
+- PRs should link the exact supporting Lua file in
+  [`wuwentao/midea-lua`](https://github.com/wuwentao/midea-lua) when it relies on
+  a device protocol. If it is missing, follow that repository's README to download
+  it, submit it to `midea-lua` first, and link the resulting PR. If no Lua protocol
+  applies, explain why.
+- PRs should link any related
+  [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, regardless of
+  its title or change type; explain when no related issue exists.
+- PRs should link a matching `midea_ac_lan` PR when they affect Home Assistant
+  behavior or device support; explain when no integration PR is needed. Do not
+  update the `midea-lan` version in
+  `midea_ac_lan/custom_components/midea_ac_lan/manifest.json`; maintainers update
+  it centrally after release.
+- A merge does not trigger an immediate release. Maintainers accumulate changes,
+  publish `midea-lan` manually on a periodic basis, and then synchronize
+  `midea_ac_lan`.
+- After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
+  automatic CodeRabbit review. Address each actionable comment, reply in its
+  thread with the fix and test evidence, and resolve the conversation before merge.

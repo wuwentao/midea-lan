@@ -100,7 +100,10 @@ keep the downloads together.
 
 Collected Lua files are published for reference in
 [wuwentao/midea-lua](https://github.com/wuwentao/midea-lua); contributions with additional
-device Lua files are welcome there.
+device Lua files are welcome there. Pull requests should link the exact Lua source when
+a device protocol applies, or explain why no protocol source applies. If the Lua is not
+present yet, follow the `midea-lua` README to download it and submit it there first, then
+link that pull request from the `midea-lan` pull request.
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
@@ -177,6 +180,12 @@ guide for the full workflow and per-OS uv install instructions.
 
 [CONTRIBUTING](.github/CONTRIBUTING.md)
 [中文版CONTRIBUTING](.github/CONTRIBUTING.zh.md)
+
+Pull requests use the repository template to record protocol sources, related issues,
+tests, 100% patch coverage, and CodeRabbit review resolution. Changes that affect the
+Home Assistant integration should include a linked `midea_ac_lan` pull request without
+changing its `manifest.json` dependency version. Merged changes are accumulated for
+periodic manual releases; maintainers synchronize the dependency version after release.
 
 ### Adding a new device
 

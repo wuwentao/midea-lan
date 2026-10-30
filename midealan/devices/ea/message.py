@@ -9,7 +9,69 @@ from midealan.message import (
     MessageRequest,
     MessageResponse,
     MessageType,
+    ToshibaFrame,
 )
+
+TOSHIBA_EA_BASE_BODY_TYPE = 0x00
+TOSHIBA_EA_BASE_STATUS_LENGTH = 25
+TOSHIBA_EA_LEGACY_QUERY_FRAME_TYPE = 0x0003
+TOSHIBA_EA_QUERY_FRAME_TYPE = 0x8003
+TOSHIBA_EA_NOTIFY_FRAME_TYPE = 0x0004
+TOSHIBA_EA_BASE_FRAME_TYPES = frozenset(
+    (
+        TOSHIBA_EA_LEGACY_QUERY_FRAME_TYPE,
+        TOSHIBA_EA_QUERY_FRAME_TYPE,
+        TOSHIBA_EA_NOTIFY_FRAME_TYPE,
+    ),
+)
+TOSHIBA_EA_COURSE_OFFSET = 16
+TOSHIBA_EA_REMAINING_MINUTES_OFFSET = 21
+TOSHIBA_EA_REMAINING_HOURS_OFFSET = 22
+TOSHIBA_EA_COOKING_STATE_OFFSET = 23
+TOSHIBA_EA_COOKING_STATE = 0x0A
+TOSHIBA_EA_KEEP_WARM_STATE = 0x07
+MINUTES_PER_HOUR = 60
+
+TOSHIBA_EA_PROGRESS = {
+    0x01: "stop",
+    0x02: "error",
+    0x03: "reserved",
+    0x04: "soak",
+    0x05: "rice_cooking",
+    0x06: "steam",
+    0x07: "keep_warm",
+    0x08: "heat_cleaning",
+    0x0A: "cooking",
+}
+
+ToshibaEAStatus = dict[str, bool | int | str]
+
+
+def _decode_bcd(value: int) -> int:
+    """Decode a packed-decimal Toshiba time field."""
+    return value - (value // 0x10) * 6
+
+
+def decode_toshiba_ea_status(frame: ToshibaFrame) -> ToshibaEAStatus | None:
+    """Decode a complete Toshiba EA rice-cooker base status."""
+    body = frame.body
+    if (
+        frame.frame_type not in TOSHIBA_EA_BASE_FRAME_TYPES
+        or len(body) < TOSHIBA_EA_BASE_STATUS_LENGTH
+        or body[0] != TOSHIBA_EA_BASE_BODY_TYPE
+    ):
+        return None
+
+    cooking_state = body[TOSHIBA_EA_COOKING_STATE_OFFSET]
+    remaining_hours = _decode_bcd(body[TOSHIBA_EA_REMAINING_HOURS_OFFSET])
+    remaining_minutes = _decode_bcd(body[TOSHIBA_EA_REMAINING_MINUTES_OFFSET])
+    return {
+        "cooking": cooking_state == TOSHIBA_EA_COOKING_STATE,
+        "keep_warm": cooking_state == TOSHIBA_EA_KEEP_WARM_STATE,
+        "mode": body[TOSHIBA_EA_COURSE_OFFSET],
+        "time_remaining": remaining_hours * MINUTES_PER_HOUR + remaining_minutes,
+        "progress": TOSHIBA_EA_PROGRESS.get(cooking_state, "stop"),
+    }
 
 
 class Progress(IntEnum):

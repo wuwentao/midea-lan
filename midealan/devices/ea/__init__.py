@@ -6,8 +6,14 @@ from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.message import MessageRequest, ToshibaFrame
 
-from .message import MessageEAResponse, MessageQuery
+from .message import (
+    TOSHIBA_EA_BASE_FRAME_TYPES,
+    MessageEAResponse,
+    MessageQuery,
+    decode_toshiba_ea_status,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +33,9 @@ class DeviceAttributes(StrEnum):
 
 class MideaEADevice(MideaDevice):
     """Midea EA device."""
+
+    TOSHIBA_SUPPORTED = True
+    TOSHIBA_RESPONSE_FRAME_TYPES = TOSHIBA_EA_BASE_FRAME_TYPES
 
     _mode_list: ClassVar[list[str]] = (
         [
@@ -154,12 +163,17 @@ class MideaEADevice(MideaDevice):
             },
         )
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea EA device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea EA device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageEAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -181,8 +195,18 @@ class MideaEADevice(MideaDevice):
                 new_status[str(status)] = self._attributes[status]
         return new_status
 
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode and publish a Toshiba EA rice-cooker base status."""
+        status = decode_toshiba_ea_status(frame)
+        if status is None:
+            return None
+        self._attributes.update(status)
+        return dict(status)
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea EA device set attribute."""
+        del attr, value
+        self.reject_toshiba_write()
 
 
 class MideaAppliance(MideaEADevice):

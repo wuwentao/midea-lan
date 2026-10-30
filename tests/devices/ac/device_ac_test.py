@@ -444,6 +444,37 @@ class TestMideaACDevice:
             assert message.power is True
             assert message.mode == 4  # HEAT_MODE
 
+    def test_set_aux_heat_mode_aux_heat_subprotocol(self) -> None:
+        """aux_heat on the BB subprotocol uses the ordinary PTC flag only."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_heat",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSubProtocolSet)
+            # The subprotocol frame has no independent_ptc field; aux_heat maps
+            # to the ordinary PTC flag and does not trigger the aux_only
+            # fallback branch.
+            assert message.aux_heating is True
+            assert not hasattr(message, "independent_ptc")
+            assert message.power is True
+            assert message.mode == 4  # HEAT_MODE
+
+    def test_legacy_aux_heating_subprotocol_no_independent_ptc(self) -> None:
+        """Legacy aux_heating on the subprotocol frame skips independent_ptc."""
+        self.device._used_subprotocol = True
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.aux_heating.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, MessageSubProtocolSet)
+            # No independent_ptc attribute exists to clear on the subprotocol
+            # frame, but the cache is still resynced from the command.
+            assert message.aux_heating is True
+            assert not hasattr(message, "independent_ptc")
+        assert self.device.attributes[DeviceAttributes.aux_heat_mode] == "aux_heat"
+
     def test_process_message_derives_aux_heat_mode(self) -> None:
         """aux_heat_mode is derived from the two status flags, aux_only wins."""
         with patch("midealan.devices.ac.MessageACResponse") as mock_response:

@@ -6,12 +6,14 @@ from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
-from .message import MessageCAResponse, MessageQuery
+from .message import MessageCAResponse, MessageQuery, decode_toshiba_ca_status
 
 _LOGGER = logging.getLogger(__name__)
 
 SUBTYPE_310A2111 = 56
+TOSHIBA_SHIFTED_MODEL = "0000000D"
 FLEX_ZONE_MODE_BY_TEMPERATURE: dict[float, str] = {
     6.0: "baby",
     2.0: "treasure",
@@ -59,6 +61,11 @@ class DeviceAttributes(StrEnum):
 class MideaCADevice(MideaDevice):
     """Midea CA device."""
 
+    TOSHIBA_SUPPORTED = True
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (MessageType.query, MessageType.notify1),
+    )
+
     _variable_mode: ClassVar[dict[int, str]] = {
         0x00: "none",
         0x01: "soft_freezing",
@@ -88,6 +95,7 @@ class MideaCADevice(MideaDevice):
             **kwargs,
             attributes={
                 # Read-only parser values; None means no general status received.
+                DeviceAttributes.mode: None,
                 DeviceAttributes.code_mode: None,
                 DeviceAttributes.freezing_mode: None,
                 DeviceAttributes.smart_mode: None,
@@ -123,12 +131,17 @@ class MideaCADevice(MideaDevice):
         )
         self._modes = [""]
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea CA device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea CA device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
@@ -166,8 +179,21 @@ class MideaCADevice(MideaDevice):
             new_status[DeviceAttributes.variable_mode] = mode
         return new_status
 
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode and publish a Toshiba CA base status."""
+        status = decode_toshiba_ca_status(
+            frame,
+            shifted=self.model == TOSHIBA_SHIFTED_MODEL,
+        )
+        if status is None:
+            return None
+        self._attributes.update(status)
+        return dict(status)
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea CA device set attribute."""
+        del attr, value
+        self.reject_toshiba_write()
 
 
 class MideaAppliance(MideaCADevice):

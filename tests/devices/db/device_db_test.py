@@ -215,6 +215,29 @@ class TestMideaDBDevice:
         assert device._is_query_response_valid(fallback) is True
         assert isinstance(device.build_query()[0], ToshibaMessageRequest)
 
+    @pytest.mark.parametrize(
+        ("frame_type", "accepted"),
+        [
+            (MessageType.set, True),
+            (MessageType.query, True),
+            (MessageType.notify1, True),
+            (MessageType.notify2, False),
+        ],
+    )
+    def test_toshiba_base_status_frame_types(
+        self,
+        frame_type: MessageType,
+        accepted: bool,
+    ) -> None:
+        """Accept only the frame types used for DB base status in the Lua protocol."""
+        args = device_args("toshiba", 0)
+        args["manufacturer_code"] = "0008"
+        device = MideaDBDevice(customize="", **args)
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.DB, frame_type, toshiba_body())),
+        )
+        assert bool(status) is accepted
+
     def test_toshiba_fallback_removes_incompatible_verified_controls(self) -> None:
         """Drop profile-specific Midea controls after Toshiba is selected."""
         device = verified_washer()

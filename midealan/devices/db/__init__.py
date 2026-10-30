@@ -31,6 +31,10 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 
+TOSHIBA_MODE_OFFSET = 2
+TOSHIBA_PROGRAM_OFFSET = 3
+TOSHIBA_TEMPERATURE_OFFSET = 14
+
 
 class DeviceAttributes(StrEnum):
     """Midea DB device attributes."""
@@ -387,9 +391,15 @@ class MideaDBDevice(MideaDevice):
                 base_status.machine_status,
                 base_status.machine_status,
             ),
-            DeviceAttributes.mode: self._toshiba_mode.get(body[2], body[2]),
-            DeviceAttributes.program: TOSHIBA_PROGRAMS.get(body[3], body[3]),
-            DeviceAttributes.temperature: body[14],
+            DeviceAttributes.mode: self._toshiba_mode.get(
+                body[TOSHIBA_MODE_OFFSET],
+                body[TOSHIBA_MODE_OFFSET],
+            ),
+            DeviceAttributes.program: TOSHIBA_PROGRAMS.get(
+                body[TOSHIBA_PROGRAM_OFFSET],
+                body[TOSHIBA_PROGRAM_OFFSET],
+            ),
+            DeviceAttributes.temperature: body[TOSHIBA_TEMPERATURE_OFFSET],
             DeviceAttributes.wash_time: base_status.wash_time,
             DeviceAttributes.dehydration_time: base_status.dehydration_time,
             DeviceAttributes.washing_data: bytearray(body),

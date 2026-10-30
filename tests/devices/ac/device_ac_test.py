@@ -1440,6 +1440,24 @@ class TestMideaACDevice:
         self.device._capabilities["rate_select"] = 3
         assert self.device.rate_selects == ["1", "20", "40", "60", "80", "100"]
 
+    def test_supported_aux_heat_modes_gated_on_ptc_capability(self) -> None:
+        """aux_heat_mode options depend on the B5 ptc capability flag."""
+        # No ptc capability reported yet: only "off" is offered so the consumer
+        # can hide the control (len == 1).
+        assert self.device.supported_aux_heat_modes == ["off"]
+
+        # Device advertises ptc (0x0219): both aux-heat modes become available.
+        self.device._capabilities["ptc"] = 1
+        assert self.device.supported_aux_heat_modes == [
+            "off",
+            "aux_heat",
+            "aux_only",
+        ]
+
+        # A falsy ptc value is treated as unsupported.
+        self.device._capabilities["ptc"] = 0
+        assert self.device.supported_aux_heat_modes == ["off"]
+
     def test_process_message_decodes_rate_select_per_level(self) -> None:
         """Test an incoming rate_select value decodes via the reported gear map.
 

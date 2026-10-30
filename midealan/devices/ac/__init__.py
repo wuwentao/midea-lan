@@ -495,6 +495,25 @@ class MideaACDevice(MideaDevice):
         """Midea AC device rate_select options."""
         return list(self._rate_select_map().values())
 
+    @property
+    def supported_aux_heat_modes(self) -> list[str]:
+        """Electric aux-heat (PTC) modes the device advertises.
+
+        The B5 capabilities carry the ptc flag (0x0219) when the unit has an
+        electric auxiliary heater. Without that flag the device cannot do any
+        electric aux-heat, so only "off" is offered and the consumer can hide
+        the control (len == 1). When present, both the heat-pump-assist
+        (aux_heat) and electric-only (aux_only) modes are available: the two
+        share the same PTC hardware and the vendor lua drives them from the
+        same keyP["independent_ptc"]/PTCValue pair, so there is no separate
+        capability bit distinguishing them.
+        """
+        modes = [AUX_HEAT_MODE_OFF]
+        if self.capabilities.get("ptc"):
+            modes.append(AUX_HEAT_MODE_AUX_HEAT)
+            modes.append(AUX_HEAT_MODE_AUX_ONLY)
+        return modes
+
     def build_toshiba_query(self) -> list[MessageRequest]:
         """Wrap the standard AC state-query body in the Toshiba envelope."""
         state_query = StateQuery(self._message_protocol_version)

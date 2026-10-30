@@ -7,6 +7,7 @@ from midealan.message import (
     MessageRequest,
     MessageResponse,
     MessageType,
+    ToshibaFrame,
 )
 
 MIN_CA_GENERAL_BODY_LENGTH = 20
@@ -17,6 +18,77 @@ TEMP_POS_LOWER_VALUE = 1
 TEMP_POS_UPPER_VALUE = 29
 TEMP_NEG_LOWER_VALUE = 49
 TEMP_NEG_UPPER_VALUE = 54
+
+# Toshiba CA base-status layouts.
+TOSHIBA_CA_BASE_BODY_TYPE = 0x00
+TOSHIBA_CA_BASE_STATUS_LENGTH = 13
+TOSHIBA_CA_SHIFTED_BASE_STATUS_LENGTH = 16
+TOSHIBA_CA_POWER_FLAGS_OFFSET = 1
+TOSHIBA_CA_NORMAL_MODE_OFFSET = 2
+TOSHIBA_CA_NORMAL_DOOR_OFFSET = 8
+TOSHIBA_CA_NORMAL_ENERGY_OFFSET = 11
+TOSHIBA_CA_SHIFTED_MODE_OFFSET = 4
+TOSHIBA_CA_SHIFTED_DOOR_OFFSET = 11
+TOSHIBA_CA_SHIFTED_ENERGY_OFFSET = 14
+TOSHIBA_CA_ENERGY_WIDTH = 2
+
+# Toshiba CA status masks.
+TOSHIBA_CA_POWER_SAVING_MASK = 0x01
+TOSHIBA_CA_REFRIGERATOR_DOOR_MASK = 0x01
+TOSHIBA_CA_FREEZER_DOOR_MASK = 0x02
+TOSHIBA_CA_BAR_DOOR_MASK = 0x04
+TOSHIBA_CA_FLEX_ZONE_DOOR_MASK = 0x08
+
+
+ToshibaCAStatus = dict[str, bool | int]
+
+
+def decode_toshiba_ca_status(
+    frame: ToshibaFrame,
+    *,
+    shifted: bool,
+) -> ToshibaCAStatus | None:
+    """Decode a complete Toshiba CA base status."""
+    body = frame.body
+    minimum_length = (
+        TOSHIBA_CA_SHIFTED_BASE_STATUS_LENGTH
+        if shifted
+        else TOSHIBA_CA_BASE_STATUS_LENGTH
+    )
+    if (
+        frame.frame_type not in (MessageType.query, MessageType.notify1)
+        or len(body) < minimum_length
+        or body[0] != TOSHIBA_CA_BASE_BODY_TYPE
+    ):
+        return None
+
+    if shifted:
+        mode_offset = TOSHIBA_CA_SHIFTED_MODE_OFFSET
+        door_offset = TOSHIBA_CA_SHIFTED_DOOR_OFFSET
+        energy_offset = TOSHIBA_CA_SHIFTED_ENERGY_OFFSET
+    else:
+        mode_offset = TOSHIBA_CA_NORMAL_MODE_OFFSET
+        door_offset = TOSHIBA_CA_NORMAL_DOOR_OFFSET
+        energy_offset = TOSHIBA_CA_NORMAL_ENERGY_OFFSET
+    door_flags = body[door_offset]
+    return {
+        "mode": body[mode_offset],
+        "energy_saving_mode": bool(
+            body[TOSHIBA_CA_POWER_FLAGS_OFFSET] & TOSHIBA_CA_POWER_SAVING_MASK,
+        ),
+        "refrigerator_actual_temp": body[mode_offset + 1],
+        "freezer_actual_temp": body[mode_offset + 2],
+        "refrigerator_door": bool(
+            door_flags & TOSHIBA_CA_REFRIGERATOR_DOOR_MASK,
+        ),
+        "freezer_door": bool(door_flags & TOSHIBA_CA_FREEZER_DOOR_MASK),
+        "bar_door": bool(door_flags & TOSHIBA_CA_BAR_DOOR_MASK),
+        "flex_zone_door": bool(door_flags & TOSHIBA_CA_FLEX_ZONE_DOOR_MASK),
+        "energy_consumption": int.from_bytes(
+            body[energy_offset : energy_offset + TOSHIBA_CA_ENERGY_WIDTH],
+            "little",
+        ),
+    }
 
 
 class MessageCABase(MessageRequest):

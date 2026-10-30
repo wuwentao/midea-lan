@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices.bf import DeviceAttributes, MideaBFDevice
 from midealan.devices.bf.message import (
     MessageQuery,
@@ -12,7 +12,20 @@ from midealan.devices.bf.message import (
     WorkStatus,
 )
 from midealan.exceptions import SocketException
-from midealan.message import ListTypes, MessageType
+from midealan.message import (
+    ListTypes,
+    MessageType,
+    ToshibaMessageRequest,
+    encode_toshiba_frame,
+)
+
+# Lua-derived fixture layout, intentionally independent of production constants.
+_TOSHIBA_BASE_STATUS_LENGTH = 28
+_TOSHIBA_STATUS_FLAGS_OFFSET = 19
+_TOSHIBA_HIGH_TEMPERATURE_OFFSET = 20
+_TOSHIBA_REMAINING_TIME_OFFSET = 22
+_TOSHIBA_REMAINING_TIME_END = 24
+_TOSHIBA_CHAMBER_LIGHT_OFFSET = 25
 
 
 def _build_device() -> MideaBFDevice:
@@ -29,6 +42,33 @@ def _build_device() -> MideaBFDevice:
         subtype=1,
         customize="",
     )
+
+
+def _build_toshiba_device(manufacturer_code: str | None = "0008") -> MideaBFDevice:
+    """Build a BF device with optional manufacturer identity."""
+    identity = (
+        {"manufacturer_code": manufacturer_code}
+        if manufacturer_code is not None
+        else {}
+    )
+    return MideaBFDevice(
+        name="Toshiba BF Device",
+        device_id=2,
+        ip_address="192.0.2.1",
+        port=6444,
+        token="AA",
+        key="BB",
+        device_protocol=ProtocolVersion.V1,
+        model="test_model",
+        subtype=1,
+        customize="",
+        **identity,
+    )
+
+
+def _toshiba_status_body() -> bytearray:
+    """Build the minimum complete Toshiba BF base-status body."""
+    return bytearray(_TOSHIBA_BASE_STATUS_LENGTH)
 
 
 def _build_message(message_type: MessageType, body: bytearray) -> bytes:
@@ -59,6 +99,163 @@ class TestMideaBFDevice:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_toshiba_identity_builds_common_query(self) -> None:
+        """Use the one-byte Toshiba BF query for manufacturer 0008."""
+        device = _build_toshiba_device()
+        queries = device.build_query()
+        assert len(queries) == 1
+        assert isinstance(queries[0], ToshibaMessageRequest)
+        assert queries[0].body == b"\x00"
+        assert device.build_query_fallback() == []
+
+    @pytest.mark.parametrize("frame_type", [MessageType.query, MessageType.notify1])
+    def test_toshiba_query_and_notify_base_status(
+        self,
+        frame_type: MessageType,
+    ) -> None:
+        """Decode the common Toshiba BF status from query and notify frames."""
+        device = _build_toshiba_device()
+        body = _toshiba_status_body()
+        body[_TOSHIBA_STATUS_FLAGS_OFFSET] = 0x11
+        body[_TOSHIBA_HIGH_TEMPERATURE_OFFSET] = 0x01
+        body[_TOSHIBA_REMAINING_TIME_OFFSET:_TOSHIBA_REMAINING_TIME_END] = (
+            0x1234
+        ).to_bytes(2, "little")
+        body[_TOSHIBA_CHAMBER_LIGHT_OFFSET] = 0x01
+
+        status = device.process_message(
+            bytes(encode_toshiba_frame(DeviceType.BF, frame_type, body)),
+        )
+
+        assert status == {
+            DeviceAttributes.door: True,
+            DeviceAttributes.status: "during_process",
+            DeviceAttributes.time_remaining: 0x1234,
+            DeviceAttributes.high_temperature: True,
+            DeviceAttributes.furnace_light: True,
+        }
+        assert device.attributes[DeviceAttributes.time_remaining] == 0x1234
+
+    @pytest.mark.parametrize(
+        ("raw_state", "expected"),
+        [
+            (0, "before_cooking"),
+            (1, "finish_cooking"),
+            (2, "before_cooking"),
+            (3, "error_occur"),
+            (4, "during_process"),
+            (5, "before_cooking"),
+            (6, "before_cooking"),
+            (7, "finished_process"),
+        ],
+    )
+    def test_toshiba_cooking_state_mapping(
+        self,
+        raw_state: int,
+        expected: str,
+    ) -> None:
+        """Map every three-bit Toshiba cooking state deterministically."""
+        device = _build_toshiba_device()
+        body = _toshiba_status_body()
+        body[_TOSHIBA_STATUS_FLAGS_OFFSET] = raw_state << 2
+        frame = encode_toshiba_frame(DeviceType.BF, MessageType.query, body)
+        assert device.process_message(bytes(frame))[DeviceAttributes.status] == expected
+
+    @pytest.mark.parametrize("mask", [0x01, 0x02, 0x04, 0x08])
+    def test_toshiba_high_temperature_masks(self, mask: int) -> None:
+        """Treat each documented high-temperature bit as an active warning."""
+        device = _build_toshiba_device()
+        body = _toshiba_status_body()
+        body[_TOSHIBA_HIGH_TEMPERATURE_OFFSET] = mask
+        frame = encode_toshiba_frame(DeviceType.BF, MessageType.query, body)
+        status = device.process_message(bytes(frame))
+        assert status[DeviceAttributes.high_temperature] is True
+
+    @pytest.mark.parametrize("mask", [0x01, 0x02, 0x04])
+    def test_toshiba_chamber_light_masks(self, mask: int) -> None:
+        """Treat each documented chamber-light bit as an active light."""
+        device = _build_toshiba_device()
+        body = _toshiba_status_body()
+        body[_TOSHIBA_CHAMBER_LIGHT_OFFSET] = mask
+        frame = encode_toshiba_frame(DeviceType.BF, MessageType.notify1, body)
+        status = device.process_message(bytes(frame))
+        assert status[DeviceAttributes.furnace_light] is True
+
+    def test_toshiba_requires_complete_base_status(self) -> None:
+        """Accept exactly 28 bytes and reject the 27-byte truncated body."""
+        device = _build_toshiba_device()
+        complete = _toshiba_status_body()
+        frame = encode_toshiba_frame(DeviceType.BF, MessageType.query, complete)
+        assert device.process_message(bytes(frame))[DeviceAttributes.door] is False
+
+        truncated = complete[:-1]
+        frame = encode_toshiba_frame(DeviceType.BF, MessageType.query, truncated)
+        assert device.process_message(bytes(frame)) == {}
+
+    @pytest.mark.parametrize(
+        ("frame_type", "body_type"),
+        [
+            (MessageType.set, 0x00),
+            (MessageType.query, 0x01),
+            (MessageType.notify1, 0x01),
+        ],
+    )
+    def test_toshiba_rejects_unsupported_frame_body_combinations(
+        self,
+        frame_type: MessageType,
+        body_type: int,
+    ) -> None:
+        """Accept only the Lua-documented BF frame and body combinations."""
+        device = _build_toshiba_device()
+        body = _toshiba_status_body()
+        body[0] = body_type
+        frame = encode_toshiba_frame(DeviceType.BF, frame_type, body)
+        assert device.process_message(bytes(frame)) == {}
+
+    def test_toshiba_fallback_requires_valid_supported_status(self) -> None:
+        """Select fallback framing only after a complete decoded BF status."""
+        device = _build_toshiba_device(None)
+        fallback = device.build_query_fallback()[0]
+        assert isinstance(fallback, ToshibaMessageRequest)
+
+        body = _toshiba_status_body()
+        invalid = encode_toshiba_frame(DeviceType.BF, MessageType.query, body)
+        invalid[-1] ^= 1
+        assert device.process_message(bytes(invalid)) == {}
+        assert device._is_query_response_valid(fallback) is False
+        assert device.toshiba_protocol is False
+
+        wrong_type = encode_toshiba_frame(DeviceType.DB, MessageType.query, body)
+        assert device.process_message(bytes(wrong_type)) == {}
+        assert device.toshiba_protocol is False
+
+        body[0] = 0x01
+        unsupported = encode_toshiba_frame(DeviceType.BF, MessageType.query, body)
+        assert device.process_message(bytes(unsupported)) == {}
+        assert device.toshiba_protocol is False
+
+        body[0] = 0x00
+        valid = encode_toshiba_frame(DeviceType.BF, MessageType.query, body)
+        assert device.process_message(bytes(valid))[DeviceAttributes.door] is False
+        assert device._is_query_response_valid(fallback) is True
+        assert device.toshiba_protocol is True
+
+    def test_explicit_non_toshiba_identity_skips_fallback(self) -> None:
+        """Do not probe Toshiba framing for a known different manufacturer."""
+        device = _build_toshiba_device("1234")
+        assert device.build_query_fallback() == []
+        assert isinstance(device.build_query()[0], MessageQuery)
+
+    def test_toshiba_write_is_rejected_before_send(self) -> None:
+        """Keep Toshiba BF writes disabled until hardware verification."""
+        device = _build_toshiba_device()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="hardware verification"),
+        ):
+            device.set_attribute(DeviceAttributes.furnace_light, True)
+        send.assert_not_called()
 
     def test_process_message_basic(self) -> None:
         """Test process message with a basic totalState body."""

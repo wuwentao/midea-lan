@@ -286,6 +286,35 @@ class TestMideaACDevice:
             message = mock_build_send.call_args[0][0]
             assert message.fresh_air_1 == [False, 0]
 
+    def test_newprotocol_fresh_air_without_detected_version(self) -> None:
+        """Fresh-air controls remain unset until a protocol version is detected."""
+        self.device._fresh_air_version = None
+
+        power = self.device.make_newprotocol_message_set(
+            DeviceAttributes.fresh_air_power,
+            True,
+        )
+        speed = self.device.make_newprotocol_message_set(
+            DeviceAttributes.fresh_air_fan_speed,
+            60,
+        )
+
+        assert power.fresh_air_1 is None
+        assert power.fresh_air_2 is None
+        assert speed.fresh_air_1 is None
+        assert speed.fresh_air_2 is None
+
+    def test_fresh_air_mode_full_speed(self) -> None:
+        """A speed at the highest threshold exhausts the preset lookup."""
+        assert (
+            self.device._fresh_air_mode(
+                True,
+                100,
+                MideaACDevice._fresh_air_fan_speeds,
+            )
+            == "full"
+        )
+
     def test_set_screen_display_is_idempotent(self) -> None:
         """screen_display toggles only when the requested state differs.
 
@@ -1251,6 +1280,27 @@ class TestMideaACDevice:
             assert zero_speed.power is False
             assert zero_speed.speed == 80
 
+    def test_bb_fresh_air_unknown_mode_keeps_current_state(self) -> None:
+        """An unknown preset leaves the existing intake state unchanged."""
+        device = self._make_device("23096633", 1)
+
+        message = device.make_subprotocol_fresh_air_set(
+            DeviceAttributes.fresh_air_mode,
+            "unknown",
+        )
+
+        assert message.power is False
+        assert message.speed == 60
+
+    def test_bb_fresh_air_unrelated_attribute_keeps_current_state(self) -> None:
+        """An unrelated attribute falls through without changing intake state."""
+        device = self._make_device("23096633", 1)
+
+        message = device.make_subprotocol_fresh_air_set("unknown", True)
+
+        assert message.power is False
+        assert message.speed == 60
+
     def test_wind_angle_and_rate_select_properties(self) -> None:
         """Test wind angle and rate select option lists."""
         assert self.device.wind_lr_angles == [
@@ -1539,6 +1589,10 @@ class TestMideaACDevice:
             mock_message.fresh_air_1 = None
             result = self.device.process_message(b"")
             assert result[DeviceAttributes.fresh_air_mode.value] == "low"
+
+            mock_message.fresh_air_fan_speed = 100
+            result = self.device.process_message(b"")
+            assert result[DeviceAttributes.fresh_air_mode.value] == "full"
 
             mock_message.fresh_air_power = False
             result = self.device.process_message(b"")

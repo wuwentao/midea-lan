@@ -6,6 +6,7 @@ from typing import Any, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
     WORK_MODE_MAP,
@@ -14,6 +15,7 @@ from .message import (
     MessageQuery,
     MessageSet,
     WorkStatus,
+    decode_toshiba_bf_status,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -154,6 +156,11 @@ _INT_ATTRS: frozenset[DeviceAttributes] = frozenset(
 class MideaBFDevice(MideaDevice):
     """Midea BF device."""
 
+    TOSHIBA_SUPPORTED = True
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (MessageType.query, MessageType.notify1),
+    )
+
     def __init__(
         self,
         *,
@@ -167,12 +174,17 @@ class MideaBFDevice(MideaDevice):
             attributes=dict.fromkeys(DeviceAttributes, None),
         )
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea BF device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea BF device process message."""
+        status = self.process_toshiba_message(msg)
+        if status is not None:
+            return status
         message = MessageBFResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         # message layer already resolves work_status into a string name
@@ -184,6 +196,14 @@ class MideaBFDevice(MideaDevice):
                 self._attributes[status] = value
                 new_status[str(status)] = value
         return new_status
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode and publish the Toshiba BF base cooking status."""
+        status = decode_toshiba_bf_status(frame)
+        if status is None:
+            return None
+        self._attributes.update(status)
+        return dict(status)
 
     def make_message_set(self) -> MessageSet:
         """Create a MessageSet pre-populated with current work-mode attributes.
@@ -216,6 +236,7 @@ class MideaBFDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea BF device set attribute."""
+        self.reject_toshiba_write()
         # status on device maps to work_status on message
         if attr == DeviceAttributes.status:
             if not isinstance(value, str):

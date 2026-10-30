@@ -9,10 +9,55 @@ from midealan.message import (
     MessageRequest,
     MessageResponse,
     MessageType,
+    ToshibaFrame,
 )
 
 # Body type constants
 BODY_TYPE_TOTAL_STATE = 0x01
+
+# Toshiba BF base-status layout shared by protocol versions 2 through 8.
+TOSHIBA_BF_BASE_BODY_TYPE = 0x00
+TOSHIBA_BF_BASE_STATUS_LENGTH = 28
+TOSHIBA_BF_STATUS_FLAGS_OFFSET = 19
+TOSHIBA_BF_HIGH_TEMPERATURE_OFFSET = 20
+TOSHIBA_BF_REMAINING_TIME_OFFSET = 22
+TOSHIBA_BF_REMAINING_TIME_END = 24
+TOSHIBA_BF_CHAMBER_LIGHT_OFFSET = 25
+
+# Toshiba BF status masks and values.
+TOSHIBA_BF_DOOR_MASK = 0x01
+TOSHIBA_BF_COOKING_STATE_SHIFT = 2
+TOSHIBA_BF_COOKING_STATE_MASK = 0x07
+TOSHIBA_BF_STATE_FINISH_COOKING = 0x01
+TOSHIBA_BF_STATE_ERROR = 0x03
+TOSHIBA_BF_STATE_DURING_PROCESS = 0x04
+TOSHIBA_BF_STATE_FINISHED_PROCESS = 0x07
+TOSHIBA_BF_SETTING_HIGH_TEMPERATURE_MASK = 0x01
+TOSHIBA_BF_COOKING_HIGH_TEMPERATURE_MASK = 0x02
+TOSHIBA_BF_BAKERY_HIGH_TEMPERATURE_MASK = 0x04
+TOSHIBA_BF_STEAM_HIGH_TEMPERATURE_MASK = 0x08
+TOSHIBA_BF_HIGH_TEMPERATURE_MASK = (
+    TOSHIBA_BF_SETTING_HIGH_TEMPERATURE_MASK
+    | TOSHIBA_BF_COOKING_HIGH_TEMPERATURE_MASK
+    | TOSHIBA_BF_BAKERY_HIGH_TEMPERATURE_MASK
+    | TOSHIBA_BF_STEAM_HIGH_TEMPERATURE_MASK
+)
+TOSHIBA_BF_DOOR_LIGHT_MASK = 0x01
+TOSHIBA_BF_PREHEATING_LIGHT_MASK = 0x02
+TOSHIBA_BF_COOKING_LIGHT_MASK = 0x04
+TOSHIBA_BF_CHAMBER_LIGHT_MASK = (
+    TOSHIBA_BF_DOOR_LIGHT_MASK
+    | TOSHIBA_BF_PREHEATING_LIGHT_MASK
+    | TOSHIBA_BF_COOKING_LIGHT_MASK
+)
+
+TOSHIBA_BF_COOKING_STATES = {
+    TOSHIBA_BF_STATE_FINISH_COOKING: "finish_cooking",
+    TOSHIBA_BF_STATE_ERROR: "error_occur",
+    TOSHIBA_BF_STATE_DURING_PROCESS: "during_process",
+    TOSHIBA_BF_STATE_FINISHED_PROCESS: "finished_process",
+}
+TOSHIBA_BF_DEFAULT_COOKING_STATE = "before_cooking"
 
 # Byte offsets in MessageBFBody (body[0] is body_type, data starts at body[1])
 OFFSET_EXECUTE = 1
@@ -278,6 +323,42 @@ def work_mode_to_bytes(mode: str | None) -> tuple[int, int]:
 def work_mode_to_name(high: int, low: int) -> str:
     """Convert (high, low) bytes to work mode name."""
     return WORK_MODE_REVERSE.get((high, low), "unknown")
+
+
+ToshibaBFStatus = dict[str, bool | int | str]
+
+
+def decode_toshiba_bf_status(frame: ToshibaFrame) -> ToshibaBFStatus | None:
+    """Decode the verified Toshiba BF base cooking status."""
+    body = frame.body
+    if (
+        frame.frame_type not in (MessageType.query, MessageType.notify1)
+        or len(body) < TOSHIBA_BF_BASE_STATUS_LENGTH
+        or body[0] != TOSHIBA_BF_BASE_BODY_TYPE
+    ):
+        return None
+
+    status_flags = body[TOSHIBA_BF_STATUS_FLAGS_OFFSET]
+    cooking_state = (
+        status_flags >> TOSHIBA_BF_COOKING_STATE_SHIFT
+    ) & TOSHIBA_BF_COOKING_STATE_MASK
+    return {
+        "door": bool(status_flags & TOSHIBA_BF_DOOR_MASK),
+        "status": TOSHIBA_BF_COOKING_STATES.get(
+            cooking_state,
+            TOSHIBA_BF_DEFAULT_COOKING_STATE,
+        ),
+        "time_remaining": int.from_bytes(
+            body[TOSHIBA_BF_REMAINING_TIME_OFFSET:TOSHIBA_BF_REMAINING_TIME_END],
+            "little",
+        ),
+        "high_temperature": bool(
+            body[TOSHIBA_BF_HIGH_TEMPERATURE_OFFSET] & TOSHIBA_BF_HIGH_TEMPERATURE_MASK,
+        ),
+        "furnace_light": bool(
+            body[TOSHIBA_BF_CHAMBER_LIGHT_OFFSET] & TOSHIBA_BF_CHAMBER_LIGHT_MASK,
+        ),
+    }
 
 
 class MessageBFBase(MessageRequest):

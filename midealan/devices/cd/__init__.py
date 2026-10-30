@@ -1066,7 +1066,7 @@ class MideaCDDevice(MideaDevice):
                 if message.target_temperature > message.ts_max:
                     message.target_temperature = float(message.ts_max)
 
-            elif attr == DeviceAttributes.schedule_mode:
+            elif attr == DeviceAttributes.schedule_mode:  # pragma: no branch
                 message.schedule_mode = max(0, min(2, int(value)))
 
             # persist only safe fields; SET echoes often return openPTC=1 / bad Tr

@@ -719,6 +719,19 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_set_level.assert_called_with(logging.WARNING)
             self.namespace.func.assert_called_once()
 
+    def test_run_without_cloud_session(self) -> None:
+        """A command that does not use the cloud has no session to close."""
+        cli = MideaCLI()
+        mock_logger = MagicMock()
+        with (
+            patch("logging.basicConfig"),
+            patch("logging.getLogger", return_value=mock_logger),
+        ):
+            cli.run(self.namespace)
+
+        self.namespace.func.assert_called_once()
+        assert not hasattr(cli, "session")
+
     def test_main_call(self) -> None:
         """Test main call."""
         # Command to run the script
@@ -780,6 +793,27 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             # password passed on command line: config value is not applied
             assert namespace.password == "argpass"
             assert namespace.func.__name__ == "discover"
+
+    def test_main_without_config_file(self) -> None:
+        """The CLI runs with command-line defaults when no config exists."""
+        with TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "missing.json"
+            exit_code: int | str | None = None
+            with (
+                patch.object(sys, "argv", ["midealan", "discover"]),
+                patch(
+                    "midealan.cli.get_config_file_path",
+                    return_value=config_file,
+                ),
+                patch.object(MideaCLI, "run") as mock_run,
+            ):
+                try:
+                    main()
+                except SystemExit as exc:
+                    exit_code = exc.code
+
+        assert exit_code == 0
+        mock_run.assert_called_once()
 
     def test_main_module_entry(self) -> None:
         """Test the __main__ guard when running the module as a script."""

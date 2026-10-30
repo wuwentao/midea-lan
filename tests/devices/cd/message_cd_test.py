@@ -210,6 +210,12 @@ class TestCDB1MessageBody:
         assert parsed.support_heat_recovery is True
         assert parsed.heat_recovery_status is True
 
+    def test_unknown_tlv_is_ignored(self) -> None:
+        """Successful TLVs with unknown tags do not publish attributes."""
+        parsed = CDB1MessageBody(bytearray.fromhex("b1080000ff0101"))
+        assert parsed.data == bytearray.fromhex("b1080000ff0101")
+        assert not hasattr(parsed, "maintenance_reminder")
+
     @pytest.mark.parametrize(
         "body",
         [
@@ -513,6 +519,12 @@ class TestCDSterilizeSetBody:
         body = self._make_body(sterilize_on=True, byte3=4)
         body.append(67)
         assert CDSterilizeSetBody(body).disinfection_temperature == 67.0
+
+    def test_invalid_extended_temperature_uses_legacy_echo(self) -> None:
+        """An invalid direct value falls back to the legacy doubled value."""
+        body = self._make_body(sterilize_on=True, byte3=132)
+        body.append(0)
+        assert CDSterilizeSetBody(body).disinfection_temperature == 66.0
 
     def test_temp_echo_on_keeps_raw_auto_sterilize_week(self) -> None:
         """body[3]=132 when sterilize ON also remains available as raw week."""

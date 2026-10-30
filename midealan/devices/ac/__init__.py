@@ -9,7 +9,13 @@ from typing import Any, ClassVar, Unpack, cast
 
 from midealan.const import MAX_BYTE_VALUE, DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
-from midealan.message import ListTypes
+from midealan.message import (
+    ListTypes,
+    MessageRequest,
+    MessageType,
+    ToshibaFrame,
+    ToshibaMessageRequest,
+)
 
 from .message import (
     _B1_MAX_CAPABILITY_BATCHES,
@@ -38,6 +44,7 @@ from .message import (
     SubProtocolQuery30,
     ToggleDisplay,
     _PropertiesCapsQueryBase,
+    decode_toshiba_ac_status,
     format_property_tags,
 )
 
@@ -216,6 +223,17 @@ NEW_PROTOCOL_BODY_TYPES = (ListTypes.B0, ListTypes.B1, ListTypes.B5)
 
 class MideaACDevice(MideaDevice):
     """Midea AC device."""
+
+    TOSHIBA_SUPPORTED = True
+
+    TOSHIBA_RESPONSE_FRAME_TYPES = frozenset(
+        (
+            MessageType.set,
+            MessageType.query,
+            MessageType.notify1,
+            MessageType.notify2,
+        ),
+    )
 
     _fresh_air_fan_speeds: ClassVar[dict[int, str]] = {
         0: "off",
@@ -454,8 +472,21 @@ class MideaACDevice(MideaDevice):
         """Midea AC device rate_select options."""
         return list(self._rate_select_map().values())
 
-    def build_query(self) -> list[ACQuery]:
+    def build_toshiba_query(self) -> list[MessageRequest]:
+        """Wrap the standard AC state-query body in the Toshiba envelope."""
+        state_query = StateQuery(self._message_protocol_version)
+        return [
+            ToshibaMessageRequest(
+                DeviceType.AC,
+                self._message_protocol_version,
+                state_query.body,
+            ),
+        ]
+
+    def build_query(self) -> list[MessageRequest]:
         """Midea AC device build query."""
+        if self.toshiba_protocol:
+            return self.build_toshiba_query()
         if self._used_subprotocol:
             # BB responses are independent status groups. Query each group with
             # its own identity so an unsupported response for one group does not
@@ -464,7 +495,7 @@ class MideaACDevice(MideaDevice):
 
         # Split new-protocol queries into independent batches.
         default_query = PropertiesDefaultQuery(self._message_protocol_version)
-        queries: list[ACQuery] = [
+        queries: list[MessageRequest] = [
             StateQuery(self._message_protocol_version),
             default_query,
         ]
@@ -546,7 +577,7 @@ class MideaACDevice(MideaDevice):
 
         return queries
 
-    def _subprotocol_queries(self) -> list[ACQuery]:
+    def _subprotocol_queries(self) -> list[MessageRequest]:
         """Build the independent BB subprotocol status queries."""
         return [
             SubProtocolQuery10(self._message_protocol_version),
@@ -554,17 +585,24 @@ class MideaACDevice(MideaDevice):
             SubProtocolQuery30(self._message_protocol_version),
         ]
 
-    def build_query_fallback(self) -> list[ACQuery]:
-        """Probe the BB family when the primary B5 family is silent."""
-        if self._used_subprotocol:
+    def build_query_fallback(self) -> list[MessageRequest]:
+        """Probe Toshiba and BB families when the primary family is silent."""
+        if self.toshiba_protocol or self._used_subprotocol:
             return []
-        return self._subprotocol_queries()
+        return super().build_query_fallback() + self._subprotocol_queries()
+
+    def build_query_fallback_stages(self) -> list[list[MessageRequest]]:
+        """Probe Toshiba before BB so a match stops the fallback sequence."""
+        if self.toshiba_protocol or self._used_subprotocol:
+            return []
+        toshiba = super().build_query_fallback()
+        return ([toshiba] if toshiba else []) + [self._subprotocol_queries()]
 
     def _is_query_response_valid(self, cmd: object) -> bool:
         """Accept a BB response only after it identifies the BB family."""
         if isinstance(cmd, SubProtocolQuery):
             return self._used_subprotocol
-        return True
+        return super()._is_query_response_valid(cast("MessageRequest", cmd))
 
     def _should_defer_query(self, cmd: object) -> bool:
         """Retry B5 capability probes instead of blacklisting them."""
@@ -587,7 +625,7 @@ class MideaACDevice(MideaDevice):
         deadline when queued, so a silent device is not probed every refresh.
         The subprotocol (BB) devices do not use B5.
         """
-        if self._used_subprotocol:
+        if self.toshiba_protocol or self._used_subprotocol:
             return []
         queries: list[ACQuery] = []
         now = time.monotonic()
@@ -656,7 +694,25 @@ class MideaACDevice(MideaDevice):
         if body[C0_OUTDOOR_TEMPERATURE_INDEX] in C0_OUTDOOR_TEMPERATURE_PLACEHOLDERS:
             setattr(message, DeviceAttributes.outdoor_temperature, None)
 
-    def process_message(self, msg: bytes) -> dict[str, Any]:  # noqa: C901
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Route validated Toshiba frames before the regular AC decoder."""
+        status = self.process_toshiba_message(msg)
+        return self._process_midea_message(msg) if status is None else status
+
+    def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
+        """Decode Toshiba-specific status bodies verified against Lua."""
+        status = decode_toshiba_ac_status(frame)
+        if status is None:
+            return None
+        power = status.get(DeviceAttributes.power)
+        if power is False or status.get(DeviceAttributes.swing_vertical) is True:
+            status[DeviceAttributes.indirect_wind.value] = False
+        if power is False:
+            status[DeviceAttributes.screen_display.value] = False
+        self._attributes.update(status)
+        return dict(status)
+
+    def _process_midea_message(self, msg: bytes) -> dict[str, Any]:  # noqa: C901
         """Midea AC device process message."""
         message = MessageACResponse(
             bytearray(msg),
@@ -1391,6 +1447,7 @@ class MideaACDevice(MideaDevice):
         before any status frame is seen is cleared by the next routine
         StateSet, which still sends ``00 00 00`` while no known timer is armed.
         """
+        self.reject_toshiba_write()
         if isinstance(value, bool):
             _LOGGER.debug(
                 "[%s] Ignoring boolean value for %s, expected minutes",
@@ -1445,6 +1502,7 @@ class MideaACDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
+        self.reject_toshiba_write()
         # if nat a sensor
         message: (
             ToggleDisplay
@@ -1583,6 +1641,7 @@ class MideaACDevice(MideaDevice):
         zone: int | None = None,  # noqa: ARG002
     ) -> None:
         """Midea AC device set target temperature."""
+        self.reject_toshiba_write()
         message: MessageSubProtocolSet | StateSet = self.make_message_uniq_set()
         message.target_temperature = target_temperature
         if mode is not None:
@@ -1592,6 +1651,7 @@ class MideaACDevice(MideaDevice):
 
     def set_swing(self, swing_vertical: bool, swing_horizontal: bool) -> None:
         """Midea AC device set swing."""
+        self.reject_toshiba_write()
         message: MessageSubProtocolSet | StateSet = self.make_message_uniq_set()
         if isinstance(message, StateSet):
             message.swing_vertical = swing_vertical

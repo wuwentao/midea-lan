@@ -14,6 +14,7 @@ from midealan.message import (
     MessageResponse,
     MessageType,
     NewProtocolMessageBody,
+    ToshibaFrame,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +45,39 @@ BB_SN8_FLAG_INDEX = 80
 BB_OUTDOOR_TEMPERATURE_HIGH_INDEX = 6
 
 A0_A1_C0_MIN_BODY_LENGTH = 18
+# Toshiba AC versions 24-30 share these base-status offsets. Their C0/D0
+# bodies differ from the ordinary Midea C0 body despite matching type bytes.
+TOSHIBA_AC_BASE_LENGTH = 22
+TOSHIBA_AC_POWER_OFFSET = 1
+TOSHIBA_AC_MODE_OFFSET = 2
+TOSHIBA_AC_FAN_OFFSET = 3
+TOSHIBA_AC_TARGET_OFFSET = 4
+TOSHIBA_AC_ON_TIMER_OFFSET = 5
+TOSHIBA_AC_OFF_TIMER_OFFSET = 7
+TOSHIBA_AC_HUMIDITY_OFFSET = 10
+TOSHIBA_AC_SWING_OFFSET = 11
+TOSHIBA_AC_INDOOR_OFFSET = 13
+TOSHIBA_AC_OUTDOOR_OFFSET = 14
+TOSHIBA_AC_DECIMAL_OFFSET = 15
+TOSHIBA_AC_FLAGS_OFFSET = 16
+TOSHIBA_AC_A1_MIN_BODY_LENGTH = 19
+TOSHIBA_AC_ENERGY_OFFSET = 81
+TOSHIBA_AC_ENERGY_WIDTH = 4
+TOSHIBA_AC_POWER_END = 88
+TOSHIBA_AC_VALUE_MASK = 0x7F
+TOSHIBA_AC_NIBBLE_MASK = 0x0F
+TOSHIBA_AC_HIGH_NIBBLE_MASK = 0xF0
+TOSHIBA_AC_NIBBLE_SHIFT = 4
+TOSHIBA_AC_TIMER_ENABLED = 0x80
+TOSHIBA_AC_POWER_MASK = 0x01
+TOSHIBA_AC_TEMPERATURE_UNKNOWN = 0xFF
+TOSHIBA_AC_TEMPERATURE_BASE = 50
+TOSHIBA_AC_TEMPERATURE_DIVISOR = 2
+TOSHIBA_AC_DECIMAL_DIVISOR = 10
+TOSHIBA_AC_HOUR_MINUTES = 60
+TOSHIBA_AC_ENERGY_DIVISOR = 100
+TOSHIBA_AC_ECO_MASK = 0x01
+TOSHIBA_AC_DRY_MASK = 0x04
 CONFORT_MODE_MIN_LENGTH2 = 25
 SMART_DRY_MIN_LENGTH = 22
 SWING_LR_MIN_LENGTH = 22
@@ -463,6 +497,113 @@ class MessageA0LongQuery(MessageACBase):
     def _body(self) -> bytearray:
         """Head 0x41 + query_body + _message_id + crc."""
         return bytearray(19)
+
+
+def _toshiba_ac_temperature(raw: int, decimal: int) -> float | None:
+    """Decode the Lua temperature formula and unavailable sentinel."""
+    if raw == TOSHIBA_AC_TEMPERATURE_UNKNOWN:
+        return None
+    return (
+        raw - TOSHIBA_AC_TEMPERATURE_BASE
+    ) / TOSHIBA_AC_TEMPERATURE_DIVISOR + decimal / TOSHIBA_AC_DECIMAL_DIVISOR
+
+
+def _toshiba_ac_timer(body: bytes, offset: int) -> int:
+    """Decode the separate armed-hour and minute timer fields."""
+    if not body[offset] & TOSHIBA_AC_TIMER_ENABLED:
+        return 0
+    return (body[offset] & TOSHIBA_AC_VALUE_MASK) * TOSHIBA_AC_HOUR_MINUTES + body[
+        offset + 1
+    ]
+
+
+ToshibaACStatus = dict[str, bool | int | float | None]
+
+
+def _decode_toshiba_ac_base(body: bytes) -> ToshibaACStatus | None:
+    """Decode the C0/D0 base status shared by Toshiba AC Lua versions."""
+    if len(body) < TOSHIBA_AC_BASE_LENGTH:
+        return None
+    decimal = body[TOSHIBA_AC_DECIMAL_OFFSET]
+    return {
+        "power": bool(body[TOSHIBA_AC_POWER_OFFSET] & TOSHIBA_AC_POWER_MASK),
+        "mode": (body[TOSHIBA_AC_MODE_OFFSET] & TOSHIBA_AC_HIGH_NIBBLE_MASK)
+        >> TOSHIBA_AC_NIBBLE_SHIFT,
+        "target_temperature": (body[TOSHIBA_AC_TARGET_OFFSET] & TOSHIBA_AC_VALUE_MASK)
+        / TOSHIBA_AC_TEMPERATURE_DIVISOR,
+        "fan_speed": body[TOSHIBA_AC_FAN_OFFSET] & TOSHIBA_AC_VALUE_MASK,
+        "indoor_temperature": _toshiba_ac_temperature(
+            body[TOSHIBA_AC_INDOOR_OFFSET],
+            decimal & TOSHIBA_AC_NIBBLE_MASK,
+        ),
+        "outdoor_temperature": _toshiba_ac_temperature(
+            body[TOSHIBA_AC_OUTDOOR_OFFSET],
+            decimal >> TOSHIBA_AC_NIBBLE_SHIFT,
+        ),
+        "indoor_humidity": body[TOSHIBA_AC_HUMIDITY_OFFSET],
+        "swing_horizontal": bool(
+            body[TOSHIBA_AC_SWING_OFFSET] & TOSHIBA_AC_NIBBLE_MASK,
+        ),
+        "swing_vertical": bool(
+            body[TOSHIBA_AC_SWING_OFFSET] & TOSHIBA_AC_HIGH_NIBBLE_MASK,
+        ),
+        "eco_mode": bool(body[TOSHIBA_AC_FLAGS_OFFSET] & TOSHIBA_AC_ECO_MASK),
+        "dry": bool(body[TOSHIBA_AC_FLAGS_OFFSET] & TOSHIBA_AC_DRY_MASK),
+        "power_on_timer": _toshiba_ac_timer(body, TOSHIBA_AC_ON_TIMER_OFFSET),
+        "power_off_timer": _toshiba_ac_timer(body, TOSHIBA_AC_OFF_TIMER_OFFSET),
+    }
+
+
+def _decode_toshiba_ac_temperature_notification(
+    body: bytes,
+) -> ToshibaACStatus | None:
+    """Decode the A1 temperature-only notification."""
+    if len(body) < TOSHIBA_AC_A1_MIN_BODY_LENGTH:
+        return None
+    return {
+        name: _toshiba_ac_temperature(body[offset], 0)
+        for name, offset in (
+            ("indoor_temperature", TOSHIBA_AC_INDOOR_OFFSET),
+            ("outdoor_temperature", TOSHIBA_AC_OUTDOOR_OFFSET),
+        )
+        if body[offset] not in (0, TOSHIBA_AC_TEMPERATURE_UNKNOWN)
+    }
+
+
+def _decode_toshiba_ac_energy(body: bytes) -> ToshibaACStatus | None:
+    """Decode the long A0 energy notification used by Toshiba AC v30."""
+    if len(body) < TOSHIBA_AC_POWER_END:
+        return None
+    power_offset = TOSHIBA_AC_ENERGY_OFFSET + TOSHIBA_AC_ENERGY_WIDTH
+    return {
+        "total_energy_consumption": int.from_bytes(
+            body[TOSHIBA_AC_ENERGY_OFFSET:power_offset],
+            "big",
+        )
+        / TOSHIBA_AC_ENERGY_DIVISOR,
+        "realtime_power": int.from_bytes(body[power_offset:TOSHIBA_AC_POWER_END], "big")
+        / TOSHIBA_AC_ENERGY_DIVISOR,
+    }
+
+
+def decode_toshiba_ac_status(
+    frame: ToshibaFrame,
+) -> ToshibaACStatus | None:
+    """Decode the verified base and telemetry bodies from Toshiba AC Lua."""
+    body = frame.body
+    if not body:
+        return None
+    status = None
+    if (
+        frame.frame_type in (MessageType.set, MessageType.query)
+        and body[0] == ListTypes.C0
+    ) or (frame.frame_type == MessageType.notify2 and body[0] == ListTypes.D0):
+        status = _decode_toshiba_ac_base(body)
+    elif frame.frame_type == MessageType.notify1 and body[0] == ListTypes.A1:
+        status = _decode_toshiba_ac_temperature_notification(body)
+    elif frame.frame_type == MessageType.notify1 and body[0] == ListTypes.A0:
+        status = _decode_toshiba_ac_energy(body)
+    return status
 
 
 class StateQuery(MessageACBase):

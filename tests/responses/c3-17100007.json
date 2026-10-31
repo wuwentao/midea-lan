@@ -1,0 +1,126 @@
+{
+  "note": "Sanitized captured frame layouts. Energy totals, COP values and timer/clock values are synthetic; checksum recalculated. Expected mapped values were decoded independently with vendor Lua 0.0.27. No appliance identifiers, credentials or real billing data are included.",
+  "responses": [
+    {
+      "table": "2010",
+      "frame": "aa7cc300000000000003002010ff1cffff00ffff01ff0103014a7fff00f001ea00ff00000000010101000000000001000000020202022600fa00fa0032022600fa00fa0032012c00aa025800c801b500010102ff010130000000002f00000000000000000000000000000100640000ffff010101010101ffffffff00b2",
+      "expected": {}
+    },
+    {
+      "table": "2050",
+      "frame": "aa20c300000000000003002050ff1cffff00ffff00000008000800000800080073",
+      "expected": {
+        "silent_mode": false,
+        "silent_level": "off"
+      }
+    },
+    {
+      "table": "2070",
+      "frame": "aa1bc300000000000003002070ff1cffff00ffff0000080008000365",
+      "expected": {
+        "eco_mode": false,
+        "eco_function_state": false,
+        "eco_timer_state": false
+      }
+    },
+    {
+      "table": "2090",
+      "frame": "aa1bc300000000000003002090ff1cffff00ffff0100ff080001004f",
+      "expected": {
+        "disinfect": true,
+        "disinfect_run": false,
+        "disinfect_set_weekday": null,
+        "disinfect_start_hour": 8,
+        "disinfect_start_minutes": 0
+      }
+    },
+    {
+      "table": "2F10",
+      "frame": "aac0c300000000000003002f10ff1cffff00ffff1901f4003c006401b8012f015d000100dfffffffff0157019901b5ffff00db000a00371a00b47fff7fff0070025800000000000004020000040300000404000004050000006a0000020c0000077f0000014d3e0313000000000000000000000000000000000000000000000000010001100000014d0060000000000000ffffffffffff01fe02e40001000101000000000000000000014f0000026b0000000000000000000000020000000001dd",
+      "expected": {}
+    },
+    {
+      "table": "2F11",
+      "frame": "aad8c300000000000003002f11ff1cffff00ffff0101020000018894000189110001898e000000cf00018a8800018b0500018b82000000d300018c7c00018cf900018d76000000d700018e7000018eed00018f6a000000db00019064000190e10001915e000000df00019258000192d500019352000000e30001944c000194c900019546000000e700019640000196bd0001973a000000eb00019834000198b10001992e000000ef00019a2800019aa500019b22000000f300019c1c00019c9900019d16000000f700019e1000019e8d00019f0a000000fb51",
+      "expected": {
+        "heating_power": 1007.5,
+        "heating_heat_output": 1005.0,
+        "heating_cop": 2.07,
+        "heating_total_energy": 1012.5,
+        "heating_total_heat": 1010.0,
+        "heating_total_cop": 2.11,
+        "heating_energy_today": 1027.5,
+        "heating_heat_today": 1025.0,
+        "heating_cop_today": 2.23,
+        "heating_energy_this_week": 1032.5,
+        "heating_heat_this_week": 1030.0,
+        "heating_cop_this_week": 2.27,
+        "heating_energy_this_month": 1037.5,
+        "heating_heat_this_month": 1035.0,
+        "heating_cop_this_month": 2.31,
+        "heating_energy_this_year": 1042.5,
+        "heating_heat_this_year": 1040.0,
+        "heating_cop_this_year": 2.35,
+        "cooling_power": 1017.5,
+        "cooling_heat_output": 1015.0,
+        "cooling_cop": 2.15,
+        "cooling_total_energy": 1022.5,
+        "cooling_total_heat": 1020.0,
+        "cooling_total_cop": 2.19,
+        "cooling_energy_today": 1047.5,
+        "cooling_heat_today": 1045.0,
+        "cooling_cop_today": 2.39,
+        "cooling_energy_this_week": 1052.5,
+        "cooling_heat_this_week": 1050.0,
+        "cooling_cop_this_week": 2.43,
+        "cooling_energy_this_month": 1057.5,
+        "cooling_heat_this_month": 1055.0,
+        "cooling_cop_this_month": 2.47,
+        "cooling_energy_this_year": 1062.5,
+        "cooling_heat_this_year": 1060.0,
+        "cooling_cop_this_year": 2.51
+      }
+    },
+    {
+      "table": "2F12",
+      "frame": "aa9bc300000000000003002f12ff1cffff00ffff020001871d009600af00c8000000cd0001898e00018a0b00018a8800018b0500018b82000000d300018c7c00018cf900018d76000000d700018e7000018eed00018f6a000000db00019064000190e10001915e000000df00019258000192d500019352000000e30001944c000194c900019546000000e700019640000196bd0001973a000000eb9d",
+      "expected": {
+        "dhw_power_consumption": 1017.5,
+        "dhw_heat_output": 1015.0,
+        "dhw_cop": 2.15,
+        "dhw_total_energy": 1022.5,
+        "dhw_total_heat": 1020.0,
+        "dhw_total_cop": 2.19,
+        "dhw_energy_today": 1027.5,
+        "dhw_heat_today": 1025.0,
+        "dhw_cop_today": 2.23,
+        "dhw_energy_this_week": 1032.5,
+        "dhw_heat_this_week": 1030.0,
+        "dhw_cop_this_week": 2.27,
+        "dhw_energy_this_month": 1037.5,
+        "dhw_heat_this_month": 1035.0,
+        "dhw_cop_this_month": 2.31,
+        "dhw_energy_this_year": 1042.5,
+        "dhw_heat_this_year": 1040.0,
+        "dhw_cop_this_year": 2.35,
+        "heat_output": 1.5,
+        "instant_cop": 2.05,
+        "total_cop": 2.11
+      }
+    },
+    {
+      "table": "2F17",
+      "frame": "aa64c300000000000003002f17ff1cffff00ffff040100000000000000000003f1000003f20064014a7fff01ea00f0014a012c00000014000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000f7",
+      "expected": {
+        "status_heating": true,
+        "heat_run": true,
+        "status_cool": false,
+        "cool_run": false,
+        "status_dhw": false,
+        "dhw_run": false,
+        "status_tbh": false,
+        "status_ibh": false
+      }
+    }
+  ]
+}

@@ -199,8 +199,8 @@ class TestMideaC3Device:
         assert isinstance(queries[-1], MessageQueryDiagnostic)
         assert device.temperature_step == 1.0
 
-    def test_build_query_17100007_keeps_standard_protocol(self) -> None:
-        """Test the 17100007 X00 model is not treated as short X01."""
+    def test_build_query_17100007_uses_2010_protocol(self) -> None:
+        """Test this model uses its confirmed query instead of legacy X01."""
         device = MideaC3Device(
             name="Test Device",
             device_id=1,
@@ -216,7 +216,9 @@ class TestMideaC3Device:
 
         queries = device.build_query()
 
-        assert len(queries) == 5
+        assert len(queries) == 6
+        assert queries[0].body == bytes.fromhex("002010ffffffff00ffff")
+        assert queries[1].body == bytes.fromhex("002f12ffffffff00ffff")
         assert not any(isinstance(query, MessageQueryDiagnostic) for query in queries)
         assert device.temperature_step == 0.5
 

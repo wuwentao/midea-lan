@@ -9,6 +9,15 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import ListTypes, MessageQuestCustom, MessageRequest, MessageType
 
+from .features import (
+    CONTROL_TABLES,
+    ENERGY_TABLES,
+    FeatureSetting,
+    MessageSetSettings,
+    decode_table,
+    query_table,
+)
+from .features import ENERGY_ATTRIBUTES as FEATURE_ENERGY_ATTRIBUTES
 from .message import (
     C3_SHORT_DHW_POWER_MASK,
     C3_SHORT_SETPOINT_BIAS,
@@ -20,7 +29,6 @@ from .message import (
     C3DeviceMode,
     C3SilentLevel,
     MessageC3Response,
-    MessageQuery,
     MessageQueryBasic,
     MessageQueryDiagnostic,
     MessageQueryDisinfect,
@@ -31,6 +39,17 @@ from .message import (
     MessageSetDisinfect,
     MessageSetECO,
     MessageSetSilent,
+)
+from .quintuple import (
+    ENERGY_ATTRIBUTES,
+    MODE_TO_WIRE,
+    BasicTag,
+    MessageQuery2F12,
+    MessageQuery2010,
+    MessageSet2010,
+)
+from .quintuple import (
+    MODEL as QUINTUPLE_MODEL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -181,6 +200,63 @@ class DeviceAttributes(StrEnum):
     # --- additive attributes backed by new parsing logic ---
     dc_bus_voltage = "dc_bus_voltage"
     compressor_on = "compressor_on"
+    heating_power = "heating_power"
+    heating_heat_output = "heating_heat_output"
+    heating_cop = "heating_cop"
+    heating_total_energy = "heating_total_energy"
+    heating_total_heat = "heating_total_heat"
+    heating_total_cop = "heating_total_cop"
+    heating_energy_today = "heating_energy_today"
+    heating_heat_today = "heating_heat_today"
+    heating_cop_today = "heating_cop_today"
+    heating_energy_this_week = "heating_energy_this_week"
+    heating_heat_this_week = "heating_heat_this_week"
+    heating_cop_this_week = "heating_cop_this_week"
+    heating_energy_this_month = "heating_energy_this_month"
+    heating_heat_this_month = "heating_heat_this_month"
+    heating_cop_this_month = "heating_cop_this_month"
+    heating_energy_this_year = "heating_energy_this_year"
+    heating_heat_this_year = "heating_heat_this_year"
+    heating_cop_this_year = "heating_cop_this_year"
+    cooling_power = "cooling_power"
+    cooling_heat_output = "cooling_heat_output"
+    cooling_cop = "cooling_cop"
+    cooling_total_energy = "cooling_total_energy"
+    cooling_total_heat = "cooling_total_heat"
+    cooling_total_cop = "cooling_total_cop"
+    cooling_energy_today = "cooling_energy_today"
+    cooling_heat_today = "cooling_heat_today"
+    cooling_cop_today = "cooling_cop_today"
+    cooling_energy_this_week = "cooling_energy_this_week"
+    cooling_heat_this_week = "cooling_heat_this_week"
+    cooling_cop_this_week = "cooling_cop_this_week"
+    cooling_energy_this_month = "cooling_energy_this_month"
+    cooling_heat_this_month = "cooling_heat_this_month"
+    cooling_cop_this_month = "cooling_cop_this_month"
+    cooling_energy_this_year = "cooling_energy_this_year"
+    cooling_heat_this_year = "cooling_heat_this_year"
+    cooling_cop_this_year = "cooling_cop_this_year"
+    dhw_power_consumption = "dhw_power_consumption"
+    dhw_heat_output = "dhw_heat_output"
+    dhw_cop = "dhw_cop"
+    dhw_total_energy = "dhw_total_energy"
+    dhw_total_heat = "dhw_total_heat"
+    dhw_total_cop = "dhw_total_cop"
+    dhw_energy_today = "dhw_energy_today"
+    dhw_heat_today = "dhw_heat_today"
+    dhw_cop_today = "dhw_cop_today"
+    dhw_energy_this_week = "dhw_energy_this_week"
+    dhw_heat_this_week = "dhw_heat_this_week"
+    dhw_cop_this_week = "dhw_cop_this_week"
+    dhw_energy_this_month = "dhw_energy_this_month"
+    dhw_heat_this_month = "dhw_heat_this_month"
+    dhw_cop_this_month = "dhw_cop_this_month"
+    dhw_energy_this_year = "dhw_energy_this_year"
+    dhw_heat_this_year = "dhw_heat_this_year"
+    dhw_cop_this_year = "dhw_cop_this_year"
+    heat_output = "heat_output"
+    instant_cop = "instant_cop"
+    total_cop = "total_cop"
 
 
 class MideaC3Device(MideaDevice):
@@ -345,6 +421,14 @@ class MideaC3Device(MideaDevice):
         self._default_temperature_step: float = 0.5
         self._temperature_step: float = 0.5
         self._short_protocol = str(self.model) in C3_SHORT_PROTOCOL_MODELS
+        self._quintuple_protocol = str(self.model) == QUINTUPLE_MODEL
+        self._quintuple_ready = False
+        self._feature_query_index = 0
+        self._silent_level_setting: str | None = None
+        if self._quintuple_protocol:
+            self._attributes.update(
+                (DeviceAttributes(name), None) for name in FEATURE_ENERGY_ATTRIBUTES
+            )
         self._last_short_x01_body: bytes | None = None
         if self._short_protocol:
             self._default_temperature_step = 1.0
@@ -359,11 +443,24 @@ class MideaC3Device(MideaDevice):
     @property
     def silent_modes(self) -> list[str]:
         """Midea C3 device silent modes."""
+        if self._quintuple_protocol:
+            return ["off", "level_1", "level_2", "level_3"]
         return MideaC3Device._silent_modes
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageRequest]:
         """Midea C3 device build query."""
-        queries: list[MessageQuery] = [
+        if self._quintuple_protocol:
+            slow = CONTROL_TABLES[self._feature_query_index % len(CONTROL_TABLES)]
+            self._feature_query_index += 1
+            return [
+                MessageQuery2010(self._message_protocol_version),
+                MessageQuery2F12(self._message_protocol_version),
+                *(
+                    query_table(table, self._message_protocol_version)
+                    for table in (*ENERGY_TABLES, slow)
+                ),
+            ]
+        queries: list[MessageRequest] = [
             MessageQueryBasic(self._message_protocol_version),
             MessageQueryDisinfect(self._message_protocol_version),
             MessageQuerySilence(self._message_protocol_version),
@@ -435,11 +532,24 @@ class MideaC3Device(MideaDevice):
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         if self._short_protocol:
             self._cache_short_x01_body(message)
+        if self._quintuple_protocol:
+            self._merge_quintuple_status(message)
+            self._parse_features(message)
         new_status = {}
         for status in self._attributes:
+            if (
+                self._quintuple_protocol
+                and status in ENERGY_ATTRIBUTES
+                and not getattr(message, "quintuple_energy", False)
+            ):
+                continue
             if hasattr(message, str(status)):
                 self._attributes[status] = getattr(message, str(status))
                 new_status[str(status)] = getattr(message, str(status))
+        if self._quintuple_protocol:
+            if self._quintuple_ready and new_status:
+                self._refresh_quintuple_targets(new_status)
+            return new_status
         if "zone_temp_type" in new_status:
             for zone in [0, 1]:
                 if self._attributes[DeviceAttributes.zone_temp_type][
@@ -520,6 +630,169 @@ class MideaC3Device(MideaDevice):
 
         return new_status
 
+    def _merge_quintuple_status(self, message: MessageC3Response) -> None:
+        """Retain untouched array members when the controller acknowledges one TLV."""
+        arrays = getattr(message, "quintuple_arrays", {})
+        for name, changes in arrays.items():
+            merged = list(self._attributes[DeviceAttributes(name)])
+            for index, value in changes.items():
+                merged[index] = value
+            setattr(message, name, merged)
+        if hasattr(message, "mode") and "zone_temp_type" in arrays:
+            self._quintuple_ready = True
+
+    def _refresh_quintuple_targets(self, status: dict[str, Any]) -> None:
+        """Recompute HA targets after both full replies and sparse acknowledgements."""
+        attributes = self._attributes
+        mode = attributes[DeviceAttributes.mode]
+        actual_mode = attributes[DeviceAttributes.mode_auto] if mode == 1 else mode
+        cooling = actual_mode == C3DeviceMode.COOL
+        for zone in (0, 1):
+            water = attributes[DeviceAttributes.zone_temp_type][zone]
+            if water:
+                target = attributes[DeviceAttributes.zone_target_temp][zone]
+                lower = attributes[
+                    DeviceAttributes.zone_cooling_temp_min
+                    if cooling
+                    else DeviceAttributes.zone_heating_temp_min
+                ][zone]
+                upper = attributes[
+                    DeviceAttributes.zone_cooling_temp_max
+                    if cooling
+                    else DeviceAttributes.zone_heating_temp_max
+                ][zone]
+            else:
+                target = attributes[DeviceAttributes.room_target_temp]
+                lower = attributes[DeviceAttributes.room_temp_min]
+                upper = attributes[DeviceAttributes.room_temp_max]
+            for attr, value in (
+                (DeviceAttributes.target_temperature, target),
+                (DeviceAttributes.temperature_min, lower),
+                (DeviceAttributes.temperature_max, upper),
+            ):
+                attributes[attr][zone] = value
+                status[attr.value] = attributes[attr]
+            power_attr = (
+                DeviceAttributes.zone1_power
+                if zone == 0
+                else DeviceAttributes.zone2_power
+            )
+            water_attr = (
+                DeviceAttributes.zone1_water_temp_mode
+                if zone == 0
+                else DeviceAttributes.zone2_water_temp_mode
+            )
+            room_attr = (
+                DeviceAttributes.zone1_room_temp_mode
+                if zone == 0
+                else DeviceAttributes.zone2_room_temp_mode
+            )
+            for attr, value in (
+                (water_attr, bool(attributes[power_attr] and water)),
+                (room_attr, bool(attributes[power_attr] and not water)),
+            ):
+                attributes[attr] = value
+                status[attr.value] = value
+
+    def _send_quintuple(self, values: dict[BasicTag, bool | float | int]) -> None:
+        """Send a sparse control only after receiving this controller's status."""
+        if not self._quintuple_ready:
+            raise ValueError(
+                "Wait for first 0x2010 status before controlling this heat pump",
+            )
+        self.build_send(MessageSet2010(values, self._message_protocol_version))
+
+    def _parse_features(self, message: MessageC3Response) -> None:
+        """Map complete verified tables and common controls to existing entities."""
+        if message.body_type != ListTypes.X00 or message.message_type not in (
+            MessageType.query,
+            MessageType.set,
+            MessageType.notify1,
+        ):
+            return
+        values = decode_table(message.body)
+        level_present = "_silent_level" in values
+        if level_present:
+            level = values.pop("_silent_level")
+            self._silent_level_setting = level if isinstance(level, str) else None
+        for name, value in values.items():
+            setattr(message, name, value)
+        if "silent_mode" in values or level_present:
+            enabled = values.get(
+                "silent_mode",
+                self._attributes[DeviceAttributes.silent_mode],
+            )
+            message.silent_level = (
+                None
+                if enabled is None
+                else self._silent_level_setting
+                if enabled
+                else "off"
+            )
+
+    def _send_features(self, values: dict[FeatureSetting, bool | str]) -> None:
+        """Require actual basic status before sending a native user setting."""
+        if not self._quintuple_ready:
+            raise ValueError(
+                "Wait for first 0x2010 status before controlling this heat pump",
+            )
+        self.build_send(MessageSetSettings(values, self._message_protocol_version))
+
+    def _set_quintuple_attribute(self, attr: str, value: bool | float | str) -> None:
+        """Route supported controls without ever falling back to legacy packets."""
+        controls: dict[str, FeatureSetting] = {
+            DeviceAttributes.eco_mode: FeatureSetting.ECO,
+            DeviceAttributes.disinfect: FeatureSetting.DISINFECT,
+            DeviceAttributes.silent_mode: FeatureSetting.SILENT_POWER,
+        }
+        if attr in controls:
+            if not isinstance(value, bool):
+                raise ValueError("C3 switches require boolean values")
+            self._send_features({controls[attr]: value})
+            return
+        if attr == DeviceAttributes.silent_level:
+            if not isinstance(value, str) or value not in self.silent_modes:
+                raise ValueError("Invalid silent level")
+            settings: dict[FeatureSetting, bool | str] = {
+                FeatureSetting.SILENT_POWER: value != "off",
+            }
+            if value != "off":
+                settings[FeatureSetting.SILENT_LEVEL] = value
+            self._send_features(settings)
+            return
+
+        tags: dict[str, BasicTag] = {
+            DeviceAttributes.zone1_power: BasicTag.ZONE1_POWER,
+            DeviceAttributes.zone2_power: BasicTag.ZONE2_POWER,
+            DeviceAttributes.dhw_power: BasicTag.DHW_POWER,
+            DeviceAttributes.zone1_curve: BasicTag.ZONE1_CURVE,
+            DeviceAttributes.zone2_curve: BasicTag.ZONE2_CURVE,
+            DeviceAttributes.tbh: BasicTag.TANK_BOOSTER,
+            DeviceAttributes.fast_dhw: BasicTag.FAST_DHW,
+            DeviceAttributes.dhw_target_temp: BasicTag.DHW_TEMPERATURE,
+        }
+        if attr not in tags:
+            raise ValueError(
+                f"Control {attr} is not implemented for C3 model {QUINTUPLE_MODEL}",
+            )
+        if attr in (DeviceAttributes.zone2_power, DeviceAttributes.zone2_curve):
+            self._check_quintuple_zone(1)
+        if attr == DeviceAttributes.dhw_target_temp:
+            temperature = float(value)
+            if (
+                not self._attributes[DeviceAttributes.dhw_temp_min]
+                <= temperature
+                <= self._attributes[DeviceAttributes.dhw_temp_max]
+            ):
+                raise ValueError(
+                    "DHW temperature is outside the controller's reported limits",
+                )
+            self._send_quintuple({tags[attr]: temperature})
+        else:
+            if not isinstance(value, bool):
+                raise ValueError("Power and curve controls require a boolean")
+            self._send_quintuple({tags[attr]: value})
+
     def make_message_set(self) -> MessageSet:
         """Midea C3 device make message set."""
         message = MessageSet(self._message_protocol_version)
@@ -538,6 +811,9 @@ class MideaC3Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea C3 device set attribute."""
+        if self._quintuple_protocol:
+            self._set_quintuple_attribute(attr, value)
+            return
         if self._short_protocol:
             if attr in DeviceAttributes:
                 self._send_short_set(DeviceAttributes(attr), value)
@@ -588,6 +864,16 @@ class MideaC3Device(MideaDevice):
 
     def set_mode(self, zone: int, mode: int) -> None:
         """Midea C3 device set mode."""
+        if self._quintuple_protocol:
+            self._check_quintuple_zone(zone)
+            if mode not in MODE_TO_WIRE:
+                raise ValueError("Invalid C3 zone or mode")
+            power = BasicTag.ZONE1_POWER if zone == 0 else BasicTag.ZONE2_POWER
+            values: dict[BasicTag, bool | float | int] = {power: mode != 0}
+            if mode:
+                values[BasicTag.MODE] = MODE_TO_WIRE[mode]
+            self._send_quintuple(values)
+            return
         message = self.make_message_set()
         if zone == 0:
             message.zone1_power = True
@@ -606,6 +892,36 @@ class MideaC3Device(MideaDevice):
         if zone is None:
             raise ValueError("[C3] Parameter `zone` must be set")
 
+        if self._quintuple_protocol:
+            self._check_quintuple_zone(zone)
+            if not self._quintuple_ready:
+                raise ValueError(
+                    "Wait for first 0x2010 status before controlling this heat pump",
+                )
+            if (
+                not self._attributes[DeviceAttributes.temperature_min][zone]
+                <= target_temperature
+                <= self._attributes[DeviceAttributes.temperature_max][zone]
+            ):
+                raise ValueError(
+                    "Temperature is outside the controller's reported limits",
+                )
+            tag = (
+                BasicTag.ZONE1_TEMPERATURE if zone == 0 else BasicTag.ZONE2_TEMPERATURE
+            )
+            values: dict[BasicTag, bool | float | int] = {tag: target_temperature}
+            if not self._attributes[DeviceAttributes.zone_temp_type][zone]:
+                values[BasicTag.ROOM_TEMPERATURE] = target_temperature
+            if mode is not None:
+                if mode not in MODE_TO_WIRE:
+                    raise ValueError("Invalid C3 operating mode")
+                power = BasicTag.ZONE1_POWER if zone == 0 else BasicTag.ZONE2_POWER
+                values[power] = mode != 0
+                if mode:
+                    values[BasicTag.MODE] = MODE_TO_WIRE[mode]
+            self._send_quintuple(values)
+            return
+
         message = self.make_message_set()
         if self._attributes[DeviceAttributes.zone_temp_type][zone]:
             message.zone_target_temp[zone] = target_temperature
@@ -618,6 +934,13 @@ class MideaC3Device(MideaDevice):
                 message.zone2_power = True
             message.mode = mode
         self.build_send(message)
+
+    def _check_quintuple_zone(self, zone: int) -> None:
+        """Reject nonexistent zones rather than writing to unsupported hardware."""
+        if zone not in (0, 1):
+            raise ValueError("Invalid C3 zone")
+        if zone == 1 and not self._attributes[DeviceAttributes.double_zone]:
+            raise ValueError("Zone 2 is not enabled on this controller")
 
     def set_customize(self, customize: str) -> None:
         """Midea C3 device set customize."""

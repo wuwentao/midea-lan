@@ -17,6 +17,7 @@ from midealan.message import (
     ToshibaMessageRequest,
 )
 
+from .colmo import AIR_SPEEDS, COLMO_AIR_DEVICES, ColmoAirQuery, ColmoAirState
 from .message import (
     _B1_MAX_CAPABILITY_BATCHES,
     _B1_MAX_PROPERTIES_PER_BATCH,
@@ -107,6 +108,9 @@ class DeviceAttributes(StrEnum):
     outdoor_temperature = "outdoor_temperature"
     indirect_wind = "indirect_wind"
     indoor_humidity = "indoor_humidity"
+    humidify = "humidify"
+    purify = "purify"
+    auxiliary_fan_mode = "auxiliary_fan_mode"
     breezeless = "breezeless"
     fresh_air_power = "fresh_air_power"
     fresh_air_fan_speed = "fresh_air_fan_speed"
@@ -374,6 +378,19 @@ class MideaACDevice(MideaDevice):
             },
         )
         self._model_key = (str(self.model), int(self.subtype))
+        self._colmo_air = (
+            ColmoAirState() if self._model_key in COLMO_AIR_DEVICES else None
+        )
+        if self._colmo_air is not None:
+            self._attributes.update(
+                dict.fromkeys(
+                    (
+                        DeviceAttributes.humidify,
+                        DeviceAttributes.purify,
+                        DeviceAttributes.auxiliary_fan_mode,
+                    ),
+                ),
+            )
         self._model_capabilities = AC_MODEL_CAPABILITIES.get(
             self._model_key,
             DEFAULT_AC_MODEL_CAPABILITIES,
@@ -432,9 +449,18 @@ class MideaACDevice(MideaDevice):
     @property
     def fresh_air_fan_speeds(self) -> list[str]:
         """Midea AC device fresh air fan speeds."""
+        if self._colmo_air is not None:
+            return ["off", *AIR_SPEEDS.values()]
         if self._model_capabilities.has_bb_fresh_air:
             return list(MideaACDevice._bb_fresh_air_fan_speeds.values())
         return list(MideaACDevice._fresh_air_fan_speeds.values())
+
+    @property
+    def auxiliary_fan_modes(self) -> list[str]:
+        """Midea AC device shared fresh-air and purify blower speeds."""
+        if self._colmo_air is not None:
+            return list(AIR_SPEEDS.values())
+        return []
 
     @property
     def fresh_air_exhaust_fan_speeds(self) -> list[str]:
@@ -499,6 +525,8 @@ class MideaACDevice(MideaDevice):
             StateQuery(self._message_protocol_version),
             default_query,
         ]
+        if self._colmo_air is not None:
+            queries.append(ColmoAirQuery(self._message_protocol_version))
         _LOGGER.debug(
             "[%s] PropertiesDefaultQuery: %d properties [%s]",
             self._device_id,
@@ -864,6 +892,10 @@ class MideaACDevice(MideaDevice):
         # merged map before the setpoint limits are resolved from it.
         new_status.update(self._update_capabilities(message))
         new_status.update(self._refresh_temperature_limits())
+        if self._colmo_air is not None:
+            air_status = self._colmo_air.process_message(msg)
+            self._attributes.update(air_status)
+            new_status.update(air_status)
         return new_status
 
     @staticmethod
@@ -1500,9 +1532,24 @@ class MideaACDevice(MideaDevice):
         self._attributes.update(cleared)
         self.update_all({str(key): value for key, value in cleared.items()})
 
-    def set_attribute(self, attr: str, value: bool | float | str) -> None:
+    def _send_colmo_air_command(self, attr: str, value: bool | float | str) -> bool:
+        """Send a shared-blower command when this device owns the attribute."""
+        if self._colmo_air is None or attr not in self._colmo_air.controls:
+            return False
+        self.build_send(
+            self._colmo_air.make_command(self._message_protocol_version, attr, value),
+        )
+        return True
+
+    def set_attribute(  # noqa: C901
+        self,
+        attr: str,
+        value: bool | float | str,
+    ) -> None:
         """Midea AC device set attribute."""
         self.reject_toshiba_write()
+        if self._send_colmo_air_command(attr, value):
+            return
         # if nat a sensor
         message: (
             ToggleDisplay

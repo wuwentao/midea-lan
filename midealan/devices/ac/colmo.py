@@ -146,17 +146,21 @@ class ColmoAirState:
                 )
                 if not speed:
                     raise ValueError("Unsupported auxiliary fan mode")
-            tag = next(
-                (
-                    tag
-                    for tag, record in self._records.items()
-                    if record[0] == AIR_POWER_ON
-                ),
-                HUMIDIFY_TAG,
-            )
-            if tag not in self._records:
-                raise ValueError("Air control state has not been reported")
-            power = self._records[tag][0]
+            if attribute == "auxiliary_fan_mode":
+                tag = next(
+                    (
+                        tag
+                        for tag, record in self._records.items()
+                        if record[0] == AIR_POWER_ON
+                    ),
+                    HUMIDIFY_TAG,
+                )
+                if tag not in self._records:
+                    raise ValueError("Air control state has not been reported")
+                power = self._records[tag][0]
+            else:
+                tag = FRESH_AIR_TAG
+                power = AIR_POWER_ON
         if tag not in self._records:
             raise ValueError("Air switch state has not been reported")
         record = bytearray(self._records[tag])

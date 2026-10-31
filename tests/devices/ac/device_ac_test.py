@@ -254,7 +254,11 @@ class TestMideaACDevice:
             )
             device.set_attribute("fresh_air_fan_speed", 60)
             assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
-                "01350207013c002d2d4639",
+                "0133020a023c000058028a023602",
+            )
+            device.set_attribute("fresh_air_mode", "high")
+            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
+                "0133020a0250000058028a023602",
             )
 
     def test_colmo_shared_speed_targets_an_active_record(self) -> None:
@@ -280,17 +284,12 @@ class TestMideaACDevice:
             bytes.fromhex("aa1aac00000000000105b50133020a0164000058028a023602bc"),
         )
         assert device.get_attribute("auxiliary_fan_mode") == "full"
-        with (
-            patch.object(device, "build_send") as send,
-            pytest.raises(ValueError, match="state"),
-        ):
-            device.set_attribute("auxiliary_fan_mode", "low")
-        with (
-            patch.object(device, "build_send") as send,
-            pytest.raises(ValueError, match="state"),
-        ):
-            device.set_attribute("humidify", True)
-        send.assert_not_called()
+        with patch.object(device, "build_send") as send:
+            with pytest.raises(ValueError, match="state"):
+                device.set_attribute("auxiliary_fan_mode", "low")
+            with pytest.raises(ValueError, match="state"):
+                device.set_attribute("humidify", True)
+            send.assert_not_called()
 
     def test_customize_accepts_bcd_energy_binary_power_format(self) -> None:
         """Test customize can select BCD energy with binary realtime power."""

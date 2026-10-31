@@ -145,7 +145,6 @@ C3_X00_TELEMETRY_MODEL = "17100007"
 # Basic state command used by model 17100007. Temperatures in this frame are
 # unsigned 16-bit big-endian values in tenths of a degree Celsius.
 C3_2010_COMMAND = bytes((0x20, 0x10))
-C3_2010_IDU_T1S1_OFFSET = 14
 C3_2010_DHW_TARGET_TEMP_OFFSET = 20
 C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
 C3_2010_OUTDOOR_TEMP_OFFSET = 97
@@ -715,19 +714,9 @@ class C3DiagnosticBody(MessageBody):
 class C3Basic2010Body(MessageBody):
     """C3 basic state carried by the newer 0x2010 inner protocol."""
 
-    def __init__(
-        self,
-        body: bytearray,
-        *,
-        include_idu_t1s1: bool = False,
-    ) -> None:
+    def __init__(self, body: bytearray) -> None:
         """Initialize a C3 0x2010 basic-state message body."""
         super().__init__(body)
-        if include_idu_t1s1:
-            self.idu_t1s1 = _parse_c3_2010_temperature(
-                body,
-                C3_2010_IDU_T1S1_OFFSET,
-            )
         self.dhw_target_temp = _parse_c3_2010_temperature(
             body,
             C3_2010_DHW_TARGET_TEMP_OFFSET,
@@ -1485,12 +1474,7 @@ class MessageC3Response(MessageResponse):
             and len(body) >= C3_2010_MIN_LENGTH
             and x00_command == C3_2010_COMMAND
         ):
-            self.set_body(
-                C3Basic2010Body(
-                    body,
-                    include_idu_t1s1=model == C3_X00_TELEMETRY_MODEL,
-                ),
-            )
+            self.set_body(C3Basic2010Body(body))
         elif (
             self.message_type in (MessageType.query, MessageType.notify1)
             and self.body_type == ListTypes.X00

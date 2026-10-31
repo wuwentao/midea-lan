@@ -11,10 +11,9 @@ from typing import ClassVar
 from midealan.const import DeviceType
 from midealan.message import ListTypes, MessageRequest, MessageType
 
+from .const import BYTE_BITS, ENERGY_SCALE
 from .quintuple import ENVELOPE_LENGTH, _envelope, _read_fields
 
-ENERGY_SCALE = 100
-BYTE_BITS = 8
 SILENT_LEVELS = ("level_1", "level_2", "level_3")
 ENERGY_TABLES = (0x2F11, 0x2F10, 0x2F17)
 CONTROL_TABLES = (0x2050, 0x2070, 0x2090)

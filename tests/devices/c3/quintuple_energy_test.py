@@ -3,6 +3,7 @@
 import pytest
 
 from midealan.devices.c3 import DeviceAttributes as A
+from midealan.devices.c3.features import decode_table
 from midealan.devices.c3.message import MessageC3Response
 from midealan.devices.c3.quintuple import (
     C3QuintupleEnergyBody,
@@ -51,6 +52,31 @@ def test_real_energy_reply(kind: MessageType) -> None:
         assert status[name] == value
         assert d.attributes[A(name)] == value
     assert d._quintuple_ready is False  # Energy is not basic control status.
+
+
+@pytest.mark.parametrize(
+    ("tag", "width", "name", "expected"),
+    [
+        (2, 2, "current_unit_capacity", 0.35),
+        (3, 2, "instant_renew_power0", 350),
+        (4, 2, "instant_power0", 350),
+        (6, 4, "total_produced_energy", 0.35),
+        (9, 4, "total_energy_consumption", 0.35),
+    ],
+)
+def test_fractional_energy_precision(
+    tag: int,
+    width: int,
+    name: str,
+    expected: float,
+) -> None:
+    """Raw 35 must yield 0.35, not reciprocal multiplication's float artifact."""
+    body = bytearray.fromhex("002f12ffffffff01ffff")
+    body.extend(tag.to_bytes(2, "big") + bytes((width,)) + (35).to_bytes(width, "big"))
+    parsed = C3QuintupleEnergyBody(body)
+    assert getattr(parsed, name) == expected
+    if tag == 2:
+        assert parsed.current_unit_capacity == decode_table(body)["heat_output"]
 
 
 @pytest.mark.parametrize(

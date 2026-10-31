@@ -8,7 +8,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.c3 import DeviceAttributes as A
 from midealan.devices.c3 import MideaC3Device
-from midealan.devices.c3.message import C3Basic2010Body, MessageC3Response
+from midealan.devices.c3.message import MessageC3Response
 from midealan.devices.c3.quintuple import (
     BASIC_SIZES,
     BasicTag,
@@ -323,9 +323,3 @@ def test_unknown_reply_preserves_ready_state() -> None:
     d.process_message(QUERY_REPLY)
     assert d.process_message(frame(bytes.fromhex("00ffff"))) == {}
     assert d.attributes[A.target_temperature][0] == 33
-
-
-def test_legacy_temperature_parser_remains_available() -> None:
-    """Preserve the old parser's optional compatibility field for callers."""
-    body = C3Basic2010Body(bytearray(QUERY_REPLY[10:-1]), include_idu_t1s1=True)
-    assert body.idu_t1s1 == 33

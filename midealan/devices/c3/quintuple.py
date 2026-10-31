@@ -11,6 +11,8 @@ from math import isfinite
 from midealan.const import DeviceType
 from midealan.message import ListTypes, MessageBody, MessageRequest, MessageType
 
+from .const import BYTE_BITS, ENERGY_SCALE
+
 MODEL = "17100007"
 BASIC_TABLE = 0x2010
 ENERGY_TABLE = 0x2F12
@@ -23,18 +25,18 @@ INVALID_TEMPERATURE = 0x7FFF
 TEMPERATURE_SCALE = 10
 AUTO_MODE_TAG = 28
 ERROR_CODE_TAG = 42
-ENERGY_SCALE = 100
 WATTS_PER_ENERGY_UNIT = 10
 ENERGY_SIZES = (1, 4, 2, 2, 2) + (4,) * 31
 MIN_ENERGY_LENGTH = ENVELOPE_LENGTH + sum(ENERGY_SIZES[:12])
 ENERGY_FIELDS = {
-    2: ("current_unit_capacity", 1 / ENERGY_SCALE),
-    3: ("instant_renew_power0", WATTS_PER_ENERGY_UNIT),
-    4: ("instant_power0", WATTS_PER_ENERGY_UNIT),
-    6: ("total_produced_energy", 1 / ENERGY_SCALE),
-    9: ("total_energy_consumption", 1 / ENERGY_SCALE),
+    2: "current_unit_capacity",
+    3: "instant_renew_power0",
+    4: "instant_power0",
+    6: "total_produced_energy",
+    9: "total_energy_consumption",
 }
-ENERGY_ATTRIBUTES = frozenset(name for name, _ in ENERGY_FIELDS.values())
+ENERGY_ATTRIBUTES = frozenset(ENERGY_FIELDS.values())
+WATT_TAGS = frozenset((3, 4))
 
 
 class BasicTag(IntEnum):
@@ -178,6 +180,14 @@ ARRAY_FIELDS = {
     "zone_cooling_temp_max": (31, 35),
     "zone_cooling_temp_min": (32, 36),
 }
+ZONE_TEMP_TYPE_TAGS = (18, 19)
+STATUS_TEMPERATURE_ATTRIBUTES = {
+    4: ("zone1_temp_set", "idu_t1s1"),
+    5: ("zone2_temp_set",),
+    6: ("tas",),
+    7: ("t5s",),
+    52: ("temp_t4",),
+}
 
 
 def _envelope(table: int, format_code: int) -> bytearray:
@@ -314,12 +324,17 @@ class C3QuintupleEnergyBody(MessageBody):
         super().__init__(body)
         values = _read_fields(body, ENERGY_SIZES, MIN_ENERGY_LENGTH)
         self.quintuple_energy = bool(values)
-        for tag, (name, scale) in ENERGY_FIELDS.items():
+        for tag, name in ENERGY_FIELDS.items():
             if tag in values:
                 raw = values[tag]
                 value = int.from_bytes(raw, "big")
-                invalid = (1 << (len(raw) * 8)) - 1
-                setattr(self, name, None if value == invalid else value * scale)
+                invalid = (1 << (len(raw) * BYTE_BITS)) - 1
+                scaled = (
+                    value * WATTS_PER_ENERGY_UNIT
+                    if tag in WATT_TAGS
+                    else value / ENERGY_SCALE
+                )
+                setattr(self, name, None if value == invalid else scaled)
 
 
 class C3QuintupleBasicBody(MessageBody):
@@ -347,7 +362,7 @@ class C3QuintupleBasicBody(MessageBody):
                 self.quintuple_arrays[name] = changes
         types: dict[int, float | bool] = {
             index: values[tag][0] == 0
-            for index, tag in enumerate((18, 19))
+            for index, tag in enumerate(ZONE_TEMP_TYPE_TAGS)
             if tag in values and values[tag][0] in (0, 1)
         }
         if types:
@@ -358,13 +373,7 @@ class C3QuintupleBasicBody(MessageBody):
             self.mode_auto = values[AUTO_MODE_TAG][0] + 1
         if ERROR_CODE_TAG in values and values[ERROR_CODE_TAG][0] != INVALID_BYTE:
             self.error_code = values[ERROR_CODE_TAG][0]
-        for tag, names in {
-            4: ("zone1_temp_set", "idu_t1s1"),
-            5: ("zone2_temp_set",),
-            6: ("tas",),
-            7: ("t5s",),
-            52: ("temp_t4",),
-        }.items():
+        for tag, names in STATUS_TEMPERATURE_ATTRIBUTES.items():
             if tag in values and (value := _temperature(values[tag])) is not None:
                 for name in names:
                     setattr(self, name, value)

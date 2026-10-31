@@ -1,5 +1,6 @@
 """Test CD Device."""
 
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -113,6 +114,37 @@ class TestMideaCDDevice:
             assert msg.body[23] == 70  # tsMax
             assert msg.body[21] == 0  # vacationTs left 0 on plain set
             assert msg.body[4] != 0  # target present
+
+    @pytest.mark.parametrize("model", ["RSJ000CB", "RSJRAC07"])
+    def test_new_protocol_control_writes_local_clock_and_vacation_date(
+        self,
+        model: str,
+    ) -> None:
+        """New-protocol controls set clock fields without clearing vacation date."""
+        device = _make_device(model=model)
+        device._attributes[DeviceAttributes.vacation_start_year] = 26
+        device._attributes[DeviceAttributes.vacation_start_month] = 12
+        device._attributes[DeviceAttributes.vacation_start_day] = 31
+        fixed_now = datetime(2026, 10, 26, 14, 35).astimezone()
+
+        with (
+            patch("midealan.devices.cd.datetime") as mock_datetime,
+            patch.object(device, "build_send") as mock_send,
+        ):
+            mock_datetime.now.return_value = fixed_now
+            device.set_attribute(DeviceAttributes.target_temperature.value, 55.0)
+
+        msg = mock_send.call_args[0][0]
+        assert msg.body[11:18] == bytearray([20, 26, 10, 26, 2, 14, 35])
+        assert msg.body[18:21] == bytearray([26, 12, 31])
+
+    def test_non_rsj000cb_control_does_not_invent_clock(self) -> None:
+        """Legacy CD controls do not receive an undocumented host clock."""
+        with patch.object(self.device, "build_send") as mock_send:
+            self.device.set_attribute(DeviceAttributes.power.value, True)
+
+        msg = mock_send.call_args[0][0]
+        assert msg.body[11:18] == bytearray(7)
 
     def test_set_target_temperature_body_length_and_ts_max(self) -> None:
         """set_temperature builds 25-byte body with non-zero tsMax."""
@@ -589,6 +621,33 @@ class TestMideaCDDevice:
             "temperature": 45,
             "mode": 2,
         }
+
+    def test_daily_timer_response_does_not_overwrite_temperatures(self) -> None:
+        """body_type 03 contributes schedule data, not competing temperatures."""
+        self.device.set_customize('{"lua_protocol": "new"}')
+        status_body = _general_body()
+        status_body[3] = 55
+        status_body[4] = 30
+        status = self.device.process_message(
+            _build_message(MessageType.query, status_body),
+        )
+        current = self.device.attributes[DeviceAttributes.current_temperature]
+        target = self.device.attributes[DeviceAttributes.target_temperature]
+
+        timer_body = bytearray(40)
+        timer_body[0] = 0x03
+        timer_body[2] = 1
+        timer_body[4] = 6
+        timer_status = self.device.process_message(
+            _build_message(MessageType.query, timer_body),
+        )
+
+        assert status[DeviceAttributes.current_temperature.value] == current
+        assert status[DeviceAttributes.target_temperature.value] == target
+        assert DeviceAttributes.current_temperature.value not in timer_status
+        assert DeviceAttributes.target_temperature.value not in timer_status
+        assert self.device.attributes[DeviceAttributes.current_temperature] == current
+        assert self.device.attributes[DeviceAttributes.target_temperature] == target
 
     # ------------------------------------------------------------------ #
     # process_message corner cases                                         #

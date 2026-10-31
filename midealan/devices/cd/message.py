@@ -231,7 +231,9 @@ class MessageSet(MessageCDBase):
       full[6]  = openPTC (Lua forces 0 on normal sets)
       full[7]  = ptcTemp
       full[8]  = flags (vacation 0x10 / °F 0x80 / mute 0x08)
-      full[9..20] = vacation days + date fields (0 for a plain set)
+      full[9..10] = vacation days
+      full[11..17] = year, month, day, weekday, hour, minute
+      full[18..20] = vacation start date
       full[21] = vacationTsValue
       full[22] = timer_type
       full[23] = **tsMax** (device max temperature; must not be 0)
@@ -271,6 +273,8 @@ class MessageSet(MessageCDBase):
         # device max temperature limit (full[23] / tsMax) — must be non-zero
         self.ts_max: int = 0
         self.schedule_mode: int = 0
+        self.date_time_fields: tuple[int, int, int, int, int, int] | None = None
+        self.vacation_start_date: tuple[int, int, int] = (0, 0, 0)
 
     def read_field(self, field: str) -> int:
         """CD message set read field."""
@@ -324,6 +328,13 @@ class MessageSet(MessageCDBase):
         ):
             vacation_ts = int(self.vacation_temperature) & 0xFF
 
+        date_year, date_month, date_day, date_week, date_hour, date_minute = (
+            self.date_time_fields or (0, 0, 0, 0, 0, 0)
+        )
+        vacation_start_year, vacation_start_month, vacation_start_day = (
+            self.vacation_start_date
+        )
+
         # 24-byte payload; MessageRequest prepends body_type → 25-byte body
         return bytearray(
             [
@@ -337,16 +348,16 @@ class MessageSet(MessageCDBase):
                 byte8 & 0xFF,  # full[8]
                 vacation_high,  # full[9]
                 vacation_low,  # full[10]
-                0,  # full[11]
-                0,  # full[12]
-                0,  # full[13]
-                0,  # full[14]
-                0,  # full[15]
-                0,  # full[16]
-                0,  # full[17]
-                0,  # full[18]
-                0,  # full[19]
-                0,  # full[20]
+                (date_year // 100) & 0xFF,  # full[11]
+                date_year % 100,  # full[12]
+                date_month & 0xFF,  # full[13]
+                date_day & 0xFF,  # full[14]
+                date_week & 0xFF,  # full[15]
+                date_hour & 0xFF,  # full[16]
+                date_minute & 0xFF,  # full[17]
+                vacation_start_year & 0xFF,  # full[18]
+                vacation_start_month & 0xFF,  # full[19]
+                vacation_start_day & 0xFF,  # full[20]
                 vacation_ts,  # full[21] vacationTsValue
                 self.schedule_mode & 0xFF,  # full[22] schedule mode
                 self._ts_max_value(),  # full[23] tsMax (must be non-zero)

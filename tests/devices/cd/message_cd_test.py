@@ -131,6 +131,15 @@ class TestMessageSet:
         msg.schedule_mode = 2
         assert msg.body[22] == 2
 
+    def test_date_and_vacation_start_fields_follow_lua_layout(self) -> None:
+        """Date and vacation-start bytes follow the RSJ000CB Lua layout."""
+        msg = MessageSet(protocol_version=ProtocolVersion.V1)
+        msg.date_time_fields = (2026, 10, 26, 2, 14, 35)
+        msg.vacation_start_date = (26, 12, 31)
+
+        assert msg.body[11:18] == bytearray([20, 26, 10, 26, 2, 14, 35])
+        assert msg.body[18:21] == bytearray([26, 12, 31])
+
 
 class TestMessageSetMaintenance:
     """Test the dedicated B0 function flag control."""

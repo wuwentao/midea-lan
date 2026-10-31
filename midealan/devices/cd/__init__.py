@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 from enum import IntEnum, StrEnum
 from typing import Any, ClassVar, Unpack, cast
 
@@ -914,6 +915,21 @@ class MideaCDDevice(MideaDevice):
                 return
             message = MessageSet(self._message_protocol_version)
             message.fields = dict(self._fields) if self._fields else {}
+            if self.model in self._new_protocol_models:
+                now = datetime.now().astimezone()
+                message.date_time_fields = (
+                    now.year,
+                    now.month,
+                    now.day,
+                    now.isoweekday() % 7 + 1,
+                    now.hour,
+                    now.minute,
+                )
+            message.vacation_start_date = (
+                int(self._attributes.get(DeviceAttributes.vacation_start_year) or 0),
+                int(self._attributes.get(DeviceAttributes.vacation_start_month) or 0),
+                int(self._attributes.get(DeviceAttributes.vacation_start_day) or 0),
+            )
             # align temperature encoding with lua protocol selection
             message.use_old_protocol = self._lua_protocol == LuaProtocol.old
             schedule_mode = self._attributes.get(DeviceAttributes.schedule_mode)

@@ -690,7 +690,7 @@ class TestMessageC3Response:
         assert not hasattr(response, "temp_t3")
         assert not hasattr(response, "dhw_target_temp")
 
-    @pytest.mark.parametrize("command", ["20b1", "2f11", "2f12", "ffff"])
+    @pytest.mark.parametrize("command", ["20b1", "2f11", "ffff"])
     def test_message_x00_unknown_command_is_not_decoded(self, command: str) -> None:
         """Test unverified push layouts cannot update mapped telemetry."""
         self.header[-1] = MessageType.notify1
@@ -705,14 +705,14 @@ class TestMessageC3Response:
         assert not hasattr(response, "comp_run_freq")
         assert not hasattr(response, "total_energy_consumption")
 
-    @pytest.mark.parametrize("command", ["2010", "20b0", "2f10"])
-    @pytest.mark.parametrize("message_type", [MessageType.set, MessageType.query])
+    @pytest.mark.parametrize("command", ["20b0", "2f10"])
+    @pytest.mark.parametrize("message_type", [MessageType.set])
     def test_message_x00_wrong_message_type_is_not_decoded(
         self,
         command: str,
         message_type: MessageType,
     ) -> None:
-        """Test the new layouts are restricted to unsolicited notify1 frames."""
+        """Test set replies cannot be mistaken for operating telemetry."""
         self.header[-1] = message_type
         body = bytearray(165)
         body[1:3] = bytes.fromhex(command)

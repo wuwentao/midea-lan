@@ -3,6 +3,7 @@
 import json
 import logging
 from enum import StrEnum
+from math import isfinite
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
@@ -429,6 +430,25 @@ class MideaC3Device(MideaDevice):
             self._attributes.update(
                 (DeviceAttributes(name), None) for name in FEATURE_ENERGY_ATTRIBUTES
             )
+            for attr in (
+                DeviceAttributes.mode,
+                DeviceAttributes.mode_auto,
+                DeviceAttributes.room_temp_min,
+                DeviceAttributes.room_temp_max,
+                DeviceAttributes.dhw_temp_min,
+                DeviceAttributes.dhw_temp_max,
+            ):
+                self._attributes[attr] = None
+            for attr in (
+                DeviceAttributes.zone_temp_type,
+                DeviceAttributes.zone_heating_temp_min,
+                DeviceAttributes.zone_heating_temp_max,
+                DeviceAttributes.zone_cooling_temp_min,
+                DeviceAttributes.zone_cooling_temp_max,
+                DeviceAttributes.temperature_min,
+                DeviceAttributes.temperature_max,
+            ):
+                self._attributes[attr] = [None, None]
         self._last_short_x01_body: bytes | None = None
         if self._short_protocol:
             self._default_temperature_step = 1.0
@@ -547,7 +567,16 @@ class MideaC3Device(MideaDevice):
                 self._attributes[status] = getattr(message, str(status))
                 new_status[str(status)] = getattr(message, str(status))
         if self._quintuple_protocol:
-            if self._quintuple_ready and new_status:
+            basic = getattr(message, "quintuple_basic", False)
+            if basic:
+                zones = (
+                    (0, 1) if self._attributes[DeviceAttributes.double_zone] else (0,)
+                )
+                self._quintuple_ready = all(
+                    self._valid_quintuple_limits(*self._quintuple_limits(zone))
+                    for zone in zones
+                )
+            if new_status and (self._quintuple_ready or basic):
                 self._refresh_quintuple_targets(new_status)
             return new_status
         if "zone_temp_type" in new_status:
@@ -638,33 +667,63 @@ class MideaC3Device(MideaDevice):
             for index, value in changes.items():
                 merged[index] = value
             setattr(message, name, merged)
-        if hasattr(message, "mode") and "zone_temp_type" in arrays:
-            self._quintuple_ready = True
+
+    @staticmethod
+    def _valid_quintuple_limits(lower: float | None, upper: float | None) -> bool:
+        """Only finite, ordered controller limits may authorize a temperature write."""
+        return (
+            lower is not None
+            and upper is not None
+            and isfinite(lower)
+            and isfinite(upper)
+            and lower <= upper
+        )
+
+    def _quintuple_limits(
+        self,
+        zone: int,
+        mode: int | None = None,
+    ) -> tuple[float | None, float | None]:
+        """Select reported limits for the zone and requested operating mode."""
+        attributes = self._attributes
+        water = attributes[DeviceAttributes.zone_temp_type][zone]
+        if mode is None or mode == 0:
+            mode = attributes[DeviceAttributes.mode]
+        actual_mode = attributes[DeviceAttributes.mode_auto] if mode == 1 else mode
+        if water is None or actual_mode not in (0, 2, 3):
+            return None, None
+        if not water:
+            return (
+                attributes[DeviceAttributes.room_temp_min],
+                attributes[DeviceAttributes.room_temp_max],
+            )
+        cooling = actual_mode == C3DeviceMode.COOL
+        return (
+            attributes[
+                DeviceAttributes.zone_cooling_temp_min
+                if cooling
+                else DeviceAttributes.zone_heating_temp_min
+            ][zone],
+            attributes[
+                DeviceAttributes.zone_cooling_temp_max
+                if cooling
+                else DeviceAttributes.zone_heating_temp_max
+            ][zone],
+        )
 
     def _refresh_quintuple_targets(self, status: dict[str, Any]) -> None:
         """Recompute HA targets after both full replies and sparse acknowledgements."""
         attributes = self._attributes
-        mode = attributes[DeviceAttributes.mode]
-        actual_mode = attributes[DeviceAttributes.mode_auto] if mode == 1 else mode
-        cooling = actual_mode == C3DeviceMode.COOL
         for zone in (0, 1):
             water = attributes[DeviceAttributes.zone_temp_type][zone]
-            if water:
-                target = attributes[DeviceAttributes.zone_target_temp][zone]
-                lower = attributes[
-                    DeviceAttributes.zone_cooling_temp_min
-                    if cooling
-                    else DeviceAttributes.zone_heating_temp_min
-                ][zone]
-                upper = attributes[
-                    DeviceAttributes.zone_cooling_temp_max
-                    if cooling
-                    else DeviceAttributes.zone_heating_temp_max
-                ][zone]
-            else:
-                target = attributes[DeviceAttributes.room_target_temp]
-                lower = attributes[DeviceAttributes.room_temp_min]
-                upper = attributes[DeviceAttributes.room_temp_max]
+            target = (
+                None
+                if water is None
+                else attributes[DeviceAttributes.zone_target_temp][zone]
+                if water
+                else attributes[DeviceAttributes.room_target_temp]
+            )
+            lower, upper = self._quintuple_limits(zone)
             for attr, value in (
                 (DeviceAttributes.target_temperature, target),
                 (DeviceAttributes.temperature_min, lower),
@@ -779,10 +838,10 @@ class MideaC3Device(MideaDevice):
             self._check_quintuple_zone(1)
         if attr == DeviceAttributes.dhw_target_temp:
             temperature = float(value)
-            if (
-                not self._attributes[DeviceAttributes.dhw_temp_min]
-                <= temperature
-                <= self._attributes[DeviceAttributes.dhw_temp_max]
+            lower = self._attributes[DeviceAttributes.dhw_temp_min]
+            upper = self._attributes[DeviceAttributes.dhw_temp_max]
+            if not self._valid_quintuple_limits(lower, upper) or not (
+                lower <= temperature <= upper
             ):
                 raise ValueError(
                     "DHW temperature is outside the controller's reported limits",
@@ -898,10 +957,14 @@ class MideaC3Device(MideaDevice):
                 raise ValueError(
                     "Wait for first 0x2010 status before controlling this heat pump",
                 )
+            if mode is not None and mode not in MODE_TO_WIRE:
+                raise ValueError("Invalid C3 operating mode")
+            lower, upper = self._quintuple_limits(zone, mode)
             if (
-                not self._attributes[DeviceAttributes.temperature_min][zone]
-                <= target_temperature
-                <= self._attributes[DeviceAttributes.temperature_max][zone]
+                lower is None
+                or upper is None
+                or not self._valid_quintuple_limits(lower, upper)
+                or not lower <= target_temperature <= upper
             ):
                 raise ValueError(
                     "Temperature is outside the controller's reported limits",
@@ -913,8 +976,6 @@ class MideaC3Device(MideaDevice):
             if not self._attributes[DeviceAttributes.zone_temp_type][zone]:
                 values[BasicTag.ROOM_TEMPERATURE] = target_temperature
             if mode is not None:
-                if mode not in MODE_TO_WIRE:
-                    raise ValueError("Invalid C3 operating mode")
                 power = BasicTag.ZONE1_POWER if zone == 0 else BasicTag.ZONE2_POWER
                 values[power] = mode != 0
                 if mode:

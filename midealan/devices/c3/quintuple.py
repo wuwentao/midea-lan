@@ -173,6 +173,9 @@ TEMPERATURE_FIELDS = {
     41: "tank_actual_temperature",
     52: "outdoor_temperature",
 }
+TEMPERATURE_LIMIT_FIELDS = frozenset(
+    ("room_temp_max", "room_temp_min", "dhw_temp_max", "dhw_temp_min"),
+)
 ARRAY_FIELDS = {
     "zone_target_temp": (4, 5),
     "zone_heating_temp_max": (29, 33),
@@ -345,32 +348,43 @@ class C3QuintupleBasicBody(MessageBody):
         super().__init__(body)
         values = _read_fields(body)
         self.quintuple_basic = bool(values)
-        self.quintuple_arrays: dict[str, dict[int, float | bool]] = {}
+        self.quintuple_arrays: dict[str, dict[int, float | bool | None]] = {}
         for tag, name in BOOLEAN_FIELDS.items():
             if tag in values and values[tag][0] in (0, 1):
                 setattr(self, name, bool(values[tag][0]))
         for tag, name in TEMPERATURE_FIELDS.items():
-            if tag in values and (value := _temperature(values[tag])) is not None:
+            if tag in values and (
+                (value := _temperature(values[tag])) is not None
+                or name in TEMPERATURE_LIMIT_FIELDS
+            ):
                 setattr(self, name, value)
         for name, tags in ARRAY_FIELDS.items():
-            changes: dict[int, float | bool] = {
+            changes: dict[int, float | bool | None] = {
                 index: value
                 for index, tag in enumerate(tags)
-                if tag in values and (value := _temperature(values[tag])) is not None
+                if tag in values
+                and (
+                    (value := _temperature(values[tag])) is not None
+                    or name != "zone_target_temp"
+                )
             }
             if changes:
                 self.quintuple_arrays[name] = changes
-        types: dict[int, float | bool] = {
-            index: values[tag][0] == 0
+        types: dict[int, float | bool | None] = {
+            index: values[tag][0] == 0 if values[tag][0] in (0, 1) else None
             for index, tag in enumerate(ZONE_TEMP_TYPE_TAGS)
-            if tag in values and values[tag][0] in (0, 1)
+            if tag in values
         }
         if types:
             self.quintuple_arrays["zone_temp_type"] = types
-        if BasicTag.MODE in values and values[BasicTag.MODE][0] in MODE_FROM_WIRE:
-            self.mode = MODE_FROM_WIRE[values[BasicTag.MODE][0]]
-        if AUTO_MODE_TAG in values and values[AUTO_MODE_TAG][0] in (1, 2):
-            self.mode_auto = values[AUTO_MODE_TAG][0] + 1
+        if BasicTag.MODE in values:
+            self.mode = MODE_FROM_WIRE.get(values[BasicTag.MODE][0])
+        if AUTO_MODE_TAG in values:
+            self.mode_auto = (
+                values[AUTO_MODE_TAG][0] + 1
+                if values[AUTO_MODE_TAG][0] in (1, 2)
+                else None
+            )
         if ERROR_CODE_TAG in values and values[ERROR_CODE_TAG][0] != INVALID_BYTE:
             self.error_code = values[ERROR_CODE_TAG][0]
         for tag, names in STATUS_TEMPERATURE_ATTRIBUTES.items():

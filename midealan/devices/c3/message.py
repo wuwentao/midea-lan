@@ -11,6 +11,8 @@ from midealan.message import (
     MessageType,
 )
 
+from .quintuple import ENERGY_TABLE, C3QuintupleBasicBody, C3QuintupleEnergyBody
+
 TEMP_NEG_VALUE = 127
 
 # Sentinels for probes/curves the unit does not have installed. Confirmed
@@ -1425,6 +1427,7 @@ class MessageC3Response(MessageResponse):
     pwm_pump_out: int
     dc_bus_voltage: int
     dc_current: int | float
+    silent_level: str | None
 
     def __init__(self, message: bytes, model: str | None = None) -> None:
         """Initialize C3 message response."""
@@ -1432,6 +1435,21 @@ class MessageC3Response(MessageResponse):
         body = super().body
         x00_command = _c3_x00_inner_command(body)
         if (
+            model == C3_X00_TELEMETRY_MODEL
+            and self.message_type in (MessageType.query, MessageType.notify1)
+            and self.body_type == ListTypes.X00
+            and x00_command == ENERGY_TABLE.to_bytes(2, "big")
+        ):
+            self.set_body(C3QuintupleEnergyBody(body))
+        elif (
+            model == C3_X00_TELEMETRY_MODEL
+            and self.message_type
+            in (MessageType.query, MessageType.set, MessageType.notify1)
+            and self.body_type == ListTypes.X00
+            and x00_command == C3_2010_COMMAND
+        ):
+            self.set_body(C3QuintupleBasicBody(body))
+        elif (
             self.message_type
             in [MessageType.set, MessageType.notify1, MessageType.query]
             and self.body_type == ListTypes.X01
@@ -1474,7 +1492,7 @@ class MessageC3Response(MessageResponse):
                 ),
             )
         elif (
-            self.message_type == MessageType.notify1
+            self.message_type in (MessageType.query, MessageType.notify1)
             and self.body_type == ListTypes.X00
             and model == C3_X00_TELEMETRY_MODEL
             and len(body) >= C3_20B0_MIN_LENGTH
@@ -1482,7 +1500,7 @@ class MessageC3Response(MessageResponse):
         ):
             self.set_body(C3X0020B0TelemetryBody(body))
         elif (
-            self.message_type == MessageType.notify1
+            self.message_type in (MessageType.query, MessageType.notify1)
             and self.body_type == ListTypes.X00
             and model == C3_X00_TELEMETRY_MODEL
             and len(body) >= C3_2F10_MIN_LENGTH

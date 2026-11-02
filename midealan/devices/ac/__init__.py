@@ -1561,6 +1561,12 @@ class MideaACDevice(MideaDevice):
         if aux_heat or aux_only:
             message.power = True
             message.mode = HEAT_MODE
+            # Forcing heat mirrors the mode path in set_attribute: clear the
+            # dry flag (byte 9, bit 0x04) so a cached DRY state cannot block
+            # the mode change, and force fan_speed to AUTO when leaving DRY.
+            message.dry = False
+            if self._attributes[DeviceAttributes.mode] == DRY_MODE:
+                message.fan_speed = 102
         # The cache is synchronized by _sync_aux_heat_cache after a successful
         # send, so a failed build_send does not leave power/mode committed.
         return message

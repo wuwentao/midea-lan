@@ -357,6 +357,20 @@ class TestMideaACDevice:
             assert message.power is True
             assert message.mode == 4  # HEAT_MODE
 
+    def test_set_aux_heat_mode_from_dry_clears_dry_and_fan(self) -> None:
+        """Forcing heat from DRY clears the dry flag and forces fan to AUTO."""
+        self.device._attributes[DeviceAttributes.mode] = 3  # DRY_MODE
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(
+                DeviceAttributes.aux_heat_mode.value,
+                "aux_only",
+            )
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, StateSet)
+            assert message.mode == 4  # HEAT_MODE
+            assert message.dry is False
+            assert message.fan_speed == 102
+
     def test_set_aux_heat_mode_off(self) -> None:
         """Turn off clears both electric aux-heat flags without forcing heat."""
         with patch.object(self.device, "build_send") as mock_build_send:

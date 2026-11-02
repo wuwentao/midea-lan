@@ -95,6 +95,31 @@ DEFAULT_OUT_SILENT_VALUE = 0x03
 OUT_SILENT_OFF_VALUE = 0x00
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
+# Electric auxiliary heat (PTC) bit masks.
+#   - aux_heating / PTCValue: the ordinary electric aux-heat flag, byte 9 bit
+#     0x08 on both the set body and the A0/C0 status bodies. Vendor lua
+#     "BYTE_PTC_ON = 0x08" (keyP["PTCValue"]).
+#   - independent_ptc: "single" electric aux-heat (electric heat only, no
+#     compressor). Vendor lua keyP["independent_ptc"] = 0x08, written to set
+#     body byte 22 (bodyBytes[22]) and decoded from status body byte 8 (C0) or
+#     byte 11 (A0). See the vendor Lua
+#     lua/0xAC/T_0000_AC_00000Q1F_2024013001.lua (control block near line 3246,
+#     binToModel parser near line 1824) and midea_ac_lan issue #1127.
+#
+# IMPORTANT history for future bug-checks: the C0 status bit (byte 8 bit 0x40)
+# was decoded as "smart_eye" from the very first upstream commit
+# (georgezhao2010/midea_ac_lan a3be65c, 2022-07-19, "0.2.0-Bate4"), never
+# verified against vendor firmware. The authoritative vendor Lua decodes that
+# exact bit as independent_ptc, so this device now reports independent_ptc from
+# C0 (see StateBody below). smart_eye is still decoded from its own, separate
+# A0 bit (byte 9 bit 0x01), so both features remain available. If a future
+# device is found that genuinely uses C0 byte 8 bit 0x40 for smart_eye, gate
+# this per model/subtype rather than reviving the global smart_eye decode.
+AUX_HEATING_PTC_MASK = 0x08
+INDEPENDENT_PTC_SET_MASK = 0x08
+INDEPENDENT_PTC_C0_MASK = 0x40
+INDEPENDENT_PTC_A0_MASK = 0x08
+SMART_EYE_A0_MASK = 0x01
 SUB_PROTOCOL_BODY_TEMP_CHECK = 0x80
 TEMP_DECIMAL_MIN_BODY_LENGTH = 20
 TIMER_MIN_SUBPROTOCOL_LENGTH = 27
@@ -1235,6 +1260,9 @@ class StateSet(MessageACBase):
         self.smart_eye = False
         self.dry = False
         self.aux_heating = False
+        # Single electric aux-heat (electric heat only). Vendor lua
+        # keyP["independent_ptc"], distinct from aux_heating/PTCValue above.
+        self.independent_ptc = False
         self.eco_mode = False
         self.temp_fahrenheit = False
         self.sleep_mode = False
@@ -1287,7 +1315,7 @@ class StateSet(MessageACBase):
         # Byte 9 aux_heating eco_mode
         smart_eye = 0x01 if self.smart_eye else 0
         dry = 0x04 if self.dry else 0
-        aux_heating = 0x08 if self.aux_heating else 0
+        aux_heating = AUX_HEATING_PTC_MASK if self.aux_heating else 0
         eco_mode = 0x80 if self.eco_mode else 0
         anion = 0x20 if self.anion else 0
         # Byte 10 temp_fahrenheit
@@ -1305,8 +1333,10 @@ class StateSet(MessageACBase):
         )
         # Byte 21 frost_protect
         frost_protect = 0x80 if self.frost_protect else 0
-        # Byte 22 comfort_mode
+        # Byte 22 comfort_mode (bit 0x01) and independent_ptc (bit 0x08).
+        # Vendor lua: bodyBytes[22] = bit.bor(keyP["independent_ptc"], ...).
         comfort_mode = 0x01 if self.comfort_mode else 0
+        independent_ptc = INDEPENDENT_PTC_SET_MASK if self.independent_ptc else 0
         # Byte 3 timer flag, bytes 4-6 countdown timers
         timer_flag, power_on_timer, power_off_timer, timer_minutes = self._timer_bytes()
 
@@ -1333,7 +1363,7 @@ class StateSet(MessageACBase):
                 0x00,
                 0x00,
                 frost_protect,
-                comfort_mode,
+                comfort_mode | independent_ptc,
             ],
         )
 
@@ -1570,9 +1600,14 @@ class XA0Body(MessageBody):
         self.screen_display = (
             (body[14] >> 4 & 0x7) != SCREEN_DISPLAY_BYTE_CHECK
         ) and self.power
-        self.smart_eye = (body[9] & 0x01) > 0
+        self.smart_eye = (body[9] & SMART_EYE_A0_MASK) > 0
         self.dry = (body[9] & 0x04) > 0  # dryValue
-        self.aux_heating = (body[9] & 0x08) > 0  # PTCValue
+        self.aux_heating = (body[9] & AUX_HEATING_PTC_MASK) > 0  # PTCValue
+        # independent_ptc (single electric aux-heat). On the A0 notify body the
+        # vendor lua reads it from byte 11 bit 0x08 (binToModel dataType 0x05),
+        # which is independent of smart_eye (byte 9 bit 0x01) and of pmv (byte
+        # 11 high nibble), so both features are reported. See midea_ac_lan #1127.
+        self.independent_ptc = (body[11] & INDEPENDENT_PTC_A0_MASK) > 0
         self.purifier = body[9] & 0x20  # purifierValue
         self.anion = (body[9] & 0x20) > 0
         self.eco_mode = (body[9] & 0x10) > 0  # ecoValue
@@ -2212,11 +2247,20 @@ class StateBody(XMessageBody):
         self.comfort_sleep = body[8] & 0x03  # comfortableSleepValue
         self.comfort_sleep_switch = body[9] & 0x40  # comfortableSleepSwitch
         self.pmv = (body[14] & 0x0F) * 0.5 - 3.5  # pmv
-        self.smart_eye = (body[8] & 0x40) > 0
+        # independent_ptc (single electric aux-heat), C0 status byte 8 bit 0x40.
+        # The vendor lua (binToModel, else branch) decodes this exact bit as
+        # keyP["independent_ptc"]. Historically this bit was decoded as
+        # "smart_eye" (inherited from georgezhao2010 commit a3be65c, 2022, never
+        # verified); the authoritative vendor firmware shows it is
+        # independent_ptc, so it is reported as such here. smart_eye remains
+        # decoded on its own A0 bit (byte 9 bit 0x01) in XA0Body. See
+        # midea_ac_lan #1127. If a device is ever confirmed to use this C0 bit
+        # for smart_eye, gate per model/subtype instead of reverting globally.
+        self.independent_ptc = (body[8] & INDEPENDENT_PTC_C0_MASK) > 0
         self.natural_wind = (body[9] & 0x2) > 0  # naturalWind
         self.dry = (body[9] & 0x4) > 0  # dryValue
         self.eco_mode = (body[9] & 0x10) > 0  # ecoValue
-        self.aux_heating = (body[9] & 0x08) > 0  # PTCValue
+        self.aux_heating = (body[9] & AUX_HEATING_PTC_MASK) > 0  # PTCValue
         self.purifier = body[9] & 0x20  # purifierValue
         self.anion = (body[9] & 0x20) > 0
         self.temp_fahrenheit = (body[10] & 0x04) > 0

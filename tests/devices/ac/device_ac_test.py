@@ -360,6 +360,8 @@ class TestMideaACDevice:
     def test_set_aux_heat_mode_from_dry_clears_dry_and_fan(self) -> None:
         """Forcing heat from DRY clears the dry flag and forces fan to AUTO."""
         self.device._attributes[DeviceAttributes.mode] = 3  # DRY_MODE
+        self.device._attributes[DeviceAttributes.dry] = True
+        self.device._attributes[DeviceAttributes.fan_speed] = 40
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(
                 DeviceAttributes.aux_heat_mode.value,
@@ -370,6 +372,10 @@ class TestMideaACDevice:
             assert message.mode == 4  # HEAT_MODE
             assert message.dry is False
             assert message.fan_speed == 102
+        # The cache mirrors the dry/fan_speed actually sent, so a follow-up
+        # write rebuilt from the cache does not resend the stale DRY state.
+        assert self.device.attributes[DeviceAttributes.dry] is False
+        assert self.device.attributes[DeviceAttributes.fan_speed] == 102
 
     def test_set_aux_heat_mode_off(self) -> None:
         """Turn off clears both electric aux-heat flags without forcing heat."""

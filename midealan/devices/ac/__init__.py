@@ -1595,6 +1595,10 @@ class MideaACDevice(MideaDevice):
         updates: dict[str, Any] = {
             DeviceAttributes.aux_heating.value: aux_heating,
             DeviceAttributes.aux_heat_mode.value: aux_heat_mode,
+            # Mirror the dry/fan_speed the frame actually carried so a follow-up
+            # write rebuilt from the cache does not resend a stale DRY state.
+            DeviceAttributes.dry.value: bool(message.dry),
+            DeviceAttributes.fan_speed.value: message.fan_speed,
         }
         # Only the aux_heat_mode control forces heat + power on; the legacy
         # aux_heating switch leaves power/mode untouched (force_heat=False).

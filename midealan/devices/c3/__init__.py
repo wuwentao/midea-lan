@@ -464,6 +464,10 @@ class MideaC3Device(MideaDevice):
     def build_query(self) -> list[MessageRequest]:
         """Midea C3 device build query."""
         if self._quintuple_protocol:
+            # Every refresh reads basic state, overall/DHW energy,
+            # heating/cooling energy, operating telemetry, and running flags.
+            # Rotate one slower user-setting table so each refresh remains six
+            # requests while silent, ECO, and disinfection state stay current.
             slow = CONTROL_TABLES[self._feature_query_index % len(CONTROL_TABLES)]
             self._feature_query_index += 1
             return [
@@ -749,6 +753,8 @@ class MideaC3Device(MideaDevice):
 
     def _send_quintuple(self, values: dict[BasicTag, bool | float | int]) -> None:
         """Send a sparse control only after receiving this controller's status."""
+        # Readiness also requires valid controller-reported limits for every
+        # configured zone. Never authorize a write from constructor defaults.
         if not self._quintuple_ready:
             raise ValueError(
                 "Wait for first 0x2010 status before controlling this heat pump",

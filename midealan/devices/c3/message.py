@@ -17,9 +17,19 @@ from midealan.message import (
 BYTE_BITS = 8
 ENERGY_SCALE = 100
 
+# Native table protocol source (vendor Lua 0.0.27):
+# https://github.com/wuwentao/midea-lua/blob/f47f06e59d96a82a784c949fbb86c7f31ff839aa/lua/0xC3/T_0000_C3_10004830_2025112601.lua
+# The Lua filename identifies product 10004830, while the controller reports
+# model 17100007. Keep the decoder model-scoped because this table layout is
+# verified only for model 17100007.
 QUINTUPLE_MODEL = "17100007"
 BASIC_TABLE = 0x2010
 ENERGY_TABLE = 0x2F12
+
+# An X00 body has a ten-byte envelope: the body type inserted by the message
+# framework, a two-byte table, four reserved bytes, a format byte, and two more
+# reserved bytes. Format 0 is sequential; format 1 contains two-byte tags,
+# one-byte lengths, and values. The reserved bytes are all 0xFF on the wire.
 ENVELOPE_LENGTH = 10
 FORMAT_OFFSET = 7
 TLV_FORMAT = 1
@@ -236,6 +246,11 @@ class MessageQuery2F12(MessageQuery2010):
 class MessageSet2010(MessageRequest):
     """Write only the supplied 0x2010 properties in TLV form."""
 
+    # Sparse writes are intentional: replaying cached/default values can alter
+    # another zone. The basic query and read-only tables were seen on hardware,
+    # and a 49 C DHW target write was confirmed. Other controls follow the exact
+    # vendor encoding but have not received broad hardware acceptance testing.
+
     def __init__(
         self,
         values: dict[BasicTag, bool | float | int],
@@ -286,6 +301,7 @@ def _read_fields(
     sizes: tuple[int, ...] = BASIC_SIZES,
     minimum_length: int = MIN_SEQUENTIAL_LENGTH,
 ) -> dict[int, bytes]:
+    """Decode one table and reject malformed TLVs without partial results."""
     if len(body) < ENVELOPE_LENGTH:
         return {}
     values = {}
@@ -323,6 +339,12 @@ def _temperature(raw: bytes) -> float | None:
 
 class C3QuintupleEnergyBody(MessageBody):
     """Decode 0x2F12 energy using the vendor's 0.01 kW/kWh scale."""
+
+    # These are controller-reported values. Their reset periods and inclusion
+    # of standby, circulation, or auxiliary loads are not established, so they
+    # must not be treated as billing-grade whole-appliance measurements.
+    # Tags 3 and 4 retain watts for the existing instant-power attributes;
+    # energy counters use kWh and other table powers use kW.
 
     quintuple_energy: bool
     current_unit_capacity: float | None
@@ -431,6 +453,9 @@ TABLE_SIZES: dict[int, tuple[int, ...]] = {
     0x2F17: (1,) * 9 + (4,) * 2 + (2,) * 7 + (1,) * 49,
 }
 MIN_FIELDS = {0x2050: 2, 0x2070: 2, 0x2090: 5, 0x2F11: 20, 0x2F12: 12, 0x2F17: 6}
+# "scaled" means divide the vendor integer by 100. Depending on the named
+# field, the result is kW, kWh, or a dimensionless COP/EER value. DHW power
+# state remains boolean; electrical demand is exposed as dhw_power_consumption.
 TABLE_FIELDS: dict[tuple[int, int], tuple[tuple[str, ...], str]] = {
     (0x2F11, 6): (("heating_power",), "scaled"),
     (0x2F11, 4): (("heating_heat_output",), "scaled"),
@@ -574,6 +599,9 @@ def query_table(table: int, protocol_version: int) -> MessageQueryTable:
 class FeatureSetting(StrEnum):
     """Normal user controls with a verified native encoding."""
 
+    # Only confirmed user controls are writable. Calendar/timer editing and
+    # installer settings are deliberately excluded; DISINFECT only toggles the
+    # scheduled feature and does not request an immediate disinfection cycle.
     SILENT_POWER = "silent_mode"
     SILENT_LEVEL = "silent_level"
     ECO = "eco_mode"

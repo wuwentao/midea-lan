@@ -2767,6 +2767,42 @@ def test_unknown_tlv_and_invalid_temperature() -> None:
     assert not hasattr(response, "dhw_target_temp")
 
 
+def test_invalid_measured_temperatures_clear_stale_readings() -> None:
+    """Unavailable probes publish None while invalid targets remain unchanged."""
+    d = device()
+    d.process_message(QUERY_REPLY)
+    assert d.attributes[A.tank_actual_temperature] == 43.3
+    assert d.attributes[A.outdoor_temperature] == 9
+    status = d.process_message(
+        frame(
+            bytes.fromhex(
+                "002010ffffffff01ffff0029027fff0034027fff0007027fff",
+            ),
+        ),
+    )
+    assert status[A.tank_actual_temperature] is None
+    assert status[A.outdoor_temperature] is None
+    assert status[A.temp_t4] is None
+    assert d.attributes[A.dhw_target_temp] == 48
+
+
+@pytest.mark.parametrize(
+    ("raw", "code", "description"),
+    [(0, 0, "No error"), (7, 7, "Unknown code (raw=7)"), (0xFF, None, None)],
+)
+def test_quintuple_error_code_description(
+    raw: int,
+    code: int | None,
+    description: str | None,
+) -> None:
+    """Native error codes update both the numeric and human-readable state."""
+    response = C3QuintupleBasicBody(
+        bytearray.fromhex(f"002010ffffffff01ffff002a01{raw:02x}"),
+    )
+    assert response.error_code == code
+    assert response.error_code_description == description
+
+
 def test_signed_temperature() -> None:
     """The Lua's Temp type is signed two's-complement tenths."""
     body = bytes.fromhex("002010ffffffff01ffff003402ffce")

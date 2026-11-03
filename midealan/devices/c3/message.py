@@ -180,6 +180,9 @@ TEMPERATURE_FIELDS = {
 TEMPERATURE_LIMIT_FIELDS = frozenset(
     ("room_temp_max", "room_temp_min", "dhw_temp_max", "dhw_temp_min"),
 )
+TEMPERATURE_SENSOR_FIELDS = frozenset(
+    ("tank_actual_temperature", "outdoor_temperature", "temp_t4"),
+)
 ARRAY_FIELDS = {
     "zone_target_temp": (4, 5),
     "zone_heating_temp_max": (29, 33),
@@ -367,6 +370,7 @@ class C3QuintupleBasicBody(MessageBody):
             if tag in values and (
                 (value := _temperature(values[tag])) is not None
                 or name in TEMPERATURE_LIMIT_FIELDS
+                or name in TEMPERATURE_SENSOR_FIELDS
             ):
                 setattr(self, name, value)
         for name, tags in ARRAY_FIELDS.items():
@@ -396,11 +400,22 @@ class C3QuintupleBasicBody(MessageBody):
                 if values[AUTO_MODE_TAG][0] in (1, 2)
                 else None
             )
-        if ERROR_CODE_TAG in values and values[ERROR_CODE_TAG][0] != INVALID_BYTE:
-            self.error_code = values[ERROR_CODE_TAG][0]
+        if ERROR_CODE_TAG in values:
+            error_code = values[ERROR_CODE_TAG][0]
+            self.error_code = None if error_code == INVALID_BYTE else error_code
+            self.error_code_description = (
+                None
+                if error_code == INVALID_BYTE
+                else "No error"
+                if error_code == 0
+                else f"Unknown code (raw={error_code})"
+            )
         for tag, names in STATUS_TEMPERATURE_ATTRIBUTES.items():
-            if tag in values and (value := _temperature(values[tag])) is not None:
-                for name in names:
+            if tag not in values:
+                continue
+            value = _temperature(values[tag])
+            for name in names:
+                if value is not None or name in TEMPERATURE_SENSOR_FIELDS:
                     setattr(self, name, value)
 
 
@@ -1972,8 +1987,8 @@ class MessageC3Response(MessageResponse):
     fan_total_run_time: int
     pump_i_total_run_time: int
     unit_mode_run: int
-    error_code: int
-    error_code_description: str
+    error_code: int | None
+    error_code_description: str | None
     idu_software_version: int | None
     odu_software_version: int | None
     idu_software_version_str: str | None

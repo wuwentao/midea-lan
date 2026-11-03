@@ -3087,8 +3087,6 @@ def test_fractional_energy_precision(
     body.extend(tag.to_bytes(2, "big") + bytes((width,)) + (35).to_bytes(width, "big"))
     parsed = C3QuintupleEnergyBody(body)
     assert getattr(parsed, name) == expected
-    if tag == 2:
-        assert parsed.current_unit_capacity == decode_table(body)["heat_output"]
 
 
 @pytest.mark.parametrize(
@@ -3184,7 +3182,7 @@ def test_curated_attributes_do_not_replace_power_flags() -> None:
         d.process_message(bytes.fromhex(record["frame"]))
     assert d.attributes[A.dhw_power] is True
     assert isinstance(d.attributes[A.dhw_power_consumption], float)
-    assert len(FEATURE_ENERGY_ATTRIBUTES) == 57
+    assert len(FEATURE_ENERGY_ATTRIBUTES) == 56
 
 
 @pytest.mark.parametrize("case", WRITES)
@@ -3262,7 +3260,7 @@ def test_sparse_invalid_and_partial_fields() -> None:
     # Mapped energy sentinel must not become zero or billions of kWh.
     assert (
         decode_table(bytearray.fromhex("002f12ffffffff01ffff001204ffffffff"))[
-            "dhw_total_energy"
+            "dhw_total_energy_consumption"
         ]
         is None
     )

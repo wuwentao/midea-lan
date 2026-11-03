@@ -470,9 +470,9 @@ class TestTagDatasets:
 
     def test_dataset_sizes(self) -> None:
         """Test each dataset has the expected number of tags."""
-        assert len(COMMON_TAGS) == 14
-        assert len(PROPERTIES_TAGS) == 21
-        assert len(CAPABILITY_ONLY_TAGS) == 22
+        assert len(COMMON_TAGS) == 16
+        assert len(PROPERTIES_TAGS) == 23
+        assert len(CAPABILITY_ONLY_TAGS) == 20
 
     def test_common_tags_included_in_properties(self) -> None:
         """Test COMMON_TAGS is a subset of PROPERTIES_TAGS."""

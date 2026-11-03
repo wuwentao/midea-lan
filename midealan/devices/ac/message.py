@@ -92,6 +92,7 @@ MAX_MSG_SERIAL_NUM = 254
 # - 0x03: https://github.com/wuwentao/midea_ac_lan/issues/779
 # Keep 0x03 as the fallback for devices without a numeric B5 capability value.
 DEFAULT_OUT_SILENT_VALUE = 0x03
+WIND_STRAIGHT_ON_VALUE = 0x01
 OUT_SILENT_OFF_VALUE = 0x00
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
@@ -806,6 +807,8 @@ COMMON_TAGS: frozenset[int] = frozenset(
         CapabilityTag.wind_ud_angle,  # 0x0009
         CapabilityTag.wind_lr_angle,  # 0x000A
         CapabilityTag.breezeless,  # 0x0018
+        CapabilityTag.wind_straight,  # 0x0032
+        CapabilityTag.wind_avoid,  # 0x0033
         CapabilityTag.self_clean,  # 0x0039
         CapabilityTag.indirect_wind,  # 0x0042
         CapabilityTag.gentle_wind_sense,  # 0x0043
@@ -842,8 +845,6 @@ PROPERTIES_TAGS: frozenset[int] = COMMON_TAGS | frozenset(
 CAPABILITY_ONLY_TAGS: frozenset[int] = frozenset(
     {
         CapabilityTag.nobody_energy_save,  # 0x0030
-        CapabilityTag.wind_straight,  # 0x0032
-        CapabilityTag.wind_avoid,  # 0x0033
         CapabilityTag.prevent_super_cool,  # 0x0049
         CapabilityTag.parent_control,  # 0x0051
         CapabilityTag.prevent_straight_wind_lr,  # 0x0058
@@ -1381,6 +1382,8 @@ class PropertiesSet(MessageACBase):
         self.indirect_wind: bytes | None = None
         self.prompt_tone: bytes | None = None
         self.breezeless: bytes | None = None
+        self.wind_straight: bool | None = None
+        self.wind_avoid: bool | None = None
         self.screen_display_alternate: bytes | None = None
         self.fresh_air_1: bytes | None = None
         self.fresh_air_2: bytes | None = None
@@ -1399,10 +1402,32 @@ class PropertiesSet(MessageACBase):
         self.power_on_timer: int | None = None
         self.power_off_timer: int | None = None
 
-    @property
-    def _body(self) -> bytearray:
+    def _person_airflow_payload(self) -> tuple[int, bytearray]:
+        """Pack only explicitly supplied ordinary person-airflow flags.
+
+        Returns:
+            The property count and payload with its reserved count byte.
+
+        """
         pack_count = 0
         payload = bytearray([0x00])
+        for tag, enabled in (
+            (CapabilityTag.wind_straight, self.wind_straight),
+            (CapabilityTag.wind_avoid, self.wind_avoid),
+        ):
+            if enabled is not None:
+                pack_count += 1
+                payload.extend(
+                    NewProtocolMessageBody.pack(
+                        param=tag,
+                        value=bytearray([int(enabled)]),
+                    ),
+                )
+        return pack_count, payload
+
+    @property
+    def _body(self) -> bytearray:
+        pack_count, payload = self._person_airflow_payload()
         if self.breezeless is not None:
             pack_count += 1
             payload.extend(
@@ -1734,6 +1759,11 @@ class PropertiesBody(NewProtocolMessageBody):
         state, so it is filtered out here; the 0x7e payload carries the same
         states for every body type (parsed in __init__ below).
         """
+        if self.body_type != ListTypes.B5:
+            if data := params.get(CapabilityTag.wind_straight):
+                self.wind_straight = data[0] == WIND_STRAIGHT_ON_VALUE
+            if data := params.get(CapabilityTag.wind_avoid):
+                self.wind_avoid = data[0] > 0
         if CapabilityTag.degerming in params and self.body_type != ListTypes.B5:
             # Queried degerming state (0x00 off / 0x01 on).
             self.degerming_active = params[CapabilityTag.degerming][0] > 0

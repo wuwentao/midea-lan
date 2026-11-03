@@ -128,6 +128,8 @@ class DeviceAttributes(StrEnum):
     indoor_temperature = "indoor_temperature"
     outdoor_temperature = "outdoor_temperature"
     indirect_wind = "indirect_wind"
+    wind_straight = "wind_straight"
+    wind_avoid = "wind_avoid"
     indoor_humidity = "indoor_humidity"
     breezeless = "breezeless"
     fresh_air_power = "fresh_air_power"
@@ -362,6 +364,8 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.indoor_temperature: None,
                 DeviceAttributes.outdoor_temperature: None,
                 DeviceAttributes.indirect_wind: False,
+                DeviceAttributes.wind_straight: None,
+                DeviceAttributes.wind_avoid: None,
                 DeviceAttributes.indoor_humidity: None,
                 DeviceAttributes.breezeless: False,
                 DeviceAttributes.total_energy_consumption: None,
@@ -1780,6 +1784,8 @@ class MideaACDevice(MideaDevice):
                 message = self.make_subprotocol_fresh_air_set(attr, value)
             elif attr in [
                 DeviceAttributes.indirect_wind,
+                DeviceAttributes.wind_straight,
+                DeviceAttributes.wind_avoid,
                 DeviceAttributes.breezeless,
                 DeviceAttributes.screen_display_alternate,
                 DeviceAttributes.fresh_air_power,

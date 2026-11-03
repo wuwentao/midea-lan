@@ -10,15 +10,6 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.message import ListTypes, MessageQuestCustom, MessageRequest, MessageType
 
-from .features import (
-    CONTROL_TABLES,
-    ENERGY_TABLES,
-    FeatureSetting,
-    MessageSetSettings,
-    decode_table,
-    query_table,
-)
-from .features import ENERGY_ATTRIBUTES as FEATURE_ENERGY_ATTRIBUTES
 from .message import (
     C3_SHORT_DHW_POWER_MASK,
     C3_SHORT_SETPOINT_BIAS,
@@ -27,9 +18,19 @@ from .message import (
     C3_SHORT_X01_POWER_OFFSET,
     C3_SHORT_X01_SETPOINT_OFFSET,
     C3_SHORT_X01_TBH_OFFSET,
+    CONTROL_TABLES,
+    ENERGY_TABLES,
+    FEATURE_ENERGY_ATTRIBUTES,
+    MODE_TO_WIRE,
+    QUINTUPLE_ENERGY_ATTRIBUTES,
+    QUINTUPLE_MODEL,
+    BasicTag,
     C3DeviceMode,
     C3SilentLevel,
+    FeatureSetting,
     MessageC3Response,
+    MessageQuery2F12,
+    MessageQuery2010,
     MessageQueryBasic,
     MessageQueryDiagnostic,
     MessageQueryDisinfect,
@@ -37,20 +38,13 @@ from .message import (
     MessageQuerySilence,
     MessageQueryUnitPara,
     MessageSet,
+    MessageSet2010,
     MessageSetDisinfect,
     MessageSetECO,
+    MessageSetSettings,
     MessageSetSilent,
-)
-from .quintuple import (
-    ENERGY_ATTRIBUTES,
-    MODE_TO_WIRE,
-    BasicTag,
-    MessageQuery2F12,
-    MessageQuery2010,
-    MessageSet2010,
-)
-from .quintuple import (
-    MODEL as QUINTUPLE_MODEL,
+    decode_table,
+    query_table,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -423,7 +417,7 @@ class MideaC3Device(MideaDevice):
         self._temperature_step: float = 0.5
         self._short_protocol = str(self.model) in C3_SHORT_PROTOCOL_MODELS
         self._quintuple_protocol = str(self.model) == QUINTUPLE_MODEL
-        self._quintuple_ready = False
+        self._quintuple_ready: bool = False
         self._feature_query_index = 0
         self._silent_level_setting: str | None = None
         if self._quintuple_protocol:
@@ -559,7 +553,7 @@ class MideaC3Device(MideaDevice):
         for status in self._attributes:
             if (
                 self._quintuple_protocol
-                and status in ENERGY_ATTRIBUTES
+                and status in QUINTUPLE_ENERGY_ATTRIBUTES
                 and not getattr(message, "quintuple_energy", False)
             ):
                 continue

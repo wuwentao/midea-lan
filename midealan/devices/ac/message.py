@@ -1402,32 +1402,26 @@ class PropertiesSet(MessageACBase):
         self.power_on_timer: int | None = None
         self.power_off_timer: int | None = None
 
-    def _person_airflow_payload(self) -> tuple[int, bytearray]:
-        """Pack only explicitly supplied ordinary person-airflow flags.
-
-        Returns:
-            The property count and payload with its reserved count byte.
-
-        """
+    @property
+    def _body(self) -> bytearray:  # noqa: C901
         pack_count = 0
         payload = bytearray([0x00])
-        for tag, enabled in (
-            (CapabilityTag.wind_straight, self.wind_straight),
-            (CapabilityTag.wind_avoid, self.wind_avoid),
-        ):
-            if enabled is not None:
-                pack_count += 1
-                payload.extend(
-                    NewProtocolMessageBody.pack(
-                        param=tag,
-                        value=bytearray([int(enabled)]),
-                    ),
-                )
-        return pack_count, payload
-
-    @property
-    def _body(self) -> bytearray:
-        pack_count, payload = self._person_airflow_payload()
+        if self.wind_straight is not None:
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=CapabilityTag.wind_straight,
+                    value=bytearray([int(self.wind_straight)]),
+                ),
+            )
+        if self.wind_avoid is not None:
+            pack_count += 1
+            payload.extend(
+                NewProtocolMessageBody.pack(
+                    param=CapabilityTag.wind_avoid,
+                    value=bytearray([int(self.wind_avoid)]),
+                ),
+            )
         if self.breezeless is not None:
             pack_count += 1
             payload.extend(
@@ -1759,11 +1753,12 @@ class PropertiesBody(NewProtocolMessageBody):
         state, so it is filtered out here; the 0x7e payload carries the same
         states for every body type (parsed in __init__ below).
         """
-        if self.body_type != ListTypes.B5:
-            if data := params.get(CapabilityTag.wind_straight):
-                self.wind_straight = data[0] == WIND_STRAIGHT_ON_VALUE
-            if data := params.get(CapabilityTag.wind_avoid):
-                self.wind_avoid = data[0] > 0
+        if CapabilityTag.wind_straight in params and self.body_type != ListTypes.B5:
+            self.wind_straight = (
+                params[CapabilityTag.wind_straight][0] == WIND_STRAIGHT_ON_VALUE
+            )
+        if CapabilityTag.wind_avoid in params and self.body_type != ListTypes.B5:
+            self.wind_avoid = params[CapabilityTag.wind_avoid][0] > 0
         if CapabilityTag.degerming in params and self.body_type != ListTypes.B5:
             # Queried degerming state (0x00 off / 0x01 on).
             self.degerming_active = params[CapabilityTag.degerming][0] > 0

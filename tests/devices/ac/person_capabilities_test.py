@@ -55,7 +55,11 @@ def test_property_setter_uses_existing_packet(
         device.set_attribute(attribute, enabled)
     message = send.call_args.args[0]
     assert isinstance(message, PropertiesSet)
-    assert bytes([tag, 0, 1, int(enabled)]) in message._body
+    body = message._body
+    assert body[0] == 2  # Requested flag plus the existing prompt_tone property.
+    assert bytes([tag, 0, 1, int(enabled)]) in body
+    other_tag = 0x33 if tag == 0x32 else 0x32
+    assert bytes([other_tag, 0, 1]) not in body
     assert device.get_attribute(attribute) is None
 
 

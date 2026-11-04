@@ -86,10 +86,13 @@ class MideaFDDevice(MideaDevice):
         self._model_protocol = FD_MODEL_PROTOCOLS.get(self.model)
         if self._model_protocol is not None:
             self._speeds = self._model_protocol["fan_speeds"]
+            self._screen_display_values = self._model_protocol["screen_displays"]
         elif self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
             self._speeds = MideaFDDevice._speeds_new
+            self._screen_display_values = MideaFDDevice._screen_displays
         else:
             self._speeds = MideaFDDevice._speeds_old
+            self._screen_display_values = MideaFDDevice._screen_displays
 
     @property
     def modes(self) -> list[str]:
@@ -104,7 +107,7 @@ class MideaFDDevice(MideaDevice):
     @property
     def screen_displays(self) -> list[str]:
         """Midea FD device screen displays."""
-        return list(MideaFDDevice._screen_displays.values())
+        return list(self._screen_display_values.values())
 
     @property
     def detect_modes(self) -> list[str]:
@@ -134,8 +137,8 @@ class MideaFDDevice(MideaDevice):
                     else:
                         self._attributes[status] = None
                 elif status == DeviceAttributes.screen_display:
-                    if value in MideaFDDevice._screen_displays:
-                        self._attributes[status] = MideaFDDevice._screen_displays.get(
+                    if value in self._screen_display_values:
+                        self._attributes[status] = self._screen_display_values.get(
                             value,
                         )
                     else:
@@ -172,8 +175,8 @@ class MideaFDDevice(MideaDevice):
             if self._model_protocol is not None
             else 0
             if self._attributes[DeviceAttributes.screen_display] is None
-            else list(MideaFDDevice._screen_displays.keys())[
-                list(MideaFDDevice._screen_displays.values()).index(
+            else list(self._screen_display_values.keys())[
+                list(self._screen_display_values.values()).index(
                     self._attributes[DeviceAttributes.screen_display],
                 )
             ]
@@ -196,10 +199,10 @@ class MideaFDDevice(MideaDevice):
                         list(self._speeds.values()).index(str(value))
                     ]
             elif attr == DeviceAttributes.screen_display:
-                if value in MideaFDDevice._screen_displays.values():
+                if value in self._screen_display_values.values():
                     message.screen_display = list(
-                        MideaFDDevice._screen_displays.keys(),
-                    )[list(MideaFDDevice._screen_displays.values()).index(str(value))]
+                        self._screen_display_values.keys(),
+                    )[list(self._screen_display_values.values()).index(str(value))]
                 elif not value:
                     message.screen_display = 7
             else:

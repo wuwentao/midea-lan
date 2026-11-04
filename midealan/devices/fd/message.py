@@ -27,6 +27,7 @@ class FDModelProtocol(TypedDict):
     fan_speeds: dict[int, str]
     manual_fan_speeds: frozenset[int]
     mode_values: dict[str, int]
+    screen_displays: dict[int, str]
     set_body_length: int
     set_indices: dict[str, int]
     status_indices: dict[str, int]
@@ -43,10 +44,10 @@ FD_MODEL_PROTOCOLS: Final[dict[str, FDModelProtocol]] = {
             59: "medium",
             80: "high",
             101: "auto",
-            127: "off",
         },
         "manual_fan_speeds": frozenset({1, 39, 59, 80}),
         "mode_values": {"manual": 0x01, "auto": 0x02},
+        "screen_displays": {0: "bright", 7: "off"},
         "set_body_length": 21,
         "set_indices": {
             "fan_speed": 2,

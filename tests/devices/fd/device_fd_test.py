@@ -101,6 +101,7 @@ class TestMideaFDDevice:
     def test_fan_speeds_model_20200012(self) -> None:
         """Test model 20200012 uses the new speed table for subtype zero."""
         device = _build_device(0, model="20200012")
+        assert device.fan_speeds == ["lowest", "low", "medium", "high", "auto"]
         body = bytearray(46)
         body[0] = 0xC8
         body[3] = 39
@@ -114,6 +115,11 @@ class TestMideaFDDevice:
     def test_screen_displays(self) -> None:
         """Test screen displays property."""
         assert self.device.screen_displays == ["bright", "dim", "off"]
+
+    def test_screen_displays_model_20200012(self) -> None:
+        """Test model 20200012 only advertises supported display choices."""
+        device = _build_device(0, model="20200012")
+        assert device.screen_displays == ["bright", "off"]
 
     def test_detect_modes(self) -> None:
         """Test detect modes property."""

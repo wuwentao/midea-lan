@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
-from .message import FD_20200012_MODEL, MessageFDResponse, MessageQuery, MessageSet
+from .message import FD_MODEL_PROTOCOLS, MessageFDResponse, MessageQuery, MessageSet
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,7 +83,10 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.disinfect: None,
             },
         )
-        if self.subtype > MAX_SUBTYPE_OLD_SPEEDS or self.model == FD_20200012_MODEL:
+        self._model_protocol = FD_MODEL_PROTOCOLS.get(self.model)
+        if self._model_protocol is not None:
+            self._speeds = self._model_protocol["fan_speeds"]
+        elif self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
             self._speeds = MideaFDDevice._speeds_new
         else:
             self._speeds = MideaFDDevice._speeds_old
@@ -166,7 +169,7 @@ class MideaFDDevice(MideaDevice):
         )
         message.screen_display = (
             None
-            if self.model == FD_20200012_MODEL
+            if self._model_protocol is not None
             else 0
             if self._attributes[DeviceAttributes.screen_display] is None
             else list(MideaFDDevice._screen_displays.keys())[

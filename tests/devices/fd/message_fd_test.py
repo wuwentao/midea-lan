@@ -7,13 +7,14 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.crc8 import calculate
 from midealan.devices.fd.message import (
-    FD_20200012_MODEL,
     MessageFDBase,
     MessageFDResponse,
     MessageQuery,
     MessageSet,
 )
 from midealan.message import ListTypes, MessageType
+
+FD_20200012_MODEL = "20200012"
 
 
 def _build_message(message_type: MessageType, body: bytearray) -> bytes:

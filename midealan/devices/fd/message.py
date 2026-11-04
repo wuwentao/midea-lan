@@ -1,7 +1,5 @@
 """Midea lan FD message."""
 
-from typing import Final, TypedDict
-
 from midealan.const import DeviceType
 from midealan.crc8 import calculate
 from midealan.message import (
@@ -14,50 +12,32 @@ from midealan.message import (
 
 DISINFECT_A0_BODY_LENGTH = 29
 DISINFECT_C8_BODY_LENGTH = 36
+FD_20200012_AUTO_FAN_SPEED = 101
+FD_20200012_DISPLAY_OFF = 0x01
+FD_20200012_DISPLAY_ON = 0x02
+FD_20200012_DISPLAY_STATUS_INDEX = 43
+FD_20200012_FAN_SPEED_SET_INDEX = 2
+FD_20200012_FAN_SPEEDS = {
+    1: "lowest",
+    39: "low",
+    59: "medium",
+    80: "high",
+    101: "auto",
+}
+FD_20200012_MANUAL_FAN_SPEEDS = frozenset({1, 39, 59, 80})
+FD_20200012_MODE_AUTO = 0x02
+FD_20200012_MODE_MANUAL = 0x01
+FD_20200012_MODE_SET_INDEX = 10
+FD_20200012_MODE_STATUS_INDEX = 13
+FD_20200012_MODEL = "20200012"
+FD_20200012_SCREEN_DISPLAY_OFF = 0x40
+FD_20200012_SCREEN_DISPLAY_ON = 0x80
+FD_20200012_SCREEN_DISPLAY_SET_INDEX = 14
+FD_20200012_SCREEN_DISPLAYS = {0: "bright", 7: "off"}
+FD_20200012_SET_BODY_LENGTH = 21
+FD_20200012_TARGET_HUMIDITY_SET_INDEX = 6
 MAX_FAN_SPEED = 5
 MAX_MSG_SERIAL_NUM = 254
-
-
-class FDModelProtocol(TypedDict):
-    """Model-specific FD protocol definition."""
-
-    auto_fan_speed: int
-    display_set_values: dict[int, int]
-    display_status_values: dict[int, int]
-    fan_speeds: dict[int, str]
-    manual_fan_speeds: frozenset[int]
-    mode_values: dict[str, int]
-    screen_displays: dict[int, str]
-    set_body_length: int
-    set_indices: dict[str, int]
-    status_indices: dict[str, int]
-
-
-FD_MODEL_PROTOCOLS: Final[dict[str, FDModelProtocol]] = {
-    "20200012": {
-        "auto_fan_speed": 101,
-        "display_set_values": {0: 0x80, 6: 0x40, 7: 0x40},
-        "display_status_values": {0x02: 0, 0x01: 7},
-        "fan_speeds": {
-            1: "lowest",
-            39: "low",
-            59: "medium",
-            80: "high",
-            101: "auto",
-        },
-        "manual_fan_speeds": frozenset({1, 39, 59, 80}),
-        "mode_values": {"manual": 0x01, "auto": 0x02},
-        "screen_displays": {0: "bright", 7: "off"},
-        "set_body_length": 21,
-        "set_indices": {
-            "fan_speed": 2,
-            "target_humidity": 6,
-            "mode": 10,
-            "screen_display": 14,
-        },
-        "status_indices": {"mode": 13, "screen_display": 43},
-    },
-}
 
 
 class MessageFDBase(MessageRequest):
@@ -150,33 +130,33 @@ class MessageSet(MessageFDBase):
         self.screen_display: int | None = 0x07
         self.mode = 0x01
         self.disinfect = None
-        self._model_protocol = FD_MODEL_PROTOCOLS.get(model)
+        self._model = model
 
     @property
     def _body(self) -> bytearray:
         power = 0x01 if self.power else 0x00
         prompt_tone = 0x40 if self.prompt_tone else 0x00
         disinfect = 0 if self.disinfect is None else (1 if self.disinfect else 2)
-        if self._model_protocol is not None:
-            protocol = self._model_protocol
+        if self._model == FD_20200012_MODEL:
             screen_display_code = self.screen_display
-            screen_display = (
-                protocol["display_set_values"].get(screen_display_code, 0)
-                if screen_display_code is not None
-                else 0
-            )
+            if screen_display_code == 0:
+                screen_display = FD_20200012_SCREEN_DISPLAY_ON
+            elif screen_display_code in {6, 7}:
+                screen_display = FD_20200012_SCREEN_DISPLAY_OFF
+            else:
+                screen_display = 0
             fan_speed = (
                 self.fan_speed
-                if self.mode == protocol["mode_values"]["manual"]
-                and self.fan_speed in protocol["manual_fan_speeds"]
+                if self.mode == FD_20200012_MODE_MANUAL
+                and self.fan_speed in FD_20200012_MANUAL_FAN_SPEEDS
                 else 0
             )
-            body = bytearray(protocol["set_body_length"])
+            body = bytearray(FD_20200012_SET_BODY_LENGTH)
             body[0] = power | prompt_tone | 0x02
-            body[protocol["set_indices"]["fan_speed"]] = fan_speed
-            body[protocol["set_indices"]["target_humidity"]] = self.target_humidity
-            body[protocol["set_indices"]["mode"]] = self.mode
-            body[protocol["set_indices"]["screen_display"]] = screen_display
+            body[FD_20200012_FAN_SPEED_SET_INDEX] = fan_speed
+            body[FD_20200012_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
+            body[FD_20200012_MODE_SET_INDEX] = self.mode
+            body[FD_20200012_SCREEN_DISPLAY_SET_INDEX] = screen_display
             return body
         return bytearray(
             [
@@ -217,19 +197,17 @@ class FDC8MessageBody(MessageBody):
         self.current_humidity = body[16]
         self.current_temperature = (body[17] - 50) / 2
         self.tank = body[10]
-        protocol = FD_MODEL_PROTOCOLS.get(model)
-        if protocol is not None and len(body) > max(
-            protocol["status_indices"].values(),
-        ):
-            mode_index = protocol["status_indices"]["mode"]
-            display_index = protocol["status_indices"]["screen_display"]
-            self.mode = body[mode_index]
-            if self.mode == protocol["mode_values"]["auto"]:
-                self.fan_speed = protocol["auto_fan_speed"]
-            self.screen_display = protocol["display_status_values"].get(
-                body[display_index],
-                body[display_index],
-            )
+        if model == FD_20200012_MODEL and len(body) > FD_20200012_DISPLAY_STATUS_INDEX:
+            self.mode = body[FD_20200012_MODE_STATUS_INDEX]
+            if self.mode == FD_20200012_MODE_AUTO:
+                self.fan_speed = FD_20200012_AUTO_FAN_SPEED
+            display = body[FD_20200012_DISPLAY_STATUS_INDEX]
+            if display == FD_20200012_DISPLAY_ON:
+                self.screen_display = 0
+            elif display == FD_20200012_DISPLAY_OFF:
+                self.screen_display = 7
+            else:
+                self.screen_display = display
         else:
             self.mode = (body[8] & 0x70) >> 4
             self.screen_display = body[9] & 0x07

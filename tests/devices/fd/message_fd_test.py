@@ -200,6 +200,19 @@ class TestMessageFDResponse:
         assert response.mode == 1
         assert response.screen_display == 6
 
+    def test_response_c8_model_20200012_unknown_display(self) -> None:
+        """Test model 20200012 preserves an unknown display status."""
+        body = bytearray(46)
+        body[0] = 0xC8
+        body[13] = 1
+        body[43] = 0x03
+        msg = MessageFDResponse(
+            _build_message(MessageType.query, body),
+            model=FD_20200012_MODEL,
+        )
+        response = cast("Any", msg)
+        assert response.screen_display == 0x03
+
     def test_response_a0_body(self) -> None:
         """Test response with a short A0 body without disinfect."""
         body = bytearray(29)

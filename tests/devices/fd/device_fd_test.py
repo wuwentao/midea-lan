@@ -11,7 +11,7 @@ from midealan.devices.fd.message import MessageQuery, MessageSet
 from midealan.message import MessageType
 
 
-def _build_device(subtype: int) -> MideaFDDevice:
+def _build_device(subtype: int, model: str = "test_model") -> MideaFDDevice:
     """Build a Midea FD device with the given subtype."""
     return MideaFDDevice(
         name="Test Device",
@@ -21,7 +21,7 @@ def _build_device(subtype: int) -> MideaFDDevice:
         token="AA",
         key="BB",
         device_protocol=ProtocolVersion.V1,
-        model="test_model",
+        model=model,
         subtype=subtype,
         customize="",
     )
@@ -97,6 +97,19 @@ class TestMideaFDDevice:
         body[3] = 39
         device.process_message(_build_message(MessageType.query, body))
         assert device.attributes[DeviceAttributes.fan_speed] == "low"
+
+    def test_fan_speeds_model_20200012(self) -> None:
+        """Test model 20200012 uses the new speed table for subtype zero."""
+        device = _build_device(0, model="20200012")
+        body = bytearray(46)
+        body[0] = 0xC8
+        body[3] = 39
+        body[13] = 1
+        body[43] = 0x01
+        device.process_message(_build_message(MessageType.query, body))
+        assert device.attributes[DeviceAttributes.fan_speed] == "low"
+        assert device.attributes[DeviceAttributes.mode] == "manual"
+        assert device.attributes[DeviceAttributes.screen_display] == "off"
 
     def test_screen_displays(self) -> None:
         """Test screen displays property."""
@@ -207,6 +220,17 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.fan_speed] is None
         assert self.device.attributes[DeviceAttributes.screen_display] is None
 
+    def test_process_message_zero_mode(self) -> None:
+        """Test a zero mode is ignored instead of decoding as sleep."""
+        response = SimpleNamespace(mode=0)
+        with patch(
+            "midealan.devices.fd.MessageFDResponse",
+            return_value=response,
+        ):
+            new_status = self.device.process_message(b"")
+        assert new_status == {DeviceAttributes.mode.value: None}
+        assert self.device.attributes[DeviceAttributes.mode] is None
+
     def test_process_message_unhandled_body_type(self) -> None:
         """Test process message with an unhandled body type updates nothing."""
         body = bytearray(38)
@@ -227,6 +251,7 @@ class TestMideaFDDevice:
         assert message.fan_speed == 40
         assert message.screen_display == 0
         assert message.disinfect is None
+        assert message.target_humidity == 60
 
     def test_make_message_set_populated(self) -> None:
         """Test make message set with populated attributes."""
@@ -239,6 +264,24 @@ class TestMideaFDDevice:
         assert message.fan_speed == 80
         assert message.screen_display == 7
         assert message.disinfect is True
+
+    def test_make_message_set_model_20200012(self) -> None:
+        """Test model 20200012 preserves Auto mode without a fan override."""
+        device = _build_device(0, model="20200012")
+        device._attributes[DeviceAttributes.mode] = "auto"
+        device._attributes[DeviceAttributes.fan_speed] = "auto"
+        device._attributes[DeviceAttributes.target_humidity] = 45
+        device._attributes[DeviceAttributes.screen_display] = "bright"
+        message = device.make_message_set()
+        assert message.mode == 2
+        assert message.fan_speed == 101
+        assert message.target_humidity == 45
+        assert message.screen_display is None
+        body = message._body
+        assert body[2] == 0
+        assert body[6] == 45
+        assert body[10] == 2
+        assert body[14] == 0
 
     def test_set_attribute_prompt_tone(self) -> None:
         """Test set attribute prompt tone updates without sending."""

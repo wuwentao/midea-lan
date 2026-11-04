@@ -7,7 +7,7 @@ from typing import Any, ClassVar, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
-from .message import MessageFDResponse, MessageQuery, MessageSet
+from .message import FD_20200012_MODEL, MessageFDResponse, MessageQuery, MessageSet
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,7 +83,7 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.disinfect: None,
             },
         )
-        if self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
+        if self.subtype > MAX_SUBTYPE_OLD_SPEEDS or self.model == FD_20200012_MODEL:
             self._speeds = MideaFDDevice._speeds_new
         else:
             self._speeds = MideaFDDevice._speeds_old
@@ -114,14 +114,14 @@ class MideaFDDevice(MideaDevice):
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea FD device process message."""
-        message = MessageFDResponse(msg)
+        message = MessageFDResponse(msg, model=self.model)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         for status in self._attributes:
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
                 if status == DeviceAttributes.mode:
-                    if value <= len(MideaFDDevice._modes):
+                    if 1 <= value <= len(MideaFDDevice._modes):
                         self._attributes[status] = MideaFDDevice._modes[value - 1]
                     else:
                         self._attributes[status] = None
@@ -144,11 +144,11 @@ class MideaFDDevice(MideaDevice):
 
     def make_message_set(self) -> MessageSet:
         """Midea FD device make message set."""
-        message = MessageSet(self._message_protocol_version)
+        message = MessageSet(self._message_protocol_version, model=self.model)
         message.power = self._attributes[DeviceAttributes.power]
         message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
-        message.screen_display = self._attributes[DeviceAttributes.screen_display]
         message.disinfect = self._attributes[DeviceAttributes.disinfect]
+        message.target_humidity = self._attributes[DeviceAttributes.target_humidity]
         if self._attributes[DeviceAttributes.mode] in MideaFDDevice._modes:
             message.mode = (
                 MideaFDDevice._modes.index(self._attributes[DeviceAttributes.mode]) + 1
@@ -165,7 +165,9 @@ class MideaFDDevice(MideaDevice):
             ]
         )
         message.screen_display = (
-            0
+            None
+            if self.model == FD_20200012_MODEL
+            else 0
             if self._attributes[DeviceAttributes.screen_display] is None
             else list(MideaFDDevice._screen_displays.keys())[
                 list(MideaFDDevice._screen_displays.values()).index(

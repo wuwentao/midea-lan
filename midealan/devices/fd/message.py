@@ -12,6 +12,15 @@ from midealan.message import (
 
 DISINFECT_A0_BODY_LENGTH = 29
 DISINFECT_C8_BODY_LENGTH = 36
+FD_20200012_DISPLAY_OFF = 0x01
+FD_20200012_DISPLAY_STATUS_INDEX = 43
+FD_20200012_DISPLAY_ON = 0x02
+FD_20200012_MANUAL_FAN_SPEEDS = {1, 39, 59, 80}
+FD_20200012_MODE_AUTO = 0x02
+FD_20200012_MODE_MANUAL = 0x01
+FD_20200012_MODEL = "20200012"
+FD_20200012_SCREEN_DISPLAY_OFF = 0x40
+FD_20200012_SCREEN_DISPLAY_ON = 0x80
 MAX_FAN_SPEED = 5
 MAX_MSG_SERIAL_NUM = 254
 
@@ -92,7 +101,7 @@ class MessageQuery(MessageFDBase):
 class MessageSet(MessageFDBase):
     """FD message set."""
 
-    def __init__(self, protocol_version: int) -> None:
+    def __init__(self, protocol_version: int, model: str = "") -> None:
         """Initialize FD message set."""
         super().__init__(
             protocol_version=protocol_version,
@@ -103,15 +112,58 @@ class MessageSet(MessageFDBase):
         self.fan_speed = 0
         self.target_humidity = 50
         self.prompt_tone = False
-        self.screen_display = 0x07
+        self.screen_display: int | None = 0x07
         self.mode = 0x01
         self.disinfect = None
+        self._model = model
 
     @property
     def _body(self) -> bytearray:
         power = 0x01 if self.power else 0x00
         prompt_tone = 0x40 if self.prompt_tone else 0x00
         disinfect = 0 if self.disinfect is None else (1 if self.disinfect else 2)
+        if self._model == FD_20200012_MODEL:
+            screen_display_code = self.screen_display
+            screen_display = (
+                {
+                    0: FD_20200012_SCREEN_DISPLAY_ON,
+                    6: FD_20200012_SCREEN_DISPLAY_OFF,
+                    7: FD_20200012_SCREEN_DISPLAY_OFF,
+                }.get(screen_display_code, 0)
+                if screen_display_code is not None
+                else 0
+            )
+            fan_speed = (
+                self.fan_speed
+                if self.mode == FD_20200012_MODE_MANUAL
+                and self.fan_speed in FD_20200012_MANUAL_FAN_SPEEDS
+                else 0
+            )
+            return bytearray(
+                [
+                    power | prompt_tone | 0x02,
+                    0x00,
+                    fan_speed,
+                    0x00,
+                    0x00,
+                    0x00,
+                    self.target_humidity,
+                    0x00,
+                    0x00,
+                    0x00,
+                    self.mode,
+                    0x00,
+                    0x00,
+                    0x00,
+                    screen_display,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                ],
+            )
         return bytearray(
             [
                 power | prompt_tone | 0x02,
@@ -122,7 +174,7 @@ class MessageSet(MessageFDBase):
                 0x00,
                 self.target_humidity,
                 0x00,
-                self.screen_display,
+                self.screen_display if self.screen_display is not None else 0,
                 self.mode,
                 0x00,
                 0x00,
@@ -142,7 +194,7 @@ class MessageSet(MessageFDBase):
 class FDC8MessageBody(MessageBody):
     """FD message C8 body."""
 
-    def __init__(self, body: bytearray) -> None:
+    def __init__(self, body: bytearray, model: str = "") -> None:
         """Initialize FD message C8 body."""
         super().__init__(body)
         self.power = (body[1] & 0x01) > 0
@@ -151,8 +203,20 @@ class FDC8MessageBody(MessageBody):
         self.current_humidity = body[16]
         self.current_temperature = (body[17] - 50) / 2
         self.tank = body[10]
-        self.mode = (body[8] & 0x70) >> 4
-        self.screen_display = body[9] & 0x07
+        if model == FD_20200012_MODEL and len(body) > FD_20200012_DISPLAY_STATUS_INDEX:
+            self.mode = body[13]
+            if self.mode == FD_20200012_MODE_AUTO:
+                self.fan_speed = 101
+            self.screen_display = {
+                FD_20200012_DISPLAY_ON: 0,
+                FD_20200012_DISPLAY_OFF: 7,
+            }.get(
+                body[FD_20200012_DISPLAY_STATUS_INDEX],
+                body[FD_20200012_DISPLAY_STATUS_INDEX],
+            )
+        else:
+            self.mode = (body[8] & 0x70) >> 4
+            self.screen_display = body[9] & 0x07
         if len(body) > DISINFECT_C8_BODY_LENGTH:
             disinfect = body[34] & 0x03
             if disinfect:
@@ -182,7 +246,7 @@ class FDA0MessageBody(MessageBody):
 class MessageFDResponse(MessageResponse):
     """FD message response."""
 
-    def __init__(self, message: bytes) -> None:
+    def __init__(self, message: bytes, model: str = "") -> None:
         """Initialize FD message response."""
         super().__init__(bytearray(message))
         if self.message_type in [
@@ -195,7 +259,7 @@ class MessageFDResponse(MessageResponse):
             elif self.body_type == ListTypes.A0:
                 self.set_body(FDA0MessageBody(super().body))
             elif self.body_type == ListTypes.C8:
-                self.set_body(FDC8MessageBody(super().body))
+                self.set_body(FDC8MessageBody(super().body, model))
         self.set_attr()
         fan_speed = getattr(self, "fan_speed", None)
         if fan_speed is not None and fan_speed < MAX_FAN_SPEED:

@@ -1,8 +1,9 @@
 """Midea lan E1 device."""
 
 import logging
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Unpack, cast
+from typing import TYPE_CHECKING, Any, Literal, Unpack, cast
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
@@ -28,6 +29,115 @@ from .message import (
 _LOGGER = logging.getLogger(__name__)
 
 MAX_DELAY_MINUTES = 24 * 60
+
+
+@dataclass(frozen=True)
+class E1ModelCapabilities:
+    """Model-specific E1 program and wash-option metadata."""
+
+    mode_codes: tuple[int, ...]
+    mode_names: tuple[tuple[int, str], ...] = ()
+    additional_options: tuple[int, ...] = ()
+    estimated_energy: tuple[tuple[int, float], ...] = ()
+    estimated_water: tuple[tuple[int, float], ...] = ()
+
+
+# Program lists and consumption figures come from the corresponding product
+# manuals or Midea app. Consumption values are fixed estimates per completed
+# program, not measurements reported by the appliance.
+_MODEL_CAPABILITIES = {
+    "7600024L": E1ModelCapabilities(
+        mode_codes=(0x0D, 0x04, 0x08, 0x06, 0x02, 0x0B, 0x0A),
+        estimated_energy=(
+            (0x0D, 0.765),
+            (0x04, 0.99),
+            (0x02, 1.28),
+            (0x06, 0.91),
+            (0x08, 0.02),
+            (0x0A, 1.524),
+            (0x0B, 1.625),
+        ),
+        estimated_water=(
+            (0x0D, 9.9),
+            (0x04, 10.4),
+            (0x02, 13.9),
+            (0x06, 10.4),
+            (0x08, 3.4),
+            (0x0A, 10.3),
+            (0x0B, 13.3),
+        ),
+    ),
+    # MDWPF1433CSS-W-EU manual programme table. Only ECO is measured to
+    # EN 60436; the remaining figures are indicative.
+    "76000228": E1ModelCapabilities(
+        mode_codes=(0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0D, 0x0F, 0x10),
+        mode_names=(
+            (0x03, "universal_wash"),
+            (0x06, "90min"),
+            (0x0D, "whisper_wash"),
+            (0x10, "self_clean"),
+        ),
+        additional_options=(0, 2),
+        estimated_energy=(
+            (0x02, 1.615),
+            (0x03, 1.23),
+            (0x04, 0.746),
+            (0x05, 0.995),
+            (0x06, 1.18),
+            (0x07, 0.82),
+            (0x08, 0.018),
+            (0x0D, 0.771),
+            (0x0F, 1.815),
+            (0x10, 1.405),
+        ),
+        estimated_water=(
+            (0x02, 18.6),
+            (0x03, 14.8),
+            (0x04, 10.2),
+            (0x05, 14.8),
+            (0x06, 11.9),
+            (0x07, 11.3),
+            (0x08, 4.1),
+            (0x0D, 10.2),
+            (0x0F, 14.9),
+            (0x10, 15.1),
+        ),
+    ),
+    "760001EC": E1ModelCapabilities(
+        mode_codes=(0x04, 0x01, 0x02, 0x06, 0x07, 0x0D, 0x05, 0x0F, 0x10, 0x15),
+        mode_names=(
+            (0x06, "90min"),
+            (0x0D, "whisper_wash"),
+            (0x10, "self_clean"),
+        ),
+        additional_options=(0, 1, 2, 3),
+        estimated_energy=(
+            (0x04, 0.660),
+            (0x01, 1.51),
+            (0x02, 1.352),
+            (0x06, 1.120),
+            (0x07, 0.810),
+            (0x0D, 1.202),
+            (0x05, 0.910),
+            (0x0F, 1.281),
+            (0x10, 1.106),
+            (0x15, 0.030),
+        ),
+        # No measured water figure is available for 0x15. Omitting it avoids
+        # treating an unknown estimate as zero consumption.
+        estimated_water=(
+            (0x04, 8.0),
+            (0x01, 13.1),
+            (0x02, 13.5),
+            (0x06, 9.6),
+            (0x07, 9.9),
+            (0x0D, 11.4),
+            (0x05, 11.2),
+            (0x0F, 12.6),
+            (0x10, 9.7),
+        ),
+    ),
+}
 
 
 class DeviceAttributes(StrEnum):
@@ -244,6 +354,46 @@ class MideaE1Device(MideaDevice):
         """
         return self._modes.copy()
 
+    @property
+    def supported_modes(self) -> dict[int, str]:
+        """Return work modes supported by this model in display order."""
+        capabilities = _MODEL_CAPABILITIES.get(self.model)
+        if capabilities is None:
+            return {code: name for code, name in self._modes.items() if code != 0}
+        mode_names = dict(capabilities.mode_names)
+        return {
+            code: mode_names.get(code, self._modes[code])
+            for code in capabilities.mode_codes
+            if code in self._modes
+        }
+
+    def get_attribute_options(self, attr: str) -> list[str]:
+        """Return model-specific options for a configurable E1 attribute."""
+        if attr in (DeviceAttributes.mode, DeviceAttributes.program):
+            return list(self.supported_modes.values())
+        if attr == DeviceAttributes.additional_setting:
+            capabilities = _MODEL_CAPABILITIES.get(self.model)
+            return (
+                [str(option) for option in capabilities.additional_options]
+                if capabilities
+                else []
+            )
+        return []
+
+    def get_estimated_consumption(
+        self,
+        kind: Literal["energy", "water"],
+    ) -> dict[int, float]:
+        """Return fixed per-program consumption estimates for this model."""
+        capabilities = _MODEL_CAPABILITIES.get(self.model)
+        if capabilities is None:
+            return {}
+        if kind == "energy":
+            return dict(capabilities.estimated_energy)
+        if kind == "water":
+            return dict(capabilities.estimated_water)
+        raise ValueError(kind)
+
     def build_query(self) -> list[MessageQuery]:
         """Midea E1 device build query."""
         return [MessageQuery(self._message_protocol_version)]
@@ -257,16 +407,22 @@ class MideaE1Device(MideaDevice):
         """Return the code of the current work mode, 0 if unknown."""
         mode_name = self.get_attribute(DeviceAttributes.mode)
         return next(
-            (code for code, name in self._modes.items() if name == mode_name),
-            0,
+            (code for code, name in self.supported_modes.items() if name == mode_name),
+            next(
+                (code for code, name in self._modes.items() if name == mode_name),
+                0,
+            ),
         )
 
     def _resolve_mode(self, mode: object) -> int:
         """Return the mode code for a code or name, validated."""
         if isinstance(mode, str):
             mode = next(
-                (code for code, name in self._modes.items() if name == mode),
-                -1,
+                (code for code, name in self.supported_modes.items() if name == mode),
+                next(
+                    (code for code, name in self._modes.items() if name == mode),
+                    -1,
+                ),
             )
         if isinstance(mode, bool) or not isinstance(mode, int):
             msg = f"[e1] Unsupported work mode: {mode}"
@@ -463,7 +619,10 @@ class MideaE1Device(MideaDevice):
                 elif status == DeviceAttributes.progress:
                     self._attributes[status] = self._progress.get(value)
                 elif status == DeviceAttributes.mode:
-                    self._attributes[status] = self._modes.get(value)
+                    self._attributes[status] = self.supported_modes.get(
+                        value,
+                        self._modes.get(value),
+                    )
                 else:
                     self._attributes[status] = getattr(message, str(status))
                 new_status[str(status)] = self._attributes[status]
@@ -556,7 +715,10 @@ class MideaE1Device(MideaDevice):
             if mode == 0:
                 msg = "[e1] No work mode selected"
                 raise ValueWrongType(msg)
-            self._attributes[DeviceAttributes.program] = self._modes[mode]
+            self._attributes[DeviceAttributes.program] = self.supported_modes.get(
+                mode,
+                self._modes[mode],
+            )
             return
         if attr in _SETTING_TO_WASH_PARAM:
             attr = _SETTING_TO_WASH_PARAM[DeviceAttributes(attr)]

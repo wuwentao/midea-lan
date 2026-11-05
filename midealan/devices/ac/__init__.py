@@ -20,8 +20,13 @@ from midealan.message import (
 from .message import (
     _B1_MAX_CAPABILITY_BATCHES,
     _B1_MAX_PROPERTIES_PER_BATCH,
+    AIR_RECORD_POWER_OFF,
+    AIR_RECORD_POWER_ON,
+    AIR_RECORD_SPEED_INDEX,
+    AIR_RECORD_SPEEDS,
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
+    CapabilityTag,
     CapabilityValue,
     GroupOneQuery,
     GroupSevenQuery,
@@ -131,6 +136,9 @@ class DeviceAttributes(StrEnum):
     wind_straight = "wind_straight"
     wind_avoid = "wind_avoid"
     indoor_humidity = "indoor_humidity"
+    humidify = "humidify"
+    purify = "purify"
+    auxiliary_fan_mode = "auxiliary_fan_mode"
     breezeless = "breezeless"
     fresh_air_power = "fresh_air_power"
     fresh_air_fan_speed = "fresh_air_fan_speed"
@@ -278,6 +286,11 @@ class MideaACDevice(MideaDevice):
         100: "full",
     }
 
+    # Shared blower speed for the micro-climate air functions (purify /
+    # fresh_air / humidify). One physical blower, so every active air function
+    # reads back the same gear. Mirrors AIR_RECORD_SPEEDS in message.py.
+    _auxiliary_fan_speeds: ClassVar[dict[int, str]] = dict(AIR_RECORD_SPEEDS)
+
     _bb_fresh_air_fan_speeds: ClassVar[dict[int, str]] = {
         0: "off",
         40: "low",
@@ -380,6 +393,14 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.fresh_air_mode: None,
                 DeviceAttributes.fresh_air_1: None,
                 DeviceAttributes.fresh_air_2: None,
+                # Micro-climate air functions. Declared unconditionally and
+                # left None until the device reports its records (same pattern
+                # as fresh_air_1/2); the HA integration hides them via its
+                # required_attribute until a value arrives. Not gated on any
+                # (model, subtype).
+                DeviceAttributes.purify: None,
+                DeviceAttributes.humidify: None,
+                DeviceAttributes.auxiliary_fan_mode: None,
                 DeviceAttributes.wind_lr_angle: None,
                 DeviceAttributes.wind_ud_angle: None,
                 DeviceAttributes.rate_select: None,
@@ -411,6 +432,12 @@ class MideaACDevice(MideaDevice):
             },
         )
         self._model_key = (str(self.model), int(self.subtype))
+        # Raw shared-blower air records (purify/fresh_air/humidify) keyed by
+        # tag, as last reported by the device. A set echoes the stored record
+        # and changes only the power/speed bytes, so model sub-fields (CO2/PM
+        # thresholds, modes) are never cleared. No (model, subtype) gating:
+        # the records are populated purely from what the device reports.
+        self._air_records: dict[int, bytearray] = {}
         self._model_capabilities = AC_MODEL_CAPABILITIES.get(
             self._model_key,
             DEFAULT_AC_MODEL_CAPABILITIES,
@@ -472,6 +499,26 @@ class MideaACDevice(MideaDevice):
         if self._model_capabilities.has_bb_fresh_air:
             return list(MideaACDevice._bb_fresh_air_fan_speeds.values())
         return list(MideaACDevice._fresh_air_fan_speeds.values())
+
+    @property
+    def auxiliary_fan_modes(self) -> list[str]:
+        """Shared fresh-air/purify/humidify blower speeds.
+
+        The purify (0x0232), fresh_air (0x0233) and humidify (0x0235) air
+        records share one blower-speed byte. The options are offered whenever
+        the device advertises any of those capabilities (capability-driven, no
+        model gating); otherwise the control stays hidden (empty list).
+        """
+        if any(
+            self.capabilities.get(tag.name)
+            for tag in (
+                CapabilityTag.purify,
+                CapabilityTag.fresh_air_1,
+                CapabilityTag.humidify,
+            )
+        ):
+            return list(MideaACDevice._auxiliary_fan_speeds.values())
+        return []
 
     @property
     def fresh_air_exhaust_fan_speeds(self) -> list[str]:
@@ -947,6 +994,35 @@ class MideaACDevice(MideaDevice):
         # merged map before the setpoint limits are resolved from it.
         new_status.update(self._update_capabilities(message))
         new_status.update(self._refresh_temperature_limits())
+        new_status.update(self._process_air_records(message))
+        return new_status
+
+    def _process_air_records(self, message: MessageACResponse) -> dict[str, Any]:
+        """Cache raw air records and derive the shared auxiliary fan mode.
+
+        The purify/fresh_air/humidify records share one blower-speed byte. A
+        set echoes the cached raw record (preserving model sub-fields such as
+        CO2/PM thresholds) and only rewrites power/speed, so the full records
+        are stored here. ``auxiliary_fan_mode`` is the shared speed translated
+        to a name; it reads "off" only when no air function is active.
+        """
+        new_status: dict[str, Any] = {}
+        records = getattr(message, "air_records", None)
+        if not records:
+            return new_status
+        # A body carrying air records always also carries the shared blower
+        # speed (both come from the same decode), so no None guard is needed.
+        self._air_records.update(records)
+        any_air_on = any(
+            record[0] == AIR_RECORD_POWER_ON for record in self._air_records.values()
+        )
+        mode = (
+            MideaACDevice._auxiliary_fan_speeds.get(message.auxiliary_fan_speed, "off")
+            if any_air_on
+            else "off"
+        )
+        self._attributes[DeviceAttributes.auxiliary_fan_mode] = mode
+        new_status[DeviceAttributes.auxiliary_fan_mode.value] = mode
         return new_status
 
     @staticmethod
@@ -1717,6 +1793,51 @@ class MideaACDevice(MideaDevice):
             message.independent_ptc = False
         return True
 
+    def _make_air_record_set(
+        self,
+        attr: str,
+        value: bool | float | str,
+    ) -> PropertiesSet | None:
+        """Build a shared-blower air set that echoes the reported records.
+
+        purify/humidify toggle one record's power byte; auxiliary_fan_mode
+        rewrites the shared speed byte of every active record. Each outgoing
+        record is a copy of the last device-reported raw record, so model
+        sub-fields (CO2/PM thresholds, modes) are preserved rather than
+        cleared. Returns None when the device has not reported the record the
+        command needs, so no blind frame is sent.
+        """
+        tag_by_attr = {
+            DeviceAttributes.purify: CapabilityTag.purify,
+            DeviceAttributes.humidify: CapabilityTag.humidify,
+        }
+        records: dict[int, bytearray] = {}
+        if attr == DeviceAttributes.auxiliary_fan_mode:
+            speed = self.get_dict_key_by_value("_auxiliary_fan_speeds", str(value))
+            if speed is None:
+                return None
+            # Every cached record was validated on decode (len >= 2, known
+            # power/speed bytes), so only the power state is tested here.
+            for tag, record in self._air_records.items():
+                if record[0] == AIR_RECORD_POWER_ON:
+                    echo = bytearray(record)
+                    echo[AIR_RECORD_SPEED_INDEX] = speed
+                    records[tag] = echo
+        else:
+            tag = tag_by_attr[DeviceAttributes(attr)]
+            reported = self._air_records.get(tag)
+            if reported is None:
+                return None
+            echo = bytearray(reported)
+            echo[0] = AIR_RECORD_POWER_ON if value else AIR_RECORD_POWER_OFF
+            records[tag] = echo
+        if not records:
+            return None
+        message = PropertiesSet(self._message_protocol_version)
+        message.air_records = records
+        message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
+        return message
+
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
         self.reject_toshiba_write()
@@ -1804,6 +1925,12 @@ class MideaACDevice(MideaDevice):
                 message = self.make_newprotocol_message_set(attr=attr, value=value)
                 if attr == DeviceAttributes.self_clean:
                     optimistic_self_clean = bool(value)
+            elif attr in {
+                DeviceAttributes.purify,
+                DeviceAttributes.humidify,
+                DeviceAttributes.auxiliary_fan_mode,
+            }:
+                message = self._make_air_record_set(attr, value)
             elif attr in TIMER_ATTRIBUTES:
                 self.set_countdown_timer(attr, value)
             elif attr == DeviceAttributes.power_saving and self._used_subprotocol:

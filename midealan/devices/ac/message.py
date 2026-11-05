@@ -86,6 +86,17 @@ ECO_MODE_MIN_SUBPROTOCOL_LENGTH = 27
 FRESH_AIR_LENGTH = 2
 FROST_PROTECT_MIN_LENGTH = 24
 INDIRECT_WIND_VALUE = 0x02
+# Micro-climate air records (purify 0x0232, fresh_air_1 0x0233, humidify
+# 0x0235). Each record is power + shared blower speed followed by model
+# sub-fields (mode/auto timers/CO2/PM). Power byte: 1 = off, 2 = on. Speed
+# byte: 40/60/80/100 maps to low/medium/high/full and is shared across all
+# three functions (one physical blower). The remaining bytes are echoed back
+# unchanged on a set so sensor thresholds (CO2/PM) are never cleared.
+AIR_RECORD_POWER_OFF = 1
+AIR_RECORD_POWER_ON = 2
+AIR_RECORD_MIN_LENGTH = 2
+AIR_RECORD_SPEED_INDEX = 1
+AIR_RECORD_SPEEDS = {40: "low", 60: "medium", 80: "high", 100: "full"}
 MAX_MSG_SERIAL_NUM = 254
 # Outdoor Silent uses a model-specific activation value and 0x00 to deactivate:
 # - 0x02: https://github.com/wuwentao/midea_ac_lan/issues/1128
@@ -447,9 +458,15 @@ class CapabilityTag(IntEnum):
     ptc_lock = 0x0229
     offline_operating_time = 0x022B
     sound = 0x022C  # b5_sound / buzzer_all
-    twins_machine = 0x0232
+    # Inner-purifier air record. Historically named ``twins_machine`` and left
+    # unused; the 0x0232 record is the COLMO-class "purify" micro-climate
+    # function (lua KEY_INNER_PURIFIER). Renamed so the one tag drives both the
+    # capability flag and the live purify record.
+    purify = 0x0232
     fresh_air_1 = 0x0233
     body_check = 0x0234
+    # Humidification air record (lua KEY_HUMIDIFICATION).
+    humidify = 0x0235
     fresh_air_parm = 0x0250
     filter_level = 0x0409
 
@@ -835,6 +852,16 @@ PROPERTIES_TAGS: frozenset[int] = COMMON_TAGS | frozenset(
         CapabilityTag.fresh_air_1,  # 0x0233
         CapabilityTag.degerming,  # 0x005A
         CapabilityTag.light_sensitive,  # 0x0208
+        # Micro-climate air records (purify 0x0232, humidify 0x0235). These sit
+        # beside fresh_air_1 (0x0233): all three are new-protocol B1 records
+        # that carry a live power/speed payload, so they are collected into the
+        # capability-driven B1 query only when the device advertises them in
+        # its B5 capabilities. Pending confirmation from a real device's init
+        # debug log that B5 advertises these flags and the B1 query returns the
+        # records; if a model advertises but rejects the B1 query, move them
+        # back to CAPABILITY_ONLY_TAGS and add a dedicated isolated query.
+        CapabilityTag.purify,  # 0x0232
+        CapabilityTag.humidify,  # 0x0235
     },
 )
 
@@ -849,7 +876,6 @@ CAPABILITY_ONLY_TAGS: frozenset[int] = frozenset(
         CapabilityTag.parent_control,  # 0x0051
         CapabilityTag.prevent_straight_wind_lr,  # 0x0058
         CapabilityTag.temperature,  # 0x0225
-        CapabilityTag.twins_machine,  # 0x0232
         CapabilityTag.body_check,  # 0x0234
         CapabilityTag.wind_speed,  # 0x0210
         CapabilityTag.eco,  # 0x0212
@@ -1401,6 +1427,11 @@ class PropertiesSet(MessageACBase):
         # Countdown timers in minutes (0 = disarm).
         self.power_on_timer: int | None = None
         self.power_off_timer: int | None = None
+        # Raw micro-climate air records (purify / fresh_air / humidify) to echo
+        # back, keyed by tag. The caller edits only the power/speed bytes of the
+        # device-reported record and leaves every model sub-field (CO2/PM
+        # thresholds, modes) untouched, so a set never clears them.
+        self.air_records: dict[int, bytearray] | None = None
 
     @property
     def _body(self) -> bytearray:  # noqa: C901
@@ -1590,6 +1621,18 @@ class PropertiesSet(MessageACBase):
                     value=encode_properties_timer(self.power_off_timer),
                 ),
             )
+        if self.air_records:
+            # Each record is a device-reported raw record the caller already
+            # validated (power + shared-speed byte + model sub-fields), echoed
+            # verbatim except for the one byte being changed.
+            for tag, record in self.air_records.items():
+                pack_count += 1
+                payload.extend(
+                    NewProtocolMessageBody.pack(
+                        param=tag,
+                        value=bytearray(record),
+                    ),
+                )
         payload[0] = pack_count
         return payload
 
@@ -1767,6 +1810,46 @@ class PropertiesBody(NewProtocolMessageBody):
             # 0x7e payload byte).
             self.light_sensitive_active = params[CapabilityTag.light_sensitive][0] > 0
 
+    def _parse_air_records(self, params: dict[int, bytearray]) -> None:
+        """Decode the shared-blower air records (purify/fresh_air/humidify).
+
+        The three functions (purify 0x0232, fresh_air 0x0233, humidify 0x0235)
+        each report a power byte plus one blower speed byte shared across all
+        of them, followed by model-specific sensor/mode bytes. Only live
+        B0/B1/B5-notify bodies carry real state; a B5 *capability-query*
+        response (body_type B5 with message_type query, routed to
+        CapabilityBody) never reaches here, so no body-type filter is needed.
+
+        Each valid record (power in {1, 2}, speed a known gear) is kept raw in
+        ``air_records`` so a later set can echo every byte it did not change.
+        The shared speed is published once as ``auxiliary_fan_speed``.
+        """
+        # fresh_air (0x0233) keeps flowing through the existing fresh_air_1
+        # block above (fresh_air_power / fresh_air_fan_speed); here it only
+        # contributes its raw record (for echo) and the shared speed. purify
+        # and humidify have no legacy path, so their booleans are set here.
+        air_tags = (
+            (CapabilityTag.purify, "purify"),
+            (CapabilityTag.fresh_air_1, None),
+            (CapabilityTag.humidify, "humidify"),
+        )
+        speed: int | None = None
+        for tag, name in air_tags:
+            record = params.get(tag)
+            if (
+                record is None
+                or len(record) < AIR_RECORD_MIN_LENGTH
+                or record[0] not in {AIR_RECORD_POWER_OFF, AIR_RECORD_POWER_ON}
+                or record[AIR_RECORD_SPEED_INDEX] not in AIR_RECORD_SPEEDS
+            ):
+                continue
+            self.air_records[tag] = bytearray(record)
+            if name is not None:
+                setattr(self, name, record[0] == AIR_RECORD_POWER_ON)
+            speed = record[AIR_RECORD_SPEED_INDEX]
+        if speed is not None:
+            self.auxiliary_fan_speed = speed
+
     def __init__(
         self,
         body: bytearray,
@@ -1774,6 +1857,8 @@ class PropertiesBody(NewProtocolMessageBody):
     ) -> None:
         """Initialize AC BX message body."""
         super().__init__(body)
+        # Raw shared-blower air records, keyed by tag, for echo-on-set.
+        self.air_records: dict[int, bytearray] = {}
 
         params = self.parse()
         if CapabilityTag.indirect_wind in params:
@@ -1798,6 +1883,7 @@ class PropertiesBody(NewProtocolMessageBody):
             data = params[CapabilityTag.fresh_air_2]
             self.fresh_air_power = data[0] > 0
             self.fresh_air_fan_speed = data[1]
+        self._parse_air_records(params)
         if CapabilityTag.wind_lr_angle in params:
             self.wind_lr_angle = params[CapabilityTag.wind_lr_angle][0]
         if CapabilityTag.wind_ud_angle in params:
@@ -2593,6 +2679,10 @@ class MessageACResponse(MessageResponse):
     power_on_timer: int
     power_off_timer: int
     self_clean_active: bool
+    purify: bool
+    humidify: bool
+    auxiliary_fan_speed: int
+    air_records: dict[int, bytearray]
 
     def __init__(
         self,

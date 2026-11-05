@@ -451,14 +451,27 @@ class MideaE1Device(MideaDevice):
         )
 
     def _resolve_mode(self, mode: object) -> int:
-        """Return the mode code for a code or name, validated."""
+        """Return a code using the legacy public ``modes`` name semantics."""
+        if isinstance(mode, str):
+            mode = next(
+                (code for code, name in self._modes.items() if name == mode),
+                next(
+                    (code for code, name in self._active_modes.items() if name == mode),
+                    -1,
+                ),
+            )
+        if isinstance(mode, bool) or not isinstance(mode, int):
+            msg = f"[e1] Unsupported work mode: {mode}"
+            raise ValueWrongType(msg)
+        self._check_mode(mode)
+        return mode
+
+    def _resolve_profile_mode(self, mode: object) -> int:
+        """Return a code using this model's active protocol profile."""
         if isinstance(mode, str):
             mode = next(
                 (code for code, name in self._active_modes.items() if name == mode),
-                next(
-                    (code for code, name in self._modes.items() if name == mode),
-                    -1,
-                ),
+                -1,
             )
         if isinstance(mode, bool) or not isinstance(mode, int):
             msg = f"[e1] Unsupported work mode: {mode}"
@@ -678,7 +691,7 @@ class MideaE1Device(MideaDevice):
         """Return the program to start: the selected one, else the reported mode."""
         program = self.get_attribute(DeviceAttributes.program)
         if isinstance(program, str):
-            return self._resolve_mode(program)
+            return self._resolve_profile_mode(program)
         return self._current_mode()
 
     def _start_selected(self) -> None:
@@ -736,7 +749,7 @@ class MideaE1Device(MideaDevice):
         """
         if attr == DeviceAttributes.mode:
             self.set_work_mode(
-                self._resolve_mode(value),
+                self._resolve_profile_mode(value),
                 door_auto_open=self._stored_door_auto_open(),
             )
             return
@@ -744,7 +757,7 @@ class MideaE1Device(MideaDevice):
             self._set_status(str(value))
             return
         if attr == DeviceAttributes.program:
-            mode = self._resolve_mode(value)
+            mode = self._resolve_profile_mode(value)
             if mode == 0:
                 msg = "[e1] No work mode selected"
                 raise ValueWrongType(msg)

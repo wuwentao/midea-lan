@@ -182,6 +182,39 @@ class TestMideaE1Device:
         assert send.call_args.args[0].mode == mode_code
 
     @pytest.mark.parametrize(
+        ("mode_code", "mode_name"),
+        [
+            (0x06, "hour_wash"),
+            (0x09, "90min"),
+            (0x0A, "self_clean"),
+            (0x0B, "fruit_wash"),
+        ],
+    )
+    def test_european_model_preserves_legacy_modes_string_api(
+        self,
+        mode_code: int,
+        mode_name: str,
+    ) -> None:
+        """Keep the public legacy modes-name-to-code round trip compatible."""
+        self.device._model = "760001EC"
+        assert self.device.modes[mode_code] == mode_name
+        with patch.object(self.device, "build_send") as send:
+            self.device.set_work_mode(mode_name)
+        assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize("model", ["76000228", "760001EC"])
+    def test_supported_modes_use_profile_aware_attribute_setter(
+        self,
+        model: str,
+    ) -> None:
+        """Send every advertised state through the model-aware public API."""
+        self.device._model = model
+        for mode_code, mode_name in self.device.supported_modes.items():
+            with patch.object(self.device, "build_send") as send:
+                self.device.set_attribute(DeviceAttributes.mode, mode_name)
+            assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize(
         ("model", "options"),
         [
             ("76000228", ["0", "2"]),
@@ -322,6 +355,12 @@ class TestMideaE1Device:
         """Test setting an unknown work mode."""
         with pytest.raises(ValueWrongType, match="Unsupported work mode"):
             self.device.set_work_mode(0x11)
+
+    @pytest.mark.parametrize("mode", [True, 1.5])
+    def test_set_work_mode_rejects_wrong_type(self, mode: object) -> None:
+        """Test the legacy mode resolver rejects non-integer values."""
+        with pytest.raises(ValueWrongType, match="Unsupported work mode"):
+            self.device.set_work_mode(cast("Any", mode))
 
     def test_start_work(self) -> None:
         """Test starting the currently selected work mode."""

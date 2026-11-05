@@ -3164,6 +3164,20 @@ class TestMessageACResponse:
         assert hasattr(response, "bb_fresh_air_exhaust_speed")
         assert response.bb_fresh_air_exhaust_speed == 100
 
+    def test_captured_bb_0x11_humidify_response(self) -> None:
+        """Test a captured X11 response with humidify on and 50% target."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+
+        response = MessageACResponse(frame)
+
+        assert hasattr(response, "humidify")
+        assert response.humidify is True
+        assert hasattr(response, "target_humidity")
+        assert response.target_humidity == 50
+
     def test_message_query_bb_0x10(self) -> None:
         """Test Message parse query BB 0x20."""
         self.header[9] = 0x03

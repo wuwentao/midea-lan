@@ -888,6 +888,14 @@ def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | No
     return magnitude / C3_X00_TEMPERATURE_SCALE
 
 
+def _parse_c3_x00_setpoint(body: bytearray, offset: int) -> float | None:
+    """Decode an unsigned C3 X00 setpoint, mapping invalid sentinels to None."""
+    raw = _read_u16_be(body, offset)
+    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
+        return None
+    return raw / C3_X00_TEMPERATURE_SCALE
+
+
 def _c3_x00_inner_command(body: bytearray) -> bytes:
     """Return the two-byte inner command carried by a C3 X00 message."""
     return bytes(
@@ -1451,9 +1459,9 @@ class C3X0020B0TelemetryBody(MessageBody):
                 C3_20B0_TEMP_TF_OFFSET,
             )
         if len(body) >= C3_20B0_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
-            self.idu_t1s1 = (
-                _read_u16_be(body, C3_20B0_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
-            )
+            idu_t1s1 = _parse_c3_x00_setpoint(body, C3_20B0_IDU_T1S1_OFFSET)
+            if idu_t1s1 is not None:
+                self.idu_t1s1 = idu_t1s1
         if len(body) >= C3_20B0_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
             self.water_flower = (
                 _read_u16_be(body, C3_20B0_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE
@@ -1548,9 +1556,9 @@ class C3X002F10TelemetryBody(MessageBody):
                 C3_2F10_TEMP_TF_OFFSET,
             )
         if len(body) >= C3_2F10_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
-            self.idu_t1s1 = (
-                _read_u16_be(body, C3_2F10_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
-            )
+            idu_t1s1 = _parse_c3_x00_setpoint(body, C3_2F10_IDU_T1S1_OFFSET)
+            if idu_t1s1 is not None:
+                self.idu_t1s1 = idu_t1s1
         if len(body) >= C3_2F10_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
             self.water_flower = (
                 _read_u16_be(body, C3_2F10_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE

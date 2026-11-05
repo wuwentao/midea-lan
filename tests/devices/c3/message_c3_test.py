@@ -698,6 +698,31 @@ class TestMessageC3Response:
         else:
             assert not hasattr(response, attribute)
 
+    @pytest.mark.parametrize(
+        ("command", "offset"),
+        [("20b0", 121), ("2f10", 48)],
+    )
+    @pytest.mark.parametrize("raw", ["7fff", "ffff"])
+    def test_message_x00_invalid_idu_t1s1_is_not_decoded(
+        self,
+        command: str,
+        offset: int,
+        raw: str,
+    ) -> None:
+        """Test the invalid setpoint sentinel does not overwrite the 2010 echo."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(offset + 2)
+        body[1:3] = bytes.fromhex(command)
+        body[offset:] = bytes.fromhex(raw)
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert response.temp_tw_out == 0.0
+        assert not hasattr(response, "idu_t1s1")
+
     @pytest.mark.parametrize("body_hex", ["00", "0020", "002f"])
     def test_message_x00_incomplete_command_is_not_decoded(
         self,

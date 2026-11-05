@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from Crypto.Random import get_random_bytes
 
 from midealan.cloud import DEFAULT_KEYS
 from midealan.const import DeviceType, ProtocolVersion
@@ -21,7 +22,7 @@ from midealan.device import (
     MideaDevice,
     NoSupportedProtocol,
 )
-from midealan.exceptions import SocketException
+from midealan.exceptions import MessageWrongFormat, SocketException
 from midealan.message import (
     MessageQueryAppliance,
     MessageRequest,
@@ -30,6 +31,13 @@ from midealan.message import (
     ToshibaMessageRequest,
     encode_toshiba_frame,
 )
+from midealan.tls import (
+    MSG_TYPE_DATA_TRANSMIT,
+    MSG_TYPE_HEARTBEAT,
+    CertBundle,
+    MSDatagram,
+)
+from tests.tls_test import _DEVICE_ID, _make_bundle, _SimulatedDevice
 
 
 class _DictDevice(MideaDevice):
@@ -48,6 +56,16 @@ class _ToshibaTestDevice(MideaDevice):
         if frame.body != b"\x00":
             return None
         return {"body": frame.body}
+
+
+class _TLSTestDevice(MideaDevice):
+    """Concrete device exposing a trivial process_message for TLS tests."""
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Return an empty status for a single NUL byte, else echo the body."""
+        if msg == b"\x00":
+            return {}
+        return {"body": msg.hex()}
 
 
 def test_get_dict_key_by_value() -> None:
@@ -158,7 +176,10 @@ class TestMideaDevice:
         )
 
     @staticmethod
-    def _toshiba_device(**identity: str) -> _ToshibaTestDevice:
+    def _toshiba_device(
+        manufacturer_code: str | None = None,
+        cloud_name: str | None = None,
+    ) -> _ToshibaTestDevice:
         """Build a shared Toshiba test device without opening a socket."""
         return _ToshibaTestDevice(
             name="Test Toshiba Device",
@@ -172,7 +193,8 @@ class TestMideaDevice:
             model="test_model",
             subtype=1,
             attributes={},
-            **identity,
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
         )
 
     @pytest.mark.parametrize(
@@ -2291,3 +2313,307 @@ class TestMideaDevice:
         # Empty or None cloud names normalize to None.
         assert self._make_device(None, cloud_name="").cloud_name is None
         assert self._make_device(None, cloud_name=None).cloud_name is None
+
+
+class _FakeTLSSocket:
+    """A socket stand-in that answers the 0x75 handshake from a device model.
+
+    The first ``send`` (the hello) yields the module cert reply and the second
+    (the finished frame) yields the CCM-protected finish reply, so a real
+    :meth:`MideaDevice.authenticate_tls` runs end to end over it.
+    """
+
+    def __init__(self, device: _SimulatedDevice) -> None:
+        """Wire the fake socket to a simulated udp_version>=4 device."""
+        self._device = device
+        self._buf = bytearray()
+        self._send_count = 0
+        self.sent: list[bytes] = []
+
+    def connect(self, _addr: object) -> None:
+        """Ignore the address and pretend the TCP connect succeeded."""
+
+    def settimeout(self, _timeout: object) -> None:
+        """Ignore the timeout request (no-op for the fake)."""
+
+    def send(self, data: bytes) -> int:
+        """Record the frame and queue the matching handshake reply."""
+        self.sent.append(bytes(data))
+        self._send_count += 1
+        if self._send_count == 1:
+            self._buf += self._device.respond_hello(bytes(data))
+        elif self._send_count == 2:
+            self._buf += self._device.respond_finish()
+        return len(data)
+
+    def recv(self, size: int) -> bytes:
+        """Return up to ``size`` queued reply bytes."""
+        chunk = bytes(self._buf[:size])
+        self._buf = self._buf[size:]
+        return chunk
+
+    def shutdown(self, _how: object) -> None:
+        """Ignore the shutdown request (no-op for the fake)."""
+
+    def close(self) -> None:
+        """Ignore the close request (no-op for the fake)."""
+
+
+class TestMideaDeviceTLS:
+    """udp_version>=4 "TLS" transport: handshake, framing and dispatch."""
+
+    @staticmethod
+    def _tls_device(bundle: CertBundle) -> _TLSTestDevice:
+        """Build a TLS-enabled device carrying a provisioned cert bundle."""
+        return _TLSTestDevice(
+            name="TLS Device",
+            device_id=_DEVICE_ID,
+            device_type=DeviceType.AC,
+            ip_address="192.168.1.100",
+            port=6444,
+            token=DEFAULT_KEYS[99]["token"],
+            key=DEFAULT_KEYS[99]["key"],
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=1,
+            attributes={},
+            mac="1234567890ab",
+            cert_bundle=bundle,
+        )
+
+    def _install_codec(
+        self,
+        device: _TLSTestDevice,
+        bundle: CertBundle,
+    ) -> MSDatagram:
+        """Install a session codec on ``device`` and return a matching peer."""
+        session_key = get_random_bytes(16)
+        device._tls_codec = MSDatagram(
+            _DEVICE_ID,
+            ap_private_key=bundle.ap_private_key,
+            session_key=session_key,
+        )
+        return MSDatagram(
+            _DEVICE_ID,
+            ap_private_key=bundle.ap_private_key,
+            session_key=session_key,
+        )
+
+    def test_init_enables_tls_with_bundle(self) -> None:
+        """A supplied cert bundle flips the device into TLS mode."""
+        device = self._tls_device(_make_bundle())
+        assert device._tls_enabled is True
+        assert device._tls_codec is None
+
+    def test_authenticate_tls_success(self) -> None:
+        """A full 0x75 handshake installs a codec with the shared session key."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        sock = _FakeTLSSocket(sim)
+        device = self._tls_device(bundle)
+        device._socket = sock  # type: ignore[assignment]
+
+        device.authenticate_tls()
+
+        assert device._tls_codec is not None
+        assert device._tls_codec._session_key == sim._session_key
+        # Two frames were sent: the hello and the finished frame.
+        assert len(sock.sent) == 2
+
+    def test_authenticate_tls_no_socket(self) -> None:
+        """Without a socket the handshake refuses to start."""
+        device = self._tls_device(_make_bundle())
+        device._socket = None
+        with pytest.raises(SocketException):
+            device.authenticate_tls()
+
+    def test_authenticate_tls_no_bundle(self) -> None:
+        """A missing cert bundle aborts even when a socket is present."""
+        device = self._tls_device(_make_bundle())
+        device._socket = MagicMock()
+        device._cert_bundle = None
+        with pytest.raises(SocketException):
+            device.authenticate_tls()
+
+    def test_authenticate_tls_handshake_failure_raises_auth(self) -> None:
+        """A malformed cert response surfaces as AuthException."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        # Reply with a well-framed but wrong-type datagram so the session's
+        # process_cert_response raises a MideaLanError that becomes AuthException.
+        codec = MSDatagram(_DEVICE_ID, ap_private_key=bundle.ap_private_key)
+        bad = codec.encode(
+            bytes([1, 0, 0]),
+            MSG_TYPE_DATA_TRANSMIT,
+            encrypt_type=0,
+        )
+        sock = MagicMock()
+        sock.recv.side_effect = [bad]
+        device._socket = sock
+        with pytest.raises(AuthException):
+            device.authenticate_tls()
+
+    def test_recv_tls_frame_no_socket(self) -> None:
+        """Reading a frame without a socket raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._socket = None
+        with pytest.raises(SocketException):
+            device._recv_tls_frame()
+
+    def test_recv_tls_frame_bad_magic(self) -> None:
+        """A buffered non-5a5a frame of full length is rejected."""
+        device = self._tls_device(_make_bundle())
+        device._socket = MagicMock()
+        device._buffer = b"\x00" * 80
+        with pytest.raises(MessageWrongFormat):
+            device._recv_tls_frame()
+
+    def test_recv_tls_frame_closed_peer(self) -> None:
+        """An empty recv (peer closed) raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        sock = MagicMock()
+        sock.recv.return_value = b""
+        device._socket = sock
+        with pytest.raises(SocketException):
+            device._recv_tls_frame()
+
+    def test_recv_tls_frame_partial_then_full(self) -> None:
+        """A frame split across two recvs is reassembled and returned."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        sock = MagicMock()
+        # First chunk is >=56 bytes but shorter than the whole frame.
+        sock.recv.side_effect = [frame[:60], frame[60:]]
+        device._socket = sock
+        assert device._recv_tls_frame() == frame
+
+    def test_send_message_tls_no_codec(self) -> None:
+        """Sending before the handshake completes raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+
+    def test_send_message_tls_success(self) -> None:
+        """A plaintext frame is wrapped as a 5a5a CCM datagram and sent."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        sock = MagicMock()
+        device._socket = sock
+        device.send_message_tls(b"\xaa\x1e\xac\x00")
+        sock.send.assert_called_once()
+        sent = sock.send.call_args.args[0]
+        assert sent[0:2] == b"\x5a\x5a"
+
+    def test_send_message_routes_to_tls(self) -> None:
+        """send_message dispatches to the TLS path when TLS is enabled."""
+        device = self._tls_device(_make_bundle())
+        with patch.object(device, "send_message_tls") as tls_mock:
+            device.send_message(b"\xaa\x1e\xac\x00", query=True)
+        tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
+
+    def test_parse_tls_message_no_codec(self) -> None:
+        """Parsing before a session exists raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.parse_message(b"\x5a\x5a" + b"\x00" * 60)
+
+    def test_parse_tls_message_dispatches(self) -> None:
+        """Two data frames dispatch through process_message."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        updates: list[dict[str, Any]] = []
+        device.register_update(updates.append)
+        # First frame yields a non-empty status; second yields an empty one
+        # (the "Unidentified protocol" branch).
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        frame += peer.encode(b"\x00", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+        assert updates == [{"body": "01020304"}]
+
+    def test_parse_tls_message_appliance_query_skips(self) -> None:
+        """A short appliance-query body is skipped but still counts as handled."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = True
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+
+    def test_parse_tls_message_heartbeat_filtered(self) -> None:
+        """A heartbeat datagram carries no payload and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"", MSG_TYPE_HEARTBEAT)
+        assert device.parse_message(frame) == MessageResult.PADDING
+
+    def test_parse_tls_message_bad_magic_clears_buffer(self) -> None:
+        """A non-5a5a buffer of full length is dropped, leaving PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        assert device.parse_message(b"\x00" * 80) == MessageResult.PADDING
+        assert device._buffer == b""
+
+    def test_parse_tls_message_partial_buffers(self) -> None:
+        """A partial frame is retained in the buffer and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame[:60]) == MessageResult.PADDING
+        assert device._buffer == frame[:60]
+
+    def test_parse_tls_message_dispatch_error(self) -> None:
+        """An exception in process_message is caught and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        with patch.object(device, "process_message", side_effect=ValueError):
+            assert device.parse_message(frame) == MessageResult.PADDING
+
+    def test_send_heartbeat_tls(self) -> None:
+        """A TLS heartbeat is an empty-bodied 0x7B datagram."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        sock = MagicMock()
+        device._socket = sock
+        device.send_heartbeat()
+        sock.send.assert_called_once()
+        sent = sock.send.call_args.args[0]
+        assert int.from_bytes(sent[6:8], "little") == MSG_TYPE_HEARTBEAT
+
+    def test_send_heartbeat_tls_no_codec(self) -> None:
+        """A heartbeat before the handshake completes raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.send_heartbeat()
+
+    def test_connect_runs_tls_handshake(self) -> None:
+        """connect() runs the cert handshake for a TLS device."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        sock = _FakeTLSSocket(sim)
+        device = self._tls_device(bundle)
+        with patch("socket.socket", return_value=sock):
+            assert device.connect() is True
+        assert device._tls_codec is not None
+
+    def test_close_socket_resets_tls_codec(self) -> None:
+        """Closing the socket drops the negotiated session codec."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        device.close_socket()
+        assert device._tls_codec is None

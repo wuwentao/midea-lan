@@ -5,6 +5,7 @@ from typing import cast
 
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import MideaDevice
+from midealan.tls import CertBundle
 
 
 def device_selector(
@@ -24,6 +25,7 @@ def device_selector(
     sn8: str | None = None,
     manufacturer_code: str | None = None,
     cloud_name: str | None = None,
+    cert_bundle: CertBundle | None = None,
 ) -> MideaDevice:
     """Select and load device."""
     try:
@@ -48,6 +50,7 @@ def device_selector(
             sn8=sn8,
             manufacturer_code=manufacturer_code,
             cloud_name=cloud_name,
+            cert_bundle=cert_bundle,
         )
     except ModuleNotFoundError:
         device = None

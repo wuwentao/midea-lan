@@ -30,6 +30,7 @@ from midealan.device import (
 from midealan.devices import device_selector
 from midealan.discover import SERIAL_TYPE1_LENGTH, discover
 from midealan.exceptions import SocketException
+from midealan.tls import CertBundle
 from midealan.version import __version__
 
 _LOGGER = logging.getLogger("cli")
@@ -94,6 +95,27 @@ class MideaCLI:
 
         return {**cloud_keys, **default_keys}
 
+    async def _get_cert_bundle(self) -> CertBundle | None:
+        """Provision a LAN-control certificate for udp_version>=4 devices.
+
+        TLS devices do not use a token/key handshake; they need an app
+        certificate fetched from the user's own cloud account. Without user
+        credentials the preset account cannot provision one, so return None and
+        let the caller fall back to the (failing) token path.
+        """
+        if not self._has_user_credentials():
+            _LOGGER.error(
+                "This is a TLS (udp_version>=4) device: LAN control needs a "
+                "certificate from your cloud account. Re-run with --cloud-name, "
+                "--username and --password.",
+            )
+            return None
+        cloud = await self._get_cloud()
+        if not await cloud.login():
+            _LOGGER.warning("Failed to authenticate to the cloud for cert apply.")
+            return None
+        return await cloud.apply_cert()
+
     async def discover(self) -> list[MideaDevice]:
         """Discover device information."""
         device_list: list[MideaDevice] = []
@@ -120,11 +142,21 @@ class MideaCLI:
                     )
             return device_list
         for device in devices.values():
-            keys = (
-                {0: {"token": "", "key": ""}}
-                if device["protocol"] != ProtocolVersion.V3
-                else await self._get_keys(device["device_id"])
-            )
+            # TLS (udp_version>=4) devices run the cert/ECDH handshake instead
+            # of the token/key 8370 handshake: provision a certificate once and
+            # drive control through it with empty token/key.
+            if device.get("sn_encrypted"):
+                cert_bundle = await self._get_cert_bundle()
+                if cert_bundle is None:
+                    continue
+                keys: dict[int, dict[str, Any]] = {0: {"token": "", "key": ""}}
+            else:
+                cert_bundle = None
+                keys = (
+                    {0: {"token": "", "key": ""}}
+                    if device["protocol"] != ProtocolVersion.V3
+                    else await self._get_keys(device["device_id"])
+                )
 
             for key in keys.values():
                 dev = device_selector(
@@ -142,6 +174,7 @@ class MideaCLI:
                     mac=device["mac"],
                     serial_number=device["sn"],
                     cloud_name=getattr(self.namespace, "cloud_name", None),
+                    cert_bundle=cert_bundle,
                 )
                 _LOGGER.debug("Opening socket for device.")
                 if dev.connect():

@@ -8,6 +8,7 @@ import time
 from asyncio import Lock
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from hashlib import sha256
 from http import HTTPStatus
 from pathlib import Path
 from secrets import token_hex
@@ -25,8 +26,33 @@ from .security import (
     MSmartCloudSecurity,
     ToshibaIOLifeSecurity,
 )
+from .tls import CertBundle, build_csr, generate_ec_keypair
 
 SN8_MIN_SERIAL_LENGTH = 17
+
+# udp_version>=4 "TLS" appliances replace the per-device LAN token/key with an
+# application certificate the official app provisions from the Midea cloud: it
+# fetches a keyId + AP private key (``privateKey2``), generates an EC key pair
+# and a PKCS#10 CSR, and exchanges it for a signed certificate chain
+# (``applyCertByP10``). Both calls ride the same MAS ``?alias=`` proxy + sign
+# pipeline the LAN ``getToken`` already uses.
+CERT_PRIVATE_KEY_ALIAS = "/v2/open/sdk/appliance/privateKey2"
+CERT_APPLY_ALIAS = "/cert/pki/applyCertByP10"
+# privateKey2 returns the AP private key under this name; it keys the frame MD5
+# signature (SecurityUtils.encodeMD5WithDefaultKey). The datakey entry carries
+# the plaintext keyId that seeds the CSR subject common name.
+AP_PRIVATE_KEY_NAME = "msmartAP"
+# The CSR template the Midea CA expects (MSmartCertKeyVerify.applyCertByP10).
+CERT_TEMPLATE_POLICY_ID = "app_ecdsa"
+CERT_TYPE_APP = 8
+# superiorCert in the applyCertByP10 response carries [root, center].
+CERT_SUPERIOR_ROOT = 0
+CERT_SUPERIOR_CENTER = 1
+CERT_SUPERIOR_MIN = 2
+# privateKey2 CBC scheme: key = sha256(accessToken[7:])[:16], the first 16 bytes
+# (32 hex chars) of the value are the IV.
+CERT_TOKEN_PREFIX_LENGTH = 7
+CERT_CBC_IV_HEX_LENGTH = 32
 
 # E3 gas water heaters report water and gas consumption only in the cloud: the
 # official app requests the dayReportV2 usage report through the per-cloud
@@ -386,6 +412,113 @@ class MideaCloud:
             if keys := _parse_token_list(response, udp_id):
                 result[method] = keys
         return result
+
+    def _decrypt_cert_value(self, value: str) -> str:
+        """Decrypt a ``privateKey2`` ``privateKeyValue`` field.
+
+        The current app ships two schemes (MSmartPrivateKeyVerify): an
+        access-token-keyed AES-128-CBC blob (``iv`` is the first 16 bytes) and a
+        legacy data-key AES-128-ECB blob. Try the CBC scheme first and fall back
+        to ECB so a value from either firmware decrypts.
+        """
+        token = self._access_token or ""
+        # CBC: key = sha256(accessToken[7:])[:16], iv = value[:16], ct = value[16:].
+        has_token = len(token) > CERT_TOKEN_PREFIX_LENGTH
+        has_iv = len(value) > CERT_CBC_IV_HEX_LENGTH
+        if has_token and has_iv:
+            try:
+                digest = sha256(
+                    token[CERT_TOKEN_PREFIX_LENGTH:].encode("ascii"),
+                ).digest()
+                key = digest[:16]
+                iv = bytes.fromhex(value[:CERT_CBC_IV_HEX_LENGTH])
+                return self._security.aes_decrypt(
+                    value[CERT_CBC_IV_HEX_LENGTH:],
+                    key,
+                    iv,
+                )
+            except (ValueError, UnicodeDecodeError):
+                _LOGGER.debug("privateKey2 CBC decrypt failed, trying ECB")
+        # ECB: legacy data-key scheme (MSContext.getDataKeyBytes()).
+        return self._security.aes_decrypt_with_fixed_key(value)
+
+    async def apply_cert(self) -> CertBundle | None:
+        """Provision an app certificate for udp_version>=4 LAN control.
+
+        Fetches the ``keyId`` and AP private key (``privateKey2``), generates a
+        local EC key pair and PKCS#10 CSR, and exchanges it for a signed
+        certificate chain (``applyCertByP10``). Returns the material the TLS
+        handshake needs, or ``None`` when the cloud does not provision certs
+        (for example the appsmb legacy backend).
+        """
+        if "alias=" not in self._api_url:
+            _LOGGER.debug("Cloud %s does not provision certs", self._api_url)
+            return None
+        private_key = await self._get_cert_private_key()
+        if private_key is None:
+            return None
+        key_id, ap_private_key = private_key
+        ec_key = generate_ec_keypair()
+        data = self._make_general_data()
+        data.update(
+            {
+                "templatePolicyId": CERT_TEMPLATE_POLICY_ID,
+                "certType": CERT_TYPE_APP,
+                "requestId": token_hex(16),
+                "appId": "",
+                "p10": build_csr(ec_key, key_id),
+            },
+        )
+        response = await self._api_request(
+            endpoint=CERT_APPLY_ALIAS,
+            data=data,
+        )
+        if not response:
+            _LOGGER.warning("applyCertByP10 returned no certificate")
+            return None
+        cert = response.get("cert")
+        superior = response.get("superiorCert") or []
+        if not isinstance(cert, str) or len(superior) < CERT_SUPERIOR_MIN:
+            _LOGGER.warning("applyCertByP10 response missing cert chain")
+            return None
+        return CertBundle(
+            cert_private_key=ec_key,
+            app_cert=base64.b64decode(cert),
+            center_cert=base64.b64decode(superior[CERT_SUPERIOR_CENTER]),
+            root_cert=base64.b64decode(superior[CERT_SUPERIOR_ROOT]),
+            ap_private_key=ap_private_key,
+            key_id=key_id,
+        )
+
+    async def _get_cert_private_key(self) -> tuple[str, str] | None:
+        """Return the ``(key_id, ap_private_key)`` pair from ``privateKey2``."""
+        data = self._make_general_data()
+        data.update({"bizGroup": "msmart,datakey"})
+        response = await self._api_request(
+            endpoint=CERT_PRIVATE_KEY_ALIAS,
+            data=data,
+        )
+        if not response:
+            _LOGGER.warning("privateKey2 returned no data")
+            return None
+        datakey = response.get("datakey") or []
+        if not datakey:
+            _LOGGER.warning("privateKey2 response missing datakey")
+            return None
+        # keyId is plaintext (it seeds the CSR common name); the AP private key
+        # value is encrypted.
+        key_id = datakey[0].get("keyId")
+        ap_private_key = None
+        for entry in response.get("msmart") or []:
+            if entry.get("privateKeyName") == AP_PRIVATE_KEY_NAME:
+                ap_private_key = self._decrypt_cert_value(
+                    entry.get("privateKeyValue", ""),
+                )
+                break
+        if not key_id or not ap_private_key:
+            _LOGGER.warning("privateKey2 response missing keyId or AP private key")
+            return None
+        return key_id, ap_private_key
 
     @staticmethod
     async def get_cloud_servers() -> dict[int, str]:

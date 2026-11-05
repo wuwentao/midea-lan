@@ -13,7 +13,6 @@ from midealan.devices.ac import (
     DeviceAttributes,
     MideaACDevice,
 )
-from midealan.devices.ac.colmo import ColmoAirQuery, ColmoAirState
 from midealan.devices.ac.message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
@@ -134,9 +133,22 @@ class TestMideaACDevice:
         frame.append(MessageBase.checksum(frame[1:]))
         return bytes(frame)
 
-    def test_colmo_air_features_from_captured_notification(self) -> None:
-        """Decode separate air switches and their shared auxiliary speed."""
-        device = self._make_device("22019023", 44204)
+    @staticmethod
+    def _b5_capability_response(*tags: int) -> bytes:
+        """Build a B5 capability-query response advertising the given tags."""
+        body = bytearray([ListTypes.B5, len(tags)])
+        for tag in tags:
+            body += bytes([tag & 0xFF, tag >> 8, 0x01, 0x01])
+        body.append(0x00)
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 1, 3])
+        header[1] = len(header) + len(body)
+        frame = header + body
+        frame.append(MessageBase.checksum(frame[1:]))
+        return bytes(frame)
+
+    def test_air_records_decode_from_a_live_notification(self) -> None:
+        """Decode purify/humidify switches and the shared blower speed."""
+        device = self._make_device("test_model", 1)
         status = device.process_message(
             bytes.fromhex(
                 "aa34ac00000000000105"
@@ -147,13 +159,21 @@ class TestMideaACDevice:
         assert status["humidify"] is False
         assert status["purify"] is False
         assert status["fresh_air_power"] is True
+        # 0x0233 (fresh_air) power byte is 0x02 -> on, so the shared speed is
+        # published; byte 1 == 0x50 (80) -> "high".
         assert status["auxiliary_fan_mode"] == "high"
         assert status["fresh_air_mode"] == "high"
-        assert device.fresh_air_fan_speeds == ["off", "low", "medium", "high", "full"]
+        # The raw records are cached verbatim for echo-on-set.
+        assert device._air_records[CapabilityTag.purify] == bytes.fromhex(
+            "0150001e001e001d00",
+        )
+        assert device._air_records[CapabilityTag.humidify] == bytes.fromhex(
+            "0150002d2d4639",
+        )
 
-    def test_colmo_purify_push_and_write_preserves_reported_fields(self) -> None:
-        """Keep the shared speed and non-control fields when switching purify."""
-        device = self._make_device("22019023", 44204)
+    def test_air_set_preserves_reported_sensor_fields(self) -> None:
+        """Echo the device record and change only the power byte on a switch."""
+        device = self._make_device("test_model", 1)
         device.process_message(
             bytes.fromhex(
                 "aa1aac00000000000105b5013202090228001e001e001c0001a21c",
@@ -165,106 +185,14 @@ class TestMideaACDevice:
             device.set_attribute("purify", False)
         message = send.call_args.args[0]
         assert message.body[0] == ListTypes.B0
-        assert message.body[1:-2] == bytes.fromhex("013202090128001e001e001c00")
+        # Only the power byte flips 0x02 -> 0x01; speed and CO2/PM bytes stay.
+        # The packed purify record (tag 0x0232, len 9) is echoed verbatim
+        # except for that one byte.
+        assert bytes.fromhex("3202090128001e001e001c00") in bytes(message.body)
 
-    def test_colmo_shared_speed_does_not_start_any_air_feature(self) -> None:
-        """Set speed while retaining an all-off three-switch state."""
-        device = self._make_device("22019023", 44204)
-        device.process_message(
-            bytes.fromhex(
-                "aa34ac00000000000103b103320200090164001e001e001f00"
-                "3302000a0164000058028a023602350200070164002d2d463900bb00",
-            ),
-        )
-        with patch.object(device, "build_send") as send:
-            device.set_attribute("auxiliary_fan_mode", "medium")
-        message = send.call_args.args[0]
-        assert message.body[1:-2] == bytes.fromhex("01350207013c002d2d4639")
-        assert device.get_attribute("power") is False
-        assert device.get_attribute("fresh_air_power") is False
-        assert device.get_attribute("purify") is False
-
-    def test_colmo_air_controls_need_a_reported_state(self) -> None:
-        """Refuse commands that could overwrite an unknown state."""
-        device = self._make_device("22019023", 44204)
-        with (
-            patch.object(device, "build_send") as send,
-            pytest.raises(ValueError, match="state"),
-        ):
-            device.set_attribute("humidify", True)
-        send.assert_not_called()
-        other = self._make_device("22019023", 1)
-        assert "humidify" not in other.attributes
-        assert "purify" not in other.attributes
-
-    def test_colmo_build_query_polls_the_three_air_records(self) -> None:
-        """Append the shared-blower B1 query for COLMO models only."""
-        device = self._make_device("22019023", 44204)
-        query = next(q for q in device.build_query() if isinstance(q, ColmoAirQuery))
-        assert bytes(query.body)[:8] == bytes.fromhex("b103320233023502")
-        assert device.auxiliary_fan_modes == ["low", "medium", "high", "full"]
-        other = self._make_device("22019023", 1)
-        assert not any(isinstance(q, ColmoAirQuery) for q in other.build_query())
-        assert other.auxiliary_fan_modes == []
-
-    def test_colmo_state_ignores_frames_without_live_records(self) -> None:
-        """Skip short, foreign, capability-query and unparsable frames."""
-        state = ColmoAirState()
-        assert state.process_message(bytes(10)) == {}
-        assert state.process_message(bytes(12)) == {}
-        caps_query = bytearray(13)
-        caps_query[9] = MessageType.query
-        caps_query[10] = ListTypes.B5
-        assert state.process_message(bytes(caps_query)) == {}
-        truncated = bytearray(11)
-        truncated[10] = ListTypes.B1
-        assert state.process_message(bytes(truncated)) == {}
-        empty = bytearray(14)
-        empty[9] = MessageType.notify2
-        empty[10] = ListTypes.B1
-        assert state.process_message(bytes(empty)) == {}
-        # B5 notify carrying a purify record with an invalid power byte.
-        invalid = bytearray(10)
-        invalid[9] = MessageType.notify2
-        invalid.extend(bytes.fromhex("b5013202090050001e001e001d00"))
-        invalid.append(0)
-        assert state.process_message(bytes(invalid)) == {}
-
-    def test_colmo_write_validation_and_fresh_air_aliases(self) -> None:
-        """Validate set values and map fresh-air aliases onto shared records."""
-        device = self._make_device("22019023", 44204)
-        device.process_message(
-            bytes.fromhex(
-                "aa34ac00000000000103b103320200090164001e001e001f00"
-                "3302000a0164000058028a023602350200070164002d2d463900bb00",
-            ),
-        )
-        with patch.object(device, "build_send") as send:
-            with pytest.raises(ValueError, match="boolean"):
-                device.set_attribute("humidify", "on")
-            with pytest.raises(ValueError, match="speed"):
-                device.set_attribute("fresh_air_fan_speed", True)
-            with pytest.raises(ValueError, match="speed"):
-                device.set_attribute("fresh_air_fan_speed", 50)
-            with pytest.raises(ValueError, match="mode"):
-                device.set_attribute("auxiliary_fan_mode", "turbo")
-            send.assert_not_called()
-            device.set_attribute("fresh_air_mode", "off")
-            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
-                "0133020a0164000058028a023602",
-            )
-            device.set_attribute("fresh_air_fan_speed", 60)
-            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
-                "0133020a023c000058028a023602",
-            )
-            device.set_attribute("fresh_air_mode", "high")
-            assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
-                "0133020a0250000058028a023602",
-            )
-
-    def test_colmo_shared_speed_targets_an_active_record(self) -> None:
-        """Write the shared speed through a switch that is currently on."""
-        device = self._make_device("22019023", 44204)
+    def test_shared_speed_write_targets_only_active_records(self) -> None:
+        """Rewrite the shared speed byte of every currently-on record."""
+        device = self._make_device("test_model", 1)
         device.process_message(
             bytes.fromhex(
                 "aa34ac00000000000105"
@@ -274,23 +202,88 @@ class TestMideaACDevice:
         )
         with patch.object(device, "build_send") as send:
             device.set_attribute("auxiliary_fan_mode", "low")
-        assert send.call_args.args[0].body[1:-2] == bytes.fromhex(
-            "0133020a0228000058028a022a02",
-        )
+        message = send.call_args.args[0]
+        body = bytes(message.body)
+        # Only fresh_air (0x0233) reports power 0x02 (on); purify/humidify are
+        # 0x01 (off). So just the fresh_air record carries the new shared speed
+        # 0x28 (40 -> "low"), and its sensor bytes are preserved.
+        assert bytes.fromhex("33020a0228000058028a022a02") in body
+        # The inactive records are not rewritten/sent.
+        assert bytes.fromhex("320209") not in body
+        assert bytes.fromhex("350207") not in body
 
-    def test_colmo_commands_need_their_own_reported_record(self) -> None:
-        """Refuse writes whose target record the device never reported."""
-        device = self._make_device("22019023", 44204)
+    def test_shared_speed_write_noop_when_all_air_off(self) -> None:
+        """Send nothing when no air function is active to carry the speed."""
+        device = self._make_device("test_model", 1)
         device.process_message(
-            bytes.fromhex("aa1aac00000000000105b50133020a0164000058028a023602bc"),
+            bytes.fromhex(
+                "aa34ac00000000000103b103320200090164001e001e001f00"
+                "3302000a0164000058028a023602350200070164002d2d463900bb00",
+            ),
         )
-        assert device.get_attribute("auxiliary_fan_mode") == "full"
+        # Every record reports power 0x02 (B1 fresh_air encoding) but the
+        # purify/humidify records use 0x01=off; shared-speed with no active
+        # record sends nothing.
         with patch.object(device, "build_send") as send:
-            with pytest.raises(ValueError, match="state"):
-                device.set_attribute("auxiliary_fan_mode", "low")
-            with pytest.raises(ValueError, match="state"):
-                device.set_attribute("humidify", True)
-            send.assert_not_called()
+            device.set_attribute("auxiliary_fan_mode", "medium")
+        send.assert_not_called()
+
+    def test_air_attributes_present_and_capability_driven(self) -> None:
+        """Expose the three air attributes on every model, options via B5."""
+        device = self._make_device("test_model", 1)
+        # Attributes are always declared (capability-/customize-driven), not
+        # gated by model or subtype.
+        assert "humidify" in device.attributes
+        assert "purify" in device.attributes
+        assert "auxiliary_fan_mode" in device.attributes
+        # Without the B5 capability flags, no shared-blower options are offered.
+        assert device.auxiliary_fan_modes == []
+        device.process_message(
+            self._b5_capability_response(
+                CapabilityTag.purify,
+                CapabilityTag.fresh_air_1,
+                CapabilityTag.humidify,
+            ),
+        )
+        assert device.capabilities.get("purify")
+        assert device.capabilities.get("humidify")
+        assert device.auxiliary_fan_modes == ["low", "medium", "high", "full"]
+
+    def test_air_records_queried_only_when_advertised(self) -> None:
+        """Query purify/humidify via the dynamic B1 flow once advertised."""
+        device = self._make_device("test_model", 1)
+        # Before any capability response, the air tags are not queried.
+        assert not any(
+            int(CapabilityTag.purify) in getattr(q, "properties", ())
+            for q in device.build_query()
+        )
+        device.process_message(
+            self._b5_capability_response(
+                CapabilityTag.purify,
+                CapabilityTag.humidify,
+            ),
+        )
+        queried: set[int] = set()
+        for query in device.build_query():
+            queried.update(getattr(query, "properties", ()))
+        assert int(CapabilityTag.purify) in queried
+        assert int(CapabilityTag.humidify) in queried
+
+    def test_air_set_noop_without_a_reported_record(self) -> None:
+        """Send nothing for a switch whose record the device never reported."""
+        device = self._make_device("test_model", 1)
+        # Only the humidify record was reported; a purify set has nothing to
+        # echo, so no frame is built.
+        device.process_message(
+            bytes.fromhex("aa15ac00000000000105b50135020602282d2d463943"),
+        )
+        assert device.get_attribute("humidify") is True
+        with patch.object(device, "build_send") as send:
+            device.set_attribute("purify", True)
+            # An unknown shared-blower mode has no matching speed, so nothing
+            # is sent either.
+            device.set_attribute("auxiliary_fan_mode", "turbo")
+        send.assert_not_called()
 
     def test_customize_accepts_bcd_energy_binary_power_format(self) -> None:
         """Test customize can select BCD energy with binary realtime power."""

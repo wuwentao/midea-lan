@@ -65,6 +65,7 @@ class TestMideaE1Device:
         """Test model-specific work modes retain the Midea app order."""
         self.device._model = model
         assert list(self.device.supported_modes) == mode_codes
+        assert self.device.modes == self.device._modes
         assert self.device.get_attribute_options(DeviceAttributes.program) == list(
             self.device.supported_modes.values(),
         )
@@ -83,7 +84,12 @@ class TestMideaE1Device:
             ),
             (
                 "760001EC",
-                {0x06: "90min", 0x0D: "whisper_wash", 0x10: "self_clean"},
+                {
+                    0x06: "90min",
+                    0x0D: "whisper_wash",
+                    0x10: "self_clean",
+                    0x15: "anion1",
+                },
             ),
         ],
     )
@@ -96,6 +102,16 @@ class TestMideaE1Device:
         self.device._model = model
         for code, name in mode_names.items():
             assert self.device.supported_modes[code] == name
+            body = bytearray(40)
+            body[1] = 0x03
+            body[2] = code
+            self.device.process_message(self._message(MessageType.query, body))
+            assert self.device.get_attribute(DeviceAttributes.mode) == name
+            self.device.set_attribute(DeviceAttributes.program, name)
+            assert self.device.get_attribute(DeviceAttributes.program) == name
+            with patch.object(self.device, "build_send") as send:
+                self.device.start_work()
+            assert send.call_args.args[0].mode == code
 
     def test_unknown_model_supports_all_non_neutral_modes(self) -> None:
         """Test an unknown model keeps the legacy unfiltered mode list."""
@@ -103,6 +119,67 @@ class TestMideaE1Device:
         assert self.device.supported_modes == {
             code: name for code, name in self.device.modes.items() if code != 0
         }
+
+    @pytest.mark.parametrize(
+        ("mode_code", "mode_name"),
+        [
+            (0x01, "auto_wash"),
+            (0x02, "strong_wash"),
+            (0x03, "universal_wash"),
+            (0x04, "eco_wash"),
+            (0x05, "glass_wash"),
+            (0x06, "90min"),
+            (0x07, "fast_wash"),
+            (0x08, "soak_wash"),
+            (0x09, "hour_wash"),
+            (0x0A, "3in1"),
+            (0x0B, "auto_heavy"),
+            (0x0C, "party"),
+            (0x0D, "whisper_wash"),
+            (0x0E, "auto_daily"),
+            (0x0F, "kill_germ"),
+            (0x10, "self_clean"),
+            (0x11, "auto_glass"),
+            (0x12, "baby_care"),
+            (0x13, "fruit_wash"),
+            (0x14, "45min"),
+            (0x15, "anion1"),
+            (0x16, "anion2"),
+            (0x17, "anion3"),
+            (0x19, "low_degree"),
+            (0x1A, "dry_only"),
+            (0x1B, "dry_only_2h"),
+            (0x1C, "dry_only_3h"),
+            (0x1D, "dry_only_4h"),
+            (0x1E, "hot_air_1"),
+            (0x1F, "hot_air_2"),
+            (0x20, "hot_air_3"),
+        ],
+    )
+    def test_european_profile_decode_start_round_trip(
+        self,
+        mode_code: int,
+        mode_name: str,
+    ) -> None:
+        """Preserve every program code defined by the exact European Lua."""
+        self.device._model = "760001EC"
+        body = bytearray(40)
+        body[1] = 0x03
+        body[2] = mode_code
+        self.device.process_message(self._message(MessageType.query, body))
+        assert self.device.get_attribute(DeviceAttributes.mode) == mode_name
+        with patch.object(self.device, "build_send") as send:
+            self.device.start_work()
+        assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize("mode_code", [0x09, 0x0A, 0x11, 0x17, 0x1A, 0x20])
+    def test_european_numeric_program_round_trip(self, mode_code: int) -> None:
+        """Preserve raw European codes selected outside the advertised list."""
+        self.device._model = "760001EC"
+        self.device.set_attribute(DeviceAttributes.program, mode_code)
+        with patch.object(self.device, "build_send") as send:
+            self.device.set_attribute(DeviceAttributes.status, "work")
+        assert send.call_args.args[0].mode == mode_code
 
     @pytest.mark.parametrize(
         ("model", "options"),

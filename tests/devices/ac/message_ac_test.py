@@ -3186,31 +3186,38 @@ class TestMessageACResponse:
         assert hasattr(response, "target_humidity")
         assert response.target_humidity == 50
 
-    def test_bb_0x11_short_frame_skips_humidify(self) -> None:
-        """Test that a 13-byte X11 payload does not read the BB trailer."""
-        frame = bytearray(10 + 6 + 13 + 2)
-        frame[0] = 0xAA
-        frame[1] = len(frame)
-        frame[2] = 0xAC
-        frame[8] = 0x08
-        frame[9] = 0x05
-        frame[10] = 0xBB
-        frame[11] = 6 + 13 + 2
-        frame[15] = 0x11
-        frame[16] = 0x01
-        frame[20] = 0x01
-        frame[21] = 0x04
-        frame[22] = 0x53
-        frame[23] = 0x66
-        frame[28] = 0x3C
-        # First BB trailer byte; it must not be parsed as target humidity.
-        frame[29] = 0x32
-        frame[30] = 0x7C
+    def test_bb_0x11_short_body_skips_humidify(self) -> None:
+        """Test the X11 humidity length guard directly on SubProtocolBody.
 
-        response = MessageACResponse(frame)
+        A subprotocol body one byte short of the target-humidity index must
+        still parse the basic fields but must not expose humidify or
+        target_humidity; a trailing byte there is not payload.
+        """
+        # 6-byte BB head + 14-byte body: one byte below the humidity guard.
+        short = bytearray(6 + 14)
+        short[5] = 0x11  # data type X11
+        short[6 + 0] = 0x01  # power on
+        short[6 + 4] = 0x01  # humidify bit set but body too short to read it
+        short[6 + 13] = 0x32  # would be target humidity if the guard were gone
 
-        assert not hasattr(response, "humidify")
-        assert not hasattr(response, "target_humidity")
+        short_body = SubProtocolBody(short)
+
+        assert short_body.power is True
+        assert not hasattr(short_body, "humidify")
+        assert not hasattr(short_body, "target_humidity")
+
+        # 6-byte BB head + 15-byte body: the guard boundary, fields appear.
+        full = bytearray(6 + 15)
+        full[5] = 0x11
+        full[6 + 0] = 0x01  # power on
+        full[6 + 4] = 0x01  # humidify on
+        full[6 + 13] = 0x32  # target humidity 50
+
+        full_body = SubProtocolBody(full)
+
+        assert full_body.power is True
+        assert full_body.humidify is True
+        assert full_body.target_humidity == 50
 
     def test_captured_bb_0x11_humidify_zero_target(self) -> None:
         """Test that a zero X11 target humidity is reported as unknown."""

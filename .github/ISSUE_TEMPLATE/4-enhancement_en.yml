@@ -1,0 +1,91 @@
+---
+name: New appliance or feature request (English)
+description: Request a new appliance type or a protocol attribute/command for an existing appliance
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        New device protocols commonly span three repositories: midea-lua preserves protocol sources, midea-lan implements the protocol, and midea_ac_lan exposes Home Assistant entities.
+        Requests with a linked Lua protocol source are far more likely to be implemented.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have read the [README](https://github.com/wuwentao/midea-lan/blob/main/README.md) and checked the supported appliance list.
+          required: true
+        - label: I can provide an official-app screenshot or other evidence that the requested feature exists.
+          required: true
+
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: Request type
+      options:
+        - Support a new appliance type
+        - Add a protocol attribute or command to a supported appliance
+        - Improve existing protocol parsing/encoding
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device type and Device SN
+      placeholder: Air Conditioner (0xAC), SN 22012225xxxxxx
+      description: |
+        > Discover devices on your LAN with `from midealan.discover import discover; discover()`.
+        > The device type (hex) and SN appear in the discovery result and in your SmartHome APP.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: App / Cloud containing the appliance
+      options:
+        - 美的美居
+        - SmartHome
+        - Midea Air
+        - NetHome Plus
+        - Ariston Clima
+        - TSmartLife
+        - Toshiba Iolife
+        - N/A / manually configured
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: Requested behavior and official-app workflow
+      description: Describe the value or control, how the official app operates and displays it, and how it should be read or written through the library.
+    validations:
+      required: true
+
+  - type: textarea
+    id: protocol_source
+    attributes:
+      label: Lua protocol source
+      description: Link the exact Lua protocol file in https://github.com/wuwentao/midea-lua. If it is missing, follow that repository's README to download and submit it, then link the resulting PR. Use N/A with a reason if no Lua protocol applies.
+      placeholder: https://github.com/wuwentao/midea-lua/blob/main/...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Screenshots and feature options
+      description: Upload an official-app feature screenshot and the corresponding selectable feature values.
+      placeholder: Drag screenshots here and list the selectable feature values
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add the related midea_ac_lan issue, appliance variants, attempted solutions, or related issues if useful.

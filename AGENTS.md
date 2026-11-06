@@ -107,3 +107,58 @@ user-facing harnesses.
 - After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
   automatic CodeRabbit review. Address each actionable comment, reply in its
   thread with the fix and test evidence, and resolve the conversation before merge.
+
+## Submitting issues and pull requests (AI agents)
+
+Most issues and PRs here are now drafted with an AI agent. The agent MUST drive the
+submission through the repository templates — not around them. Free-form,
+AI-generated issue/PR text that skips the template is the single most common reason
+reports are incomplete and get closed or stalled. Follow these rules:
+
+- **Use the repository template as the outline, verbatim.** For issues, open one of
+  the forms in `.github/ISSUE_TEMPLATE/` (bug or enhancement, in the submitter's
+  language). For PRs, start from `.github/pull_request_template.md` and keep every
+  heading and checklist item. Do not delete, rename, reorder, or replace sections
+  with your own structure. Additional detail beyond the template is welcome, but it
+  goes _after_ the template fields, not instead of them.
+- **Fill every field; gather what is missing before asking.** For each field, first
+  try to obtain the value yourself from the repo, git history, tests, `cli.py`
+  (`uv run python -m midealan.cli -h`: `discover`, `decode`, `save`, `download`,
+  `setattr`), `library_test.py`, or the `discover()` API. Only when a value genuinely
+  cannot be obtained by the agent — device SN, a redacted on-device debug log, an
+  official-app screenshot — explicitly ask the submitter to provide it. Never silently
+  drop a field or invent a plausible-looking value.
+- **`N/A` must carry a reason.** Use `N/A` only when a section truly does not apply,
+  and add a short phrase explaining why (e.g. "N/A — tooling-only change, no device
+  protocol"). An unexplained `N/A` or a blank field is treated as incomplete.
+- **Lua protocol source (checklist).** When the change relies on a device protocol:
+  1. Check [`wuwentao/midea-lua`](https://github.com/wuwentao/midea-lua) for the exact
+     protocol file. If it already exists, link that file directly.
+  2. If it is missing, guide the submitter to download it as documented in the
+     `midea-lua` README, format it with StyLua (or the formatter that repo's README
+     specifies), and open a `midea-lua` PR _first_. Link that PR here; land or
+     reference it alongside this PR rather than pasting raw Lua into this repo.
+  3. If no Lua protocol applies, use `N/A` with a one-line reason.
+- **Redact secrets.** Never paste account credentials, tokens, keys, full device IDs,
+  MAC addresses, or unredacted logs. Mask them (keep only what is needed to diagnose).
+- **Cross-link the family.** Link the related
+  [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue/PR and the
+  `midea-lua` source as the template asks, so the three-repo change set stays
+  traceable.
+
+### Keep code consistent with what exists
+
+When implementing a fix or feature, match the approach already in the codebase; do not
+invent parallel styles:
+
+- Follow the existing per-device layout, naming, and patterns (see "Adding/extending a
+  device type" above and `docs/adding-a-new-device.md`). Reuse the established constant
+  blocks, `DeviceAttributes(StrEnum)`, and message base classes rather than new ad-hoc
+  shapes.
+- **Avoid adding new files or new naming conventions** unless necessary. If a new file
+  or pattern is genuinely required, say so in the PR and explain the reason and the
+  benefit, so reviewers can weigh it against consistency.
+- **Comment the key and divergent parts.** Where logic is non-obvious, differs notably
+  from sibling devices, or encodes a protocol detail, add a short English comment and
+  cite the referenced Lua field name / byte offset. This is what later edits rely on to
+  avoid regressions or mis-edits.

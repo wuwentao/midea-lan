@@ -3178,6 +3178,37 @@ class TestMessageACResponse:
         assert hasattr(response, "target_humidity")
         assert response.target_humidity == 50
 
+    def test_captured_bb_0x11_humidify_zero_target(self) -> None:
+        """Test that a zero X11 target humidity is reported as unknown."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+        # Frame offset 29 is subprotocol_body[13], the target humidity byte.
+        frame[29] = 0x00
+
+        response = MessageACResponse(frame)
+
+        assert hasattr(response, "humidify")
+        assert response.humidify is True
+        assert hasattr(response, "target_humidity")
+        assert response.target_humidity is None
+
+    def test_captured_bb_0x20_skips_humidify(self) -> None:
+        """Test that an X20 response does not expose the humidify fields."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+        # Frame offset 15 is the BB data type byte; X20 shares the basic
+        # fields but does not carry humidify or target humidity.
+        frame[15] = 0x20
+
+        response = MessageACResponse(frame)
+
+        assert not hasattr(response, "humidify")
+        assert not hasattr(response, "target_humidity")
+
     def test_message_query_bb_0x10(self) -> None:
         """Test Message parse query BB 0x20."""
         self.header[9] = 0x03

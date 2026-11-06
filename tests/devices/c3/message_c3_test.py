@@ -727,6 +727,34 @@ class TestMessageC3Response:
         assert response.temp_tw_out == 0.0
         assert not hasattr(response, "idu_t1s1")
 
+    @pytest.mark.parametrize(
+        ("command", "offset", "attribute"),
+        [
+            ("20b0", 94, "temp_tw2"),
+            ("20b0", 102, "temp_ta"),
+            ("2f10", 29, "temp_tw2"),
+            ("2f10", 37, "temp_ta"),
+        ],
+    )
+    def test_message_x00_invalid_zone_sensor_is_unavailable(
+        self,
+        command: str,
+        offset: int,
+        attribute: str,
+    ) -> None:
+        """Test the Lua 0x7FFF sensor sentinel is published as unavailable."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(offset + 2)
+        body[1:3] = bytes.fromhex(command)
+        body[offset:] = bytes.fromhex("7fff")
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert getattr(response, attribute) is None
+
     @pytest.mark.parametrize("body_hex", ["00", "0020", "002f"])
     def test_message_x00_incomplete_command_is_not_decoded(
         self,

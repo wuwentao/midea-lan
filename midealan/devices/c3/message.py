@@ -898,7 +898,7 @@ def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
 def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | None:
     """Decode a signed C3 X00 temperature stored as tenths of a degree."""
     raw = _read_u16_be(body, offset)
-    if raw == C3_X00_INVALID_U16:
+    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
         return None
     magnitude = raw & C3_X00_SIGN_VALUE_MASK
     if raw & C3_X00_SIGN_BIT:

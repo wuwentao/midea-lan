@@ -1020,6 +1020,36 @@ class TestMideaACDevice:
 
         self.device._defer_query(object())
 
+    def test_timed_out_state_query_recovers_during_periodic_refresh(self) -> None:
+        """A single timeout does not stop polling the core power and mode."""
+        query = StateQuery(8)
+        self.device._probe_answered = True
+        with (
+            patch.object(self.device, "_await_query_reply", side_effect=TimeoutError),
+            patch("midealan.devices.ac.time.monotonic", return_value=100.0) as clock,
+        ):
+            assert self.device._probe_query_reply(query, [query]) == (1, True)
+            assert "StateQuery" not in self.device._unsupported_protocol
+            assert not any(isinstance(q, StateQuery) for q in self.device.build_query())
+
+            clock.return_value = 160.0
+            assert isinstance(self.device.build_query()[0], StateQuery)
+            assert not any(isinstance(q, StateQuery) for q in self.device.build_query())
+
+            clock.return_value = 220.0
+            assert isinstance(self.device.build_query()[0], StateQuery)
+            assert not any(isinstance(q, StateQuery) for q in self.device.build_query())
+
+            status = self.device.process_message(
+                self._response(bytearray(MODEL_220F4047_C0_BODY)),
+            )
+            assert status[DeviceAttributes.power.value] is True
+            assert isinstance(self.device.build_query()[0], StateQuery)
+
+            self.device._defer_query(query)
+            self.device.reset_init_query()
+            assert isinstance(self.device.build_query()[0], StateQuery)
+
     def test_bb_fallback_replies_select_and_parse_bb_family(self) -> None:
         """Captured BB-only replies select the fallback family and parse status."""
         device = self._make_device("223J6397", 1)

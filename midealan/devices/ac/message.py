@@ -40,6 +40,7 @@ BB_COMPRESSOR_TARGET_FREQUENCY_INDEX = 10
 BB_COMPRESSOR_FREQUENCY_INDEX = 11
 BB_BASIC_FAN_SPEED_INDEX = 7
 BB_HUMIDIFY_INDEX = 4
+BB_HUMIDIFY_MASK = 0x01
 BB_TARGET_HUMIDITY_INDEX = 13
 BB_INDOOR_TEMPERATURE_HIGH_INDEX = 8
 BB_INDOOR_HUMIDITY_INDEX = 30
@@ -2527,7 +2528,9 @@ class SubProtocolBody(MessageBody):
                 data_type == ListTypes.X11
                 and subprotocol_body_len > BB_TARGET_HUMIDITY_INDEX
             ):
-                self.humidify = (subprotocol_body[BB_HUMIDIFY_INDEX] & 0x01) > 0
+                self.humidify = (
+                    subprotocol_body[BB_HUMIDIFY_INDEX] & BB_HUMIDIFY_MASK
+                ) > 0
                 target_humidity = subprotocol_body[BB_TARGET_HUMIDITY_INDEX]
                 self.target_humidity = target_humidity or None
             self.timer = (

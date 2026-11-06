@@ -1,6 +1,9 @@
 """Midea lan C3 message."""
 
-from enum import IntEnum
+from collections.abc import Mapping
+from enum import IntEnum, StrEnum
+from math import isfinite
+from typing import ClassVar
 
 from midealan.const import DeviceType
 from midealan.message import (
@@ -10,6 +13,668 @@ from midealan.message import (
     MessageResponse,
     MessageType,
 )
+
+BYTE_BITS = 8
+ENERGY_SCALE = 100
+
+# Native table protocol source (vendor Lua 0.0.27):
+# https://github.com/wuwentao/midea-lua/blob/f47f06e59d96a82a784c949fbb86c7f31ff839aa/lua/0xC3/T_0000_C3_10004830_2025112601.lua
+# The Lua filename identifies product 10004830, while the controller reports
+# model 17100007. Keep the decoder model-scoped because this table layout is
+# verified only for model 17100007.
+QUINTUPLE_MODEL = "17100007"
+BASIC_TABLE = 0x2010
+ENERGY_TABLE = 0x2F12
+ROOM_SENSOR_CAPABILITY_TABLE = 0x2080
+
+# An X00 body has a ten-byte envelope: the body type inserted by the message
+# framework, a two-byte table, four reserved bytes, a format byte, and two more
+# reserved bytes. Format 0 is sequential; format 1 contains two-byte tags,
+# one-byte lengths, and values. The reserved bytes are all 0xFF on the wire.
+ENVELOPE_LENGTH = 10
+FORMAT_OFFSET = 7
+TLV_FORMAT = 1
+TLV_HEADER_LENGTH = 3
+INVALID_BYTE = 0xFF
+INVALID_TEMPERATURE = 0x7FFF
+TEMPERATURE_SCALE = 10
+AUTO_MODE_TAG = 28
+ERROR_CODE_TAG = 42
+WATTS_PER_ENERGY_UNIT = 10
+ENERGY_SIZES = (1, 4, 2, 2, 2) + (4,) * 31
+MIN_ENERGY_FIELDS = 12
+MIN_ENERGY_LENGTH = ENVELOPE_LENGTH + sum(ENERGY_SIZES[:MIN_ENERGY_FIELDS])
+QUINTUPLE_ENERGY_FIELDS = {
+    2: "current_unit_capacity",
+    3: "instant_renew_power0",
+    4: "instant_power0",
+    6: "total_produced_energy",
+    9: "total_energy_consumption",
+}
+QUINTUPLE_ENERGY_ATTRIBUTES = frozenset(QUINTUPLE_ENERGY_FIELDS.values())
+WATT_TAGS = frozenset((3, 4))
+
+
+class BasicTag(IntEnum):
+    """Writable fields in the vendor's 0x2010 table."""
+
+    ZONE1_POWER = 0
+    ZONE2_POWER = 1
+    DHW_POWER = 2
+    MODE = 3
+    ZONE1_TEMPERATURE = 4
+    ZONE2_TEMPERATURE = 5
+    ROOM_TEMPERATURE = 6
+    DHW_TEMPERATURE = 7
+    ZONE1_CURVE = 8
+    ZONE2_CURVE = 9
+    TANK_BOOSTER = 10
+    FAST_DHW = 11
+
+
+TEMPERATURE_TAGS = frozenset(
+    (
+        BasicTag.ZONE1_TEMPERATURE,
+        BasicTag.ZONE2_TEMPERATURE,
+        BasicTag.ROOM_TEMPERATURE,
+        BasicTag.DHW_TEMPERATURE,
+    ),
+)
+WIRE_MODES = frozenset((0, 2, 3, 5))
+MODE_FROM_WIRE = {0: 0, 2: 2, 3: 3, 5: 1}
+MODE_TO_WIRE = {0: 0, 1: 5, 2: 2, 3: 3}
+
+# Sizes of every entry, including the ASCII and reserved entries needed to
+# locate trailing fields in sequential responses. Indexes are vendor tags.
+BASIC_SIZES = (
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    5,
+    12,
+    4,
+    2,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    2,
+    1,
+    1,
+)
+MIN_SEQUENTIAL_LENGTH = ENVELOPE_LENGTH + sum(BASIC_SIZES[:53])
+BOOLEAN_FIELDS = {
+    0: "zone1_power",
+    1: "zone2_power",
+    2: "dhw_power",
+    8: "zone1_curve",
+    9: "zone2_curve",
+    10: "tbh",
+    11: "fast_dhw",
+    12: "remote_onoff",
+    13: "silent_mode",
+    14: "heat",
+    15: "cool",
+    16: "dhw",
+    17: "double_zone",
+    20: "room_thermal_support",
+    21: "room_thermal_state",
+    22: "time_set",
+    24: "holiday_on",
+    25: "eco_mode",
+    44: "tbh_control",
+    47: "sys_energy_ana_en",
+    48: "hmi_energy_ana_set_en",
+}
+TEMPERATURE_FIELDS = {
+    6: "room_target_temp",
+    7: "dhw_target_temp",
+    37: "room_temp_max",
+    38: "room_temp_min",
+    39: "dhw_temp_max",
+    40: "dhw_temp_min",
+    41: "tank_actual_temperature",
+    52: "outdoor_temperature",
+}
+TEMPERATURE_LIMIT_FIELDS = frozenset(
+    ("room_temp_max", "room_temp_min", "dhw_temp_max", "dhw_temp_min"),
+)
+TEMPERATURE_SENSOR_FIELDS = frozenset(
+    ("tank_actual_temperature", "outdoor_temperature", "temp_t4"),
+)
+ARRAY_FIELDS = {
+    "zone_target_temp": (4, 5),
+    "zone_heating_temp_max": (29, 33),
+    "zone_heating_temp_min": (30, 34),
+    "zone_cooling_temp_max": (31, 35),
+    "zone_cooling_temp_min": (32, 36),
+}
+ZONE_TEMP_TYPE_TAGS = (18, 19)
+STATUS_TEMPERATURE_ATTRIBUTES = {
+    4: ("zone1_temp_set", "idu_t1s1"),
+    5: ("zone2_temp_set",),
+    6: ("tas",),
+    7: ("t5s",),
+    52: ("temp_t4",),
+}
+
+
+def _envelope(table: int, format_code: int) -> bytearray:
+    return bytearray(
+        table.to_bytes(2, "big")
+        + b"\xff\xff\xff\xff"
+        + bytes((format_code, INVALID_BYTE, INVALID_BYTE)),
+    )
+
+
+class MessageQuery2010(MessageRequest):
+    """Query basic status with the exact vendor query envelope."""
+
+    def __init__(self, protocol_version: int = 0) -> None:
+        """Initialize the model-specific status request."""
+        super().__init__(
+            DeviceType.C3,
+            protocol_version,
+            MessageType.query,
+            ListTypes.X00,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return _envelope(BASIC_TABLE, 0)
+
+
+class MessageQuery2F12(MessageQuery2010):
+    """Query the vendor energy table without changing any settings."""
+
+    @property
+    def _body(self) -> bytearray:
+        return _envelope(ENERGY_TABLE, 0)
+
+
+class MessageSet2010(MessageRequest):
+    """Write only the supplied 0x2010 properties in TLV form."""
+
+    # Sparse writes are intentional: replaying cached/default values can alter
+    # another zone. The basic query and read-only tables were seen on hardware,
+    # and a 49 C DHW target write was confirmed. Other controls follow the exact
+    # vendor encoding but have not received broad hardware acceptance testing.
+
+    def __init__(
+        self,
+        values: dict[BasicTag, bool | float | int],
+        protocol_version: int = 0,
+    ) -> None:
+        """Validate and encode a sparse set of control properties."""
+        super().__init__(
+            DeviceType.C3,
+            protocol_version,
+            MessageType.set,
+            ListTypes.X00,
+        )
+        if not values:
+            raise ValueError("A C3 control request must contain a property")
+        self._encoded = _envelope(BASIC_TABLE, TLV_FORMAT)
+        for tag, value in sorted(values.items()):
+            if tag not in BasicTag:
+                raise ValueError("Unsupported C3 control property")
+            if tag in TEMPERATURE_TAGS:
+                temperature = float(value)
+                if not isfinite(temperature):
+                    raise ValueError("Invalid C3 target temperature")
+                scaled = round(temperature * TEMPERATURE_SCALE)
+                if not 0 <= scaled < INVALID_TEMPERATURE:
+                    raise ValueError("Invalid C3 target temperature")
+                data = scaled.to_bytes(2, "big")
+            elif tag == BasicTag.MODE:
+                if value not in WIRE_MODES:
+                    raise ValueError("Unsupported C3 operating mode")
+                data = bytes((int(value),))
+            else:
+                if not isinstance(value, bool):
+                    raise ValueError(
+                        "C3 power and curve controls require boolean values",
+                    )
+                data = bytes((int(value),))
+            self._encoded.extend(
+                int(tag).to_bytes(2, "big") + bytes((len(data),)) + data,
+            )
+
+    @property
+    def _body(self) -> bytearray:
+        return self._encoded
+
+
+def _read_fields(
+    body: bytearray,
+    sizes: tuple[int, ...] = BASIC_SIZES,
+    minimum_length: int = MIN_SEQUENTIAL_LENGTH,
+) -> dict[int, bytes]:
+    """Decode one table and reject malformed TLVs without partial results."""
+    if len(body) < ENVELOPE_LENGTH:
+        return {}
+    values = {}
+    offset = ENVELOPE_LENGTH
+    if body[FORMAT_OFFSET] == TLV_FORMAT:
+        while offset < len(body):
+            if offset + TLV_HEADER_LENGTH > len(body):
+                return {}
+            tag = int.from_bytes(body[offset : offset + 2], "big")
+            size = body[offset + 2]
+            offset += TLV_HEADER_LENGTH
+            if offset + size > len(body):
+                return {}
+            if tag < len(sizes):
+                if size != sizes[tag]:
+                    return {}
+                values[tag] = bytes(body[offset : offset + size])
+            offset += size
+    elif body[FORMAT_OFFSET] == 0:
+        if len(body) < minimum_length:
+            return {}
+        for tag, size in enumerate(sizes):
+            if offset + size > len(body):
+                break
+            values[tag] = bytes(body[offset : offset + size])
+            offset += size
+    return values
+
+
+def _temperature(raw: bytes) -> float | None:
+    if int.from_bytes(raw, "big") == INVALID_TEMPERATURE:
+        return None
+    return int.from_bytes(raw, "big", signed=True) / TEMPERATURE_SCALE
+
+
+class C3QuintupleEnergyBody(MessageBody):
+    """Decode 0x2F12 energy using the vendor's 0.01 kW/kWh scale."""
+
+    # These are controller-reported values. Their reset periods and inclusion
+    # of standby, circulation, or auxiliary loads are not established, so they
+    # must not be treated as billing-grade whole-appliance measurements.
+    # Tags 3 and 4 retain watts for the existing instant-power attributes;
+    # energy counters use kWh and other table powers use kW.
+
+    quintuple_energy: bool
+    current_unit_capacity: float | None
+    instant_renew_power0: float | None
+    instant_power0: float | None
+    total_produced_energy: float | None
+    total_energy_consumption: float | None
+
+    def __init__(self, body: bytearray) -> None:
+        """Expose complete energy fields from sequential or TLV packets."""
+        super().__init__(body)
+        values = _read_fields(body, ENERGY_SIZES, MIN_ENERGY_LENGTH)
+        self.quintuple_energy = bool(values)
+        for tag, name in QUINTUPLE_ENERGY_FIELDS.items():
+            if tag in values:
+                raw = values[tag]
+                value = int.from_bytes(raw, "big")
+                invalid = (1 << (len(raw) * BYTE_BITS)) - 1
+                scaled = (
+                    value * WATTS_PER_ENERGY_UNIT
+                    if tag in WATT_TAGS
+                    else value / ENERGY_SCALE
+                )
+                setattr(self, name, None if value == invalid else scaled)
+
+
+class C3QuintupleBasicBody(MessageBody):
+    """Decode sequential status and sparse control acknowledgements."""
+
+    quintuple_basic: bool
+    quintuple_arrays: dict[str, dict[int, float | bool | None]]
+    outdoor_temperature: float
+
+    def __init__(self, body: bytearray) -> None:
+        """Expose valid fields, retaining absent array members in the device."""
+        super().__init__(body)
+        values = _read_fields(body)
+        self.quintuple_basic = bool(values)
+        self.quintuple_arrays = {}
+        for tag, name in BOOLEAN_FIELDS.items():
+            if tag in values:
+                raw = values[tag][0]
+                setattr(self, name, bool(raw) if raw in (0, 1) else None)
+        for tag, name in TEMPERATURE_FIELDS.items():
+            if tag in values and (
+                (value := _temperature(values[tag])) is not None
+                or name in TEMPERATURE_LIMIT_FIELDS
+                or name in TEMPERATURE_SENSOR_FIELDS
+            ):
+                setattr(self, name, value)
+        for name, tags in ARRAY_FIELDS.items():
+            changes: dict[int, float | bool | None] = {
+                index: value
+                for index, tag in enumerate(tags)
+                if tag in values
+                and (
+                    (value := _temperature(values[tag])) is not None
+                    or name != "zone_target_temp"
+                )
+            }
+            if changes:
+                self.quintuple_arrays[name] = changes
+        types: dict[int, float | bool | None] = {
+            index: values[tag][0] == 0 if values[tag][0] in (0, 1) else None
+            for index, tag in enumerate(ZONE_TEMP_TYPE_TAGS)
+            if tag in values
+        }
+        if types:
+            self.quintuple_arrays["zone_temp_type"] = types
+        if BasicTag.MODE in values:
+            self.mode = MODE_FROM_WIRE.get(values[BasicTag.MODE][0])
+        if AUTO_MODE_TAG in values:
+            self.mode_auto = (
+                values[AUTO_MODE_TAG][0] + 1
+                if values[AUTO_MODE_TAG][0] in (1, 2)
+                else None
+            )
+        if ERROR_CODE_TAG in values:
+            error_code = values[ERROR_CODE_TAG][0]
+            self.error_code = None if error_code == INVALID_BYTE else error_code
+            self.error_code_description = (
+                None
+                if error_code == INVALID_BYTE
+                else "No error"
+                if error_code == 0
+                else f"Unknown code (raw={error_code})"
+            )
+        for tag, names in STATUS_TEMPERATURE_ATTRIBUTES.items():
+            if tag not in values:
+                continue
+            value = _temperature(values[tag])
+            for name in names:
+                if value is not None or name in TEMPERATURE_SENSOR_FIELDS:
+                    setattr(self, name, value)
+
+
+SILENT_LEVELS = ("level_1", "level_2", "level_3")
+ENERGY_TABLES = (0x2F11, 0x2F10, 0x2F17)
+CONTROL_TABLES = (0x2050, 0x2070, 0x2090)
+CAPABILITY_TABLES = (ROOM_SENSOR_CAPABILITY_TABLE,)
+SLOW_TABLES = (*CAPABILITY_TABLES, *CONTROL_TABLES)
+TABLE_SIZES: dict[int, tuple[int, ...]] = {
+    0x2050: (1,) * 12,
+    0x2070: (1,) * 7,
+    # Only the prefix through Lua tag 11 (roomSensorEn) is needed. Later
+    # installer fields remain deliberately unexposed and read-only.
+    ROOM_SENSOR_CAPABILITY_TABLE: (1,) * 12,
+    0x2090: (1,) * 7,
+    0x2F11: (1,) * 4 + (4,) * 48,
+    ENERGY_TABLE: ENERGY_SIZES,
+    0x2F17: (1,) * 9 + (4,) * 2 + (2,) * 7 + (1,) * 49,
+}
+MIN_FIELDS = {
+    0x2050: 2,
+    0x2070: 2,
+    ROOM_SENSOR_CAPABILITY_TABLE: 12,
+    0x2090: 5,
+    0x2F11: 20,
+    ENERGY_TABLE: MIN_ENERGY_FIELDS,
+    0x2F17: 6,
+}
+# "scaled" means divide the vendor integer by 100. Names preserve the Lua
+# semantics: power_consumption is electrical input in kW, capacity is thermal
+# output in kW, energy_consumption is electrical energy in kWh, and
+# produced_energy is delivered thermal energy in kWh. COP/EER is dimensionless.
+# DHW power state remains a separate boolean control.
+TABLE_FIELDS: dict[tuple[int, int], tuple[tuple[str, ...], str]] = {
+    (0x2F11, 6): (("heating_power_consumption",), "scaled"),
+    (0x2F11, 4): (("heating_capacity",), "scaled"),
+    (0x2F11, 7): (("heating_cop_eer",), "scaled"),
+    (0x2F11, 10): (("heating_total_energy_consumption",), "scaled"),
+    (0x2F11, 8): (("heating_total_produced_energy",), "scaled"),
+    (0x2F11, 11): (("heating_total_cop_eer",), "scaled"),
+    (0x2F11, 22): (("heating_energy_consumption_today",), "scaled"),
+    (0x2F11, 20): (("heating_produced_energy_today",), "scaled"),
+    (0x2F11, 23): (("heating_cop_eer_today",), "scaled"),
+    (0x2F11, 26): (("heating_energy_consumption_this_week",), "scaled"),
+    (0x2F11, 24): (("heating_produced_energy_this_week",), "scaled"),
+    (0x2F11, 27): (("heating_cop_eer_this_week",), "scaled"),
+    (0x2F11, 30): (("heating_energy_consumption_this_month",), "scaled"),
+    (0x2F11, 28): (("heating_produced_energy_this_month",), "scaled"),
+    (0x2F11, 31): (("heating_cop_eer_this_month",), "scaled"),
+    (0x2F11, 34): (("heating_energy_consumption_this_year",), "scaled"),
+    (0x2F11, 32): (("heating_produced_energy_this_year",), "scaled"),
+    (0x2F11, 35): (("heating_cop_eer_this_year",), "scaled"),
+    (0x2F11, 14): (("cooling_power_consumption",), "scaled"),
+    (0x2F11, 12): (("cooling_capacity",), "scaled"),
+    (0x2F11, 15): (("cooling_cop_eer",), "scaled"),
+    (0x2F11, 18): (("cooling_total_energy_consumption",), "scaled"),
+    (0x2F11, 16): (("cooling_total_produced_energy",), "scaled"),
+    (0x2F11, 19): (("cooling_total_cop_eer",), "scaled"),
+    (0x2F11, 38): (("cooling_energy_consumption_today",), "scaled"),
+    (0x2F11, 36): (("cooling_produced_energy_today",), "scaled"),
+    (0x2F11, 39): (("cooling_cop_eer_today",), "scaled"),
+    (0x2F11, 42): (("cooling_energy_consumption_this_week",), "scaled"),
+    (0x2F11, 40): (("cooling_produced_energy_this_week",), "scaled"),
+    (0x2F11, 43): (("cooling_cop_eer_this_week",), "scaled"),
+    (0x2F11, 46): (("cooling_energy_consumption_this_month",), "scaled"),
+    (0x2F11, 44): (("cooling_produced_energy_this_month",), "scaled"),
+    (0x2F11, 47): (("cooling_cop_eer_this_month",), "scaled"),
+    (0x2F11, 50): (("cooling_energy_consumption_this_year",), "scaled"),
+    (0x2F11, 48): (("cooling_produced_energy_this_year",), "scaled"),
+    (0x2F11, 51): (("cooling_cop_eer_this_year",), "scaled"),
+    (0x2F12, 14): (("dhw_power_consumption",), "scaled"),
+    (0x2F12, 12): (("dhw_capacity",), "scaled"),
+    (0x2F12, 15): (("dhw_cop_eer",), "scaled"),
+    (0x2F12, 18): (("dhw_total_energy_consumption",), "scaled"),
+    (0x2F12, 16): (("dhw_total_produced_energy",), "scaled"),
+    (0x2F12, 19): (("dhw_total_cop_eer",), "scaled"),
+    (0x2F12, 22): (("dhw_energy_consumption_today",), "scaled"),
+    (0x2F12, 20): (("dhw_produced_energy_today",), "scaled"),
+    (0x2F12, 23): (("dhw_cop_eer_today",), "scaled"),
+    (0x2F12, 26): (("dhw_energy_consumption_this_week",), "scaled"),
+    (0x2F12, 24): (("dhw_produced_energy_this_week",), "scaled"),
+    (0x2F12, 27): (("dhw_cop_eer_this_week",), "scaled"),
+    (0x2F12, 30): (("dhw_energy_consumption_this_month",), "scaled"),
+    (0x2F12, 28): (("dhw_produced_energy_this_month",), "scaled"),
+    (0x2F12, 31): (("dhw_cop_eer_this_month",), "scaled"),
+    (0x2F12, 34): (("dhw_energy_consumption_this_year",), "scaled"),
+    (0x2F12, 32): (("dhw_produced_energy_this_year",), "scaled"),
+    (0x2F12, 35): (("dhw_cop_eer_this_year",), "scaled"),
+    (0x2F12, 5): (("instant_cop_eer",), "scaled"),
+    (0x2F12, 11): (("total_cop_eer",), "scaled"),
+    (0x2050, 0): (("silent_mode",), "boolean"),
+    (0x2050, 1): (("_silent_level",), "level"),
+    (0x2070, 0): (("eco_mode", "eco_function_state"), "boolean"),
+    (0x2070, 1): (("eco_timer_state",), "boolean"),
+    # Lua 2080 tag 11 is roomSensorEn. It is distinct from 2010 tag 20,
+    # room_thermalen_state, which enables an external room thermostat.
+    (ROOM_SENSOR_CAPABILITY_TABLE, 11): (("_room_sensor_enabled",), "boolean"),
+    (0x2090, 0): (("disinfect",), "boolean"),
+    (0x2090, 1): (("disinfect_run",), "boolean"),
+    (0x2090, 2): (("disinfect_set_weekday",), "integer"),
+    (0x2090, 3): (("disinfect_start_hour",), "integer"),
+    (0x2090, 4): (("disinfect_start_minutes",), "integer"),
+    (0x2F17, 1): (("status_heating", "heat_run"), "boolean"),
+    (0x2F17, 2): (("status_cool", "cool_run"), "boolean"),
+    (0x2F17, 3): (("status_dhw", "dhw_run"), "boolean"),
+    (0x2F17, 4): (("status_tbh",), "boolean"),
+    (0x2F17, 5): (("status_ibh",), "boolean"),
+}
+FEATURE_ENERGY_ATTRIBUTES = frozenset(
+    names[0] for names, kind in TABLE_FIELDS.values() if kind == "scaled"
+)
+
+
+def decode_table(body: bytearray) -> dict[str, bool | float | int | str | None]:
+    """Decode mapped values from complete core blocks or atomic sparse TLVs."""
+    if len(body) < ENVELOPE_LENGTH:
+        return {}
+    table = int.from_bytes(body[1:3], "big")
+    if table not in TABLE_SIZES:
+        return {}
+    sizes = TABLE_SIZES[table]
+    minimum = ENVELOPE_LENGTH + sum(sizes[: MIN_FIELDS[table]])
+    fields = _read_fields(body, sizes, minimum)
+    result: dict[str, bool | float | int | str | None] = {}
+    for tag, raw in fields.items():
+        spec = TABLE_FIELDS.get((table, tag))
+        if spec is None:
+            continue
+        names, kind = spec
+        number = int.from_bytes(raw, "big")
+        value: bool | float | int | str | None
+        if number == (1 << (len(raw) * BYTE_BITS)) - 1:
+            value = None
+        elif kind == "boolean":
+            value = bool(number) if number in (0, 1) else None
+        elif kind == "level":
+            value = SILENT_LEVELS[number] if number < len(SILENT_LEVELS) else None
+        else:
+            value = number / ENERGY_SCALE if kind == "scaled" else number
+        for name in names:
+            result[name] = value
+    return result
+
+
+class MessageQueryTable(MessageRequest):
+    """Read a known table, with independent unsupported-query tracking."""
+
+    def __init__(self, table: int, protocol_version: int = 0) -> None:
+        """Reject table identifiers outside the curated protocol."""
+        if table not in (*TABLE_SIZES, *ENERGY_TABLES):
+            raise ValueError("Unknown C3 table")
+        super().__init__(
+            DeviceType.C3,
+            protocol_version,
+            MessageType.query,
+            ListTypes.X00,
+        )
+        self._encoded = _envelope(table, 0)
+
+    @property
+    def _body(self) -> bytearray:
+        return self._encoded
+
+
+QUERY_CLASSES: dict[int, type[MessageQueryTable]] = {
+    table: type(f"MessageQueryC3{table:04X}", (MessageQueryTable,), {})
+    for table in (*TABLE_SIZES, *ENERGY_TABLES)
+}
+
+
+def query_table(table: int, protocol_version: int) -> MessageQueryTable:
+    """Build a request whose class identifies its particular table."""
+    return QUERY_CLASSES[table](table, protocol_version)
+
+
+class FeatureSetting(StrEnum):
+    """Normal user controls with a verified native encoding."""
+
+    # Only confirmed user controls are writable. Calendar/timer editing and
+    # installer settings are deliberately excluded; DISINFECT only toggles the
+    # scheduled feature and does not request an immediate disinfection cycle.
+    SILENT_POWER = "silent_mode"
+    SILENT_LEVEL = "silent_level"
+    ECO = "eco_mode"
+    DISINFECT = "disinfect"
+
+
+class MessageSetSettings(MessageRequest):
+    """Write selected user settings atomically without replaying other fields."""
+
+    _fields: ClassVar[dict[FeatureSetting, tuple[int, int]]] = {
+        FeatureSetting.SILENT_POWER: (0x2050, 0),
+        FeatureSetting.SILENT_LEVEL: (0x2050, 1),
+        FeatureSetting.ECO: (0x2070, 0),
+        FeatureSetting.DISINFECT: (0x2090, 0),
+    }
+
+    def __init__(
+        self,
+        values: Mapping[FeatureSetting, bool | str],
+        protocol_version: int = 0,
+    ) -> None:
+        """Reject unknown settings, mixed tables and incorrect value types."""
+        super().__init__(
+            DeviceType.C3,
+            protocol_version,
+            MessageType.set,
+            ListTypes.X00,
+        )
+        if not values or any(key not in self._fields for key in values):
+            raise ValueError("Unknown or empty C3 setting")
+        tables = {self._fields[key][0] for key in values}
+        if len(tables) != 1:
+            raise ValueError("C3 settings must belong to the same table")
+        self._encoded = _envelope(tables.pop(), TLV_FORMAT)
+        for key, value in sorted(
+            values.items(),
+            key=lambda item: self._fields[item[0]][1],
+        ):
+            if key == FeatureSetting.SILENT_LEVEL:
+                if not isinstance(value, str) or value not in SILENT_LEVELS:
+                    raise ValueError("Invalid C3 silent level")
+                encoded = SILENT_LEVELS.index(value)
+            else:
+                if not isinstance(value, bool):
+                    raise ValueError("C3 switches require boolean values")
+                encoded = int(value)
+            self._encoded.extend(
+                self._fields[key][1].to_bytes(2, "big") + bytes((1, encoded)),
+            )
+
+    @property
+    def _body(self) -> bytearray:
+        return self._encoded
+
 
 TEMP_NEG_VALUE = 127
 
@@ -138,12 +803,11 @@ C3_X00_DC_CURRENT_SCALE = 100
 C3_X00_SIGN_BIT = 0x8000
 C3_X00_SIGN_VALUE_MASK = 0x7FFF
 C3_X00_INVALID_U16 = 0xFFFF
-C3_X00_TELEMETRY_MODEL = "17100007"
+C3_X00_TELEMETRY_MODEL = QUINTUPLE_MODEL
 
 # Basic state command used by model 17100007. Temperatures in this frame are
 # unsigned 16-bit big-endian values in tenths of a degree Celsius.
 C3_2010_COMMAND = bytes((0x20, 0x10))
-C3_2010_IDU_T1S1_OFFSET = 14
 C3_2010_DHW_TARGET_TEMP_OFFSET = 20
 C3_2010_TANK_ACTUAL_TEMP_OFFSET = 67
 C3_2010_OUTDOOR_TEMP_OFFSET = 97
@@ -166,9 +830,18 @@ C3_20B0_ODU_VOLTAGE_OFFSET = 35
 C3_20B0_EXV_CURRENT_OFFSET = 37
 C3_20B0_ODU_MODEL_OFFSET = 39
 C3_20B0_TEMP_T1_OFFSET = 92
+C3_20B0_TEMP_TW2_OFFSET = 94
 C3_20B0_TEMP_T2_OFFSET = 96
 C3_20B0_TEMP_T2B_OFFSET = 98
 C3_20B0_TEMP_T5_OFFSET = 100
+C3_20B0_TEMP_TA_OFFSET = 102
+C3_20B0_ZONE_TEMPERATURE_OFFSETS = (
+    ("temp_tw2", C3_20B0_TEMP_TW2_OFFSET),
+    ("temp_t2", C3_20B0_TEMP_T2_OFFSET),
+    ("temp_t2b", C3_20B0_TEMP_T2B_OFFSET),
+    ("temp_t5", C3_20B0_TEMP_T5_OFFSET),
+    ("temp_ta", C3_20B0_TEMP_TA_OFFSET),
+)
 C3_20B0_PRESSURE_HIGH_OFFSET = 109
 C3_20B0_TEMP_TH_OFFSET = 113
 C3_20B0_TEMP_TF_OFFSET = 119
@@ -189,9 +862,18 @@ C3_2F10_TEMP_TW_OUT_OFFSET = 21
 C3_2F10_ODU_COMP_CURRENT_OFFSET = 23
 C3_2F10_ODU_VOLTAGE_OFFSET = 25
 C3_2F10_TEMP_T1_OFFSET = 27
+C3_2F10_TEMP_TW2_OFFSET = 29
 C3_2F10_TEMP_T2_OFFSET = 31
 C3_2F10_TEMP_T2B_OFFSET = 33
 C3_2F10_TEMP_T5_OFFSET = 35
+C3_2F10_TEMP_TA_OFFSET = 37
+C3_2F10_ZONE_TEMPERATURE_OFFSETS = (
+    ("temp_tw2", C3_2F10_TEMP_TW2_OFFSET),
+    ("temp_t2", C3_2F10_TEMP_T2_OFFSET),
+    ("temp_t2b", C3_2F10_TEMP_T2B_OFFSET),
+    ("temp_t5", C3_2F10_TEMP_T5_OFFSET),
+    ("temp_ta", C3_2F10_TEMP_TA_OFFSET),
+)
 C3_2F10_PRESSURE_HIGH_OFFSET = 39
 C3_2F10_TEMP_TH_OFFSET = 43
 C3_2F10_TEMP_TF_OFFSET = 46
@@ -234,12 +916,20 @@ def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
 def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | None:
     """Decode a signed C3 X00 temperature stored as tenths of a degree."""
     raw = _read_u16_be(body, offset)
-    if raw == C3_X00_INVALID_U16:
+    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
         return None
     magnitude = raw & C3_X00_SIGN_VALUE_MASK
     if raw & C3_X00_SIGN_BIT:
         magnitude = -magnitude
     return magnitude / C3_X00_TEMPERATURE_SCALE
+
+
+def _parse_c3_x00_setpoint(body: bytearray, offset: int) -> float | None:
+    """Decode an unsigned C3 X00 setpoint, mapping invalid sentinels to None."""
+    raw = _read_u16_be(body, offset)
+    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
+        return None
+    return raw / C3_X00_TEMPERATURE_SCALE
 
 
 def _c3_x00_inner_command(body: bytearray) -> bytes:
@@ -713,19 +1403,9 @@ class C3DiagnosticBody(MessageBody):
 class C3Basic2010Body(MessageBody):
     """C3 basic state carried by the newer 0x2010 inner protocol."""
 
-    def __init__(
-        self,
-        body: bytearray,
-        *,
-        include_idu_t1s1: bool = False,
-    ) -> None:
+    def __init__(self, body: bytearray) -> None:
         """Initialize a C3 0x2010 basic-state message body."""
         super().__init__(body)
-        if include_idu_t1s1:
-            self.idu_t1s1 = _parse_c3_2010_temperature(
-                body,
-                C3_2010_IDU_T1S1_OFFSET,
-            )
         self.dhw_target_temp = _parse_c3_2010_temperature(
             body,
             C3_2010_DHW_TARGET_TEMP_OFFSET,
@@ -785,21 +1465,9 @@ class C3X0020B0TelemetryBody(MessageBody):
                 body,
                 C3_20B0_TEMP_T1_OFFSET,
             )
-        if len(body) >= C3_20B0_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T2_OFFSET,
-            )
-        if len(body) >= C3_20B0_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2b = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T2B_OFFSET,
-            )
-        if len(body) >= C3_20B0_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t5 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T5_OFFSET,
-            )
+        for name, offset in C3_20B0_ZONE_TEMPERATURE_OFFSETS:
+            if len(body) >= offset + C3_X00_U16_LENGTH:
+                setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_20B0_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
             self.pressure_high = (
                 _read_u16_be(body, C3_20B0_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE
@@ -815,9 +1483,9 @@ class C3X0020B0TelemetryBody(MessageBody):
                 C3_20B0_TEMP_TF_OFFSET,
             )
         if len(body) >= C3_20B0_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
-            self.idu_t1s1 = (
-                _read_u16_be(body, C3_20B0_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
-            )
+            idu_t1s1 = _parse_c3_x00_setpoint(body, C3_20B0_IDU_T1S1_OFFSET)
+            if idu_t1s1 is not None:
+                self.idu_t1s1 = idu_t1s1
         if len(body) >= C3_20B0_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
             self.water_flower = (
                 _read_u16_be(body, C3_20B0_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE
@@ -882,21 +1550,9 @@ class C3X002F10TelemetryBody(MessageBody):
                 body,
                 C3_2F10_TEMP_T1_OFFSET,
             )
-        if len(body) >= C3_2F10_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T2_OFFSET,
-            )
-        if len(body) >= C3_2F10_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2b = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T2B_OFFSET,
-            )
-        if len(body) >= C3_2F10_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t5 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T5_OFFSET,
-            )
+        for name, offset in C3_2F10_ZONE_TEMPERATURE_OFFSETS:
+            if len(body) >= offset + C3_X00_U16_LENGTH:
+                setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_2F10_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
             self.pressure_high = (
                 _read_u16_be(body, C3_2F10_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE
@@ -912,9 +1568,9 @@ class C3X002F10TelemetryBody(MessageBody):
                 C3_2F10_TEMP_TF_OFFSET,
             )
         if len(body) >= C3_2F10_IDU_T1S1_OFFSET + C3_X00_U16_LENGTH:
-            self.idu_t1s1 = (
-                _read_u16_be(body, C3_2F10_IDU_T1S1_OFFSET) / C3_X00_TEMPERATURE_SCALE
-            )
+            idu_t1s1 = _parse_c3_x00_setpoint(body, C3_2F10_IDU_T1S1_OFFSET)
+            if idu_t1s1 is not None:
+                self.idu_t1s1 = idu_t1s1
         if len(body) >= C3_2F10_WATER_FLOW_OFFSET + C3_X00_U16_LENGTH:
             self.water_flower = (
                 _read_u16_be(body, C3_2F10_WATER_FLOW_OFFSET) / C3_X00_WATER_FLOW_SCALE
@@ -1380,8 +2036,8 @@ class MessageC3Response(MessageResponse):
     fan_total_run_time: int
     pump_i_total_run_time: int
     unit_mode_run: int
-    error_code: int
-    error_code_description: str
+    error_code: int | None
+    error_code_description: str | None
     idu_software_version: int | None
     odu_software_version: int | None
     idu_software_version_str: str | None
@@ -1425,6 +2081,12 @@ class MessageC3Response(MessageResponse):
     pwm_pump_out: int
     dc_bus_voltage: int
     dc_current: int | float
+    silent_level: str | None
+    zone1_power: bool | None
+    zone2_power: bool | None
+    room_target_temp: float
+    quintuple_arrays: dict[str, dict[int, float | bool | None]]
+    quintuple_energy: bool
 
     def __init__(self, message: bytes, model: str | None = None) -> None:
         """Initialize C3 message response."""
@@ -1432,6 +2094,21 @@ class MessageC3Response(MessageResponse):
         body = super().body
         x00_command = _c3_x00_inner_command(body)
         if (
+            model == C3_X00_TELEMETRY_MODEL
+            and self.message_type in (MessageType.query, MessageType.notify1)
+            and self.body_type == ListTypes.X00
+            and x00_command == ENERGY_TABLE.to_bytes(2, "big")
+        ):
+            self.set_body(C3QuintupleEnergyBody(body))
+        elif (
+            model == C3_X00_TELEMETRY_MODEL
+            and self.message_type
+            in (MessageType.query, MessageType.set, MessageType.notify1)
+            and self.body_type == ListTypes.X00
+            and x00_command == C3_2010_COMMAND
+        ):
+            self.set_body(C3QuintupleBasicBody(body))
+        elif (
             self.message_type
             in [MessageType.set, MessageType.notify1, MessageType.query]
             and self.body_type == ListTypes.X01
@@ -1467,14 +2144,9 @@ class MessageC3Response(MessageResponse):
             and len(body) >= C3_2010_MIN_LENGTH
             and x00_command == C3_2010_COMMAND
         ):
-            self.set_body(
-                C3Basic2010Body(
-                    body,
-                    include_idu_t1s1=model == C3_X00_TELEMETRY_MODEL,
-                ),
-            )
+            self.set_body(C3Basic2010Body(body))
         elif (
-            self.message_type == MessageType.notify1
+            self.message_type in (MessageType.query, MessageType.notify1)
             and self.body_type == ListTypes.X00
             and model == C3_X00_TELEMETRY_MODEL
             and len(body) >= C3_20B0_MIN_LENGTH
@@ -1482,7 +2154,7 @@ class MessageC3Response(MessageResponse):
         ):
             self.set_body(C3X0020B0TelemetryBody(body))
         elif (
-            self.message_type == MessageType.notify1
+            self.message_type in (MessageType.query, MessageType.notify1)
             and self.body_type == ListTypes.X00
             and model == C3_X00_TELEMETRY_MODEL
             and len(body) >= C3_2F10_MIN_LENGTH

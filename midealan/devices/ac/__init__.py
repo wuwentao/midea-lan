@@ -50,6 +50,7 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 CAPABILITY_QUERY_RETRY_INTERVAL = 60.0
+STATE_QUERY_RETRY_INTERVAL = 60.0
 
 ACQuery = (
     SubProtocolQuery
@@ -450,6 +451,7 @@ class MideaACDevice(MideaDevice):
         self._support_capability = False
         self._support_capability_addition = False
         self._capability_query_retry_at: float | None = None
+        self._state_query_retry_at: float | None = None
         self._capability_addition_query_retry_at: float | None = None
         # manual setpoint limits from customize (highest priority)
         self._customize_min_temperature: float | None = None
@@ -555,10 +557,14 @@ class MideaACDevice(MideaDevice):
 
         # Split new-protocol queries into independent batches.
         default_query = PropertiesDefaultQuery(self._message_protocol_version)
-        queries: list[MessageRequest] = [
-            StateQuery(self._message_protocol_version),
-            default_query,
-        ]
+        queries: list[MessageRequest] = []
+        retry_at = self._state_query_retry_at
+        now = time.monotonic()
+        if retry_at is None or now >= retry_at:
+            queries.append(StateQuery(self._message_protocol_version))
+            if retry_at is not None:
+                self._state_query_retry_at = now + STATE_QUERY_RETRY_INTERVAL
+        queries.append(default_query)
         _LOGGER.debug(
             "[%s] PropertiesDefaultQuery: %d properties [%s]",
             self._device_id,
@@ -665,11 +671,14 @@ class MideaACDevice(MideaDevice):
         return super()._is_query_response_valid(cast("MessageRequest", cmd))
 
     def _should_defer_query(self, cmd: object) -> bool:
-        """Retry B5 capability probes instead of blacklisting them."""
-        return isinstance(cmd, CapabilitiesQuery)
+        """Retry the main state and B5 capability queries after a timeout."""
+        return isinstance(cmd, (StateQuery, CapabilitiesQuery))
 
     def _defer_query(self, cmd: object) -> None:
-        """Schedule a timed-out B5 capability probe for a later refresh."""
+        """Schedule a timed-out query for a later refresh."""
+        if isinstance(cmd, StateQuery):
+            self._state_query_retry_at = time.monotonic() + STATE_QUERY_RETRY_INTERVAL
+            return
         retry_at = time.monotonic() + CAPABILITY_QUERY_RETRY_INTERVAL
         if isinstance(cmd, CapabilitiesAdditionalQuery):
             self._capability_addition_query_retry_at = retry_at
@@ -724,6 +733,7 @@ class MideaACDevice(MideaDevice):
         self._support_capability_addition = False
         self._capability_query_retry_at = None
         self._capability_addition_query_retry_at = None
+        self._state_query_retry_at = None
 
     def _fix_c0_temperature(self, message: MessageACResponse) -> None:
         """Correct C0 temperature encoding for verified model/subtype pairs."""
@@ -787,6 +797,14 @@ class MideaACDevice(MideaDevice):
         new_status = {}
         has_fresh_air = False
         body_type = getattr(message, "body_type", None)
+
+        if (
+            self._state_query_retry_at is not None
+            and body_type == ListTypes.C0
+            and message.message_type == MessageType.query
+            and hasattr(message, DeviceAttributes.power)
+        ):
+            self._state_query_retry_at = None
 
         if getattr(message, "has_new_protocol_temperature", False):
             self._prefer_new_protocol_temperature = True

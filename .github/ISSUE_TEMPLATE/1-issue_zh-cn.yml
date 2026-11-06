@@ -1,0 +1,107 @@
+---
+name: Bug 报告（中文）
+description: 报告设备发现、协议解析/编码、加密或云端库相关问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请完整填写模板并上传完整 debug 日志（附件形式）。
+        未提供设备信息和完整 debug log 将无法确认问题，Issue 将被关闭。
+        `midea-lan` 是协议库。Home Assistant 实体或界面问题请到 `midea_ac_lan` 集成仓库提交。
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已阅读 [README](https://github.com/wuwentao/midea-lan/blob/main/README_hans.md) 和 debug 说明。
+          required: false
+        - label: 我已搜索现有 Issue，未找到相同问题。
+          required: false
+        - label: 我已提供设备详情和上传完整 debug log 文件。
+          required: false
+
+  - type: input
+    id: library_version
+    attributes:
+      label: midea-lan 版本
+      description: 已安装的 `midealan` 包版本。
+      placeholder: 2026.10.0
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python 版本
+      placeholder: "3.12"
+    validations:
+      required: true
+
+  - type: input
+    id: last_working_version
+    attributes:
+      label: 最后正常工作的版本
+      description: 如果从未正常工作，请填写“不确定”。
+      placeholder: 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备类型及设备SN
+      placeholder: Air Conditioner (0xAC), SN 22012225xxxxxx
+      description: |
+        > 使用 `from midealan.discover import discover; discover()` 在局域网内发现设备。
+        > 设备类型（十六进制）和 SN 会出现在发现结果以及美居 app 的设备信息中。
+        > 如不愿意提供 SN，可改为链接或上传设备对应的 `midea-lua` protocol file，并写明设备的 subtype/model 等信息。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: 设备所在 App / Cloud
+      description: 名称与库支持的云端列表保持一致。
+      options:
+        - 美的美居
+        - SmartHome
+        - Midea Air
+        - NetHome Plus
+        - Ariston Clima
+        - TSmartLife
+        - Toshiba Iolife
+        - 不适用 / 手工配置
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题描述与复现步骤
+      description: 说明具体设备、操作步骤、实际结果、预期结果，以及官方 App 中的对应行为。
+      placeholder: |
+        1. 操作步骤：
+        2. 实际结果：
+        3. 预期结果：
+        4. 官方 App 中的结果：
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 完整 debug 日志
+      description: 开启 debug 后重现问题，将完整日志文件拖放到此处。不要只粘贴自认为相关的片段。很多设备发现和初始化的参数对后续问题分析定位都有意义，bug 大部分情况只适合某个特殊的设备子类型，而不是所有设备 model/subtype。请删除 user/passwd/token/key 等敏感信息。
+      placeholder: 将日志文件拖放到这里
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 其他信息
+      description: 可添加关联的 midea_ac_lan issue、midea-lua 协议来源、官方 App 截图或原始报文。

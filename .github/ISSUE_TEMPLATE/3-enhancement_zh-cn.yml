@@ -1,0 +1,91 @@
+---
+name: 新设备或功能请求（中文）
+description: 请求支持新设备类型，或为已有设备增加协议属性/命令
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        新设备协议通常需要三个仓库协作：midea-lua 保存协议来源，midea-lan 实现协议，midea_ac_lan 暴露 Home Assistant 实体。
+        附带 Lua 协议来源的请求被实现的可能性更高。
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已阅读 [README](https://github.com/wuwentao/midea-lan/blob/main/README_hans.md) 并查看了已支持设备列表。
+          required: true
+        - label: 我能提供官方 App 中存在该功能的截图或其他证据。
+          required: true
+
+  - type: dropdown
+    id: request_type
+    attributes:
+      label: 请求类型
+      options:
+        - 支持新的设备类型
+        - 为已支持的设备增加协议属性或命令
+        - 改进已有的协议解析/编码
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备类型及设备SN
+      placeholder: Air Conditioner (0xAC), SN 22012225xxxxxx
+      description: |
+        > 使用 `from midealan.discover import discover; discover()` 在局域网内发现设备。
+        > 设备类型（十六进制）和 SN 会出现在发现结果以及美居 app 的设备信息中。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: 设备所在 App / Cloud
+      options:
+        - 美的美居
+        - SmartHome
+        - Midea Air
+        - NetHome Plus
+        - Ariston Clima
+        - TSmartLife
+        - Toshiba Iolife
+        - 不适用 / 手工配置
+    validations:
+      required: true
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: 功能需求与官方 App 行为
+      description: 准确描述要读取或控制的功能、官方 App 的操作逻辑、显示结果，以及希望如何通过库读取或写入。
+    validations:
+      required: true
+
+  - type: textarea
+    id: protocol_source
+    attributes:
+      label: Lua 协议来源
+      description: 链接 https://github.com/wuwentao/midea-lua 中对应的 Lua 协议文件。如果缺失，请按该仓库 README 下载并提交，再链接对应 PR。若无 Lua 协议适用，请填写“不适用”并说明原因。
+      placeholder: https://github.com/wuwentao/midea-lua/blob/main/...
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图与功能可选值
+      description: 请上传官方 App 功能截图及对应的功能可选值。
+      placeholder: 将截图拖放到此处，并填写功能可选值
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: 其他信息
+      description: 可补充关联的 midea_ac_lan issue、设备差异、已尝试方案或关联 Issue。

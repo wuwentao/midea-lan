@@ -2524,9 +2524,13 @@ class SubProtocolBody(MessageBody):
             # carries the humidify switch at byte 4 and the target humidity
             # percentage at byte 13. X20 shares the basic fields above but
             # does not carry these two.
+            # The BB trailer is two bytes and MessageResponse keeps one of them
+            # when it strips the outer checksum, so the final byte here is not
+            # payload; require one more byte than the last field index so a
+            # short frame cannot expose its trailer as target_humidity.
             if (
                 data_type == ListTypes.X11
-                and subprotocol_body_len > BB_TARGET_HUMIDITY_INDEX
+                and subprotocol_body_len > BB_TARGET_HUMIDITY_INDEX + 1
             ):
                 self.humidify = (
                     subprotocol_body[BB_HUMIDIFY_INDEX] & BB_HUMIDIFY_MASK

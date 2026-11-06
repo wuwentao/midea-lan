@@ -812,9 +812,18 @@ C3_20B0_ODU_VOLTAGE_OFFSET = 35
 C3_20B0_EXV_CURRENT_OFFSET = 37
 C3_20B0_ODU_MODEL_OFFSET = 39
 C3_20B0_TEMP_T1_OFFSET = 92
+C3_20B0_TEMP_TW2_OFFSET = 94
 C3_20B0_TEMP_T2_OFFSET = 96
 C3_20B0_TEMP_T2B_OFFSET = 98
 C3_20B0_TEMP_T5_OFFSET = 100
+C3_20B0_TEMP_TA_OFFSET = 102
+C3_20B0_ZONE_TEMPERATURE_OFFSETS = (
+    ("temp_tw2", C3_20B0_TEMP_TW2_OFFSET),
+    ("temp_t2", C3_20B0_TEMP_T2_OFFSET),
+    ("temp_t2b", C3_20B0_TEMP_T2B_OFFSET),
+    ("temp_t5", C3_20B0_TEMP_T5_OFFSET),
+    ("temp_ta", C3_20B0_TEMP_TA_OFFSET),
+)
 C3_20B0_PRESSURE_HIGH_OFFSET = 109
 C3_20B0_TEMP_TH_OFFSET = 113
 C3_20B0_TEMP_TF_OFFSET = 119
@@ -835,9 +844,18 @@ C3_2F10_TEMP_TW_OUT_OFFSET = 21
 C3_2F10_ODU_COMP_CURRENT_OFFSET = 23
 C3_2F10_ODU_VOLTAGE_OFFSET = 25
 C3_2F10_TEMP_T1_OFFSET = 27
+C3_2F10_TEMP_TW2_OFFSET = 29
 C3_2F10_TEMP_T2_OFFSET = 31
 C3_2F10_TEMP_T2B_OFFSET = 33
 C3_2F10_TEMP_T5_OFFSET = 35
+C3_2F10_TEMP_TA_OFFSET = 37
+C3_2F10_ZONE_TEMPERATURE_OFFSETS = (
+    ("temp_tw2", C3_2F10_TEMP_TW2_OFFSET),
+    ("temp_t2", C3_2F10_TEMP_T2_OFFSET),
+    ("temp_t2b", C3_2F10_TEMP_T2B_OFFSET),
+    ("temp_t5", C3_2F10_TEMP_T5_OFFSET),
+    ("temp_ta", C3_2F10_TEMP_TA_OFFSET),
+)
 C3_2F10_PRESSURE_HIGH_OFFSET = 39
 C3_2F10_TEMP_TH_OFFSET = 43
 C3_2F10_TEMP_TF_OFFSET = 46
@@ -1429,21 +1447,9 @@ class C3X0020B0TelemetryBody(MessageBody):
                 body,
                 C3_20B0_TEMP_T1_OFFSET,
             )
-        if len(body) >= C3_20B0_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T2_OFFSET,
-            )
-        if len(body) >= C3_20B0_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2b = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T2B_OFFSET,
-            )
-        if len(body) >= C3_20B0_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t5 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_20B0_TEMP_T5_OFFSET,
-            )
+        for name, offset in C3_20B0_ZONE_TEMPERATURE_OFFSETS:
+            if len(body) >= offset + C3_X00_U16_LENGTH:
+                setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_20B0_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
             self.pressure_high = (
                 _read_u16_be(body, C3_20B0_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE
@@ -1526,21 +1532,9 @@ class C3X002F10TelemetryBody(MessageBody):
                 body,
                 C3_2F10_TEMP_T1_OFFSET,
             )
-        if len(body) >= C3_2F10_TEMP_T2_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T2_OFFSET,
-            )
-        if len(body) >= C3_2F10_TEMP_T2B_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t2b = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T2B_OFFSET,
-            )
-        if len(body) >= C3_2F10_TEMP_T5_OFFSET + C3_X00_U16_LENGTH:
-            self.temp_t5 = _parse_c3_x00_signed_temperature(
-                body,
-                C3_2F10_TEMP_T5_OFFSET,
-            )
+        for name, offset in C3_2F10_ZONE_TEMPERATURE_OFFSETS:
+            if len(body) >= offset + C3_X00_U16_LENGTH:
+                setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_2F10_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
             self.pressure_high = (
                 _read_u16_be(body, C3_2F10_PRESSURE_HIGH_OFFSET) * C3_X00_PRESSURE_SCALE

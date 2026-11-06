@@ -32,15 +32,25 @@ SN8_MIN_SERIAL_LENGTH = 17
 
 # udp_version>=4 "TLS" appliances replace the per-device LAN token/key with an
 # application certificate the official app provisions from the Midea cloud: it
-# fetches a keyId + AP private key (``privateKey2``), generates an EC key pair
-# and a PKCS#10 CSR, and exchanges it for a signed certificate chain
-# (``applyCertByP10``). Both calls ride the same MAS ``?alias=`` proxy + sign
-# pipeline the LAN ``getToken`` already uses.
-CERT_PRIVATE_KEY_ALIAS = "/v2/open/sdk/appliance/privateKey2"
+# fetches a keyId + AP private key, generates an EC key pair and a PKCS#10 CSR,
+# and exchanges it for a signed certificate chain (``applyCertByP10``). Both
+# calls ride the same MAS ``?alias=`` proxy + sign pipeline the LAN ``getToken``
+# already uses.
+#
+# The private-key alias the cloud exposes depends on the account's Midea "work
+# mode" (getMsmartPrivateKeyUrl):
+#   - first-party OBM accounts -- the personal 美的美居 / MSmartHome logins this
+#     library uses -- answer ``/v1/appliance/AKA/privateKey``;
+#   - OEM / open-platform accounts answer ``/v2/open/sdk/appliance/privateKey2``.
+# Every cloud in SUPPORTED_CLOUDS is a first-party OBM login, so the AKA path is
+# the default. An OEM/open integration would override ``_cert_private_key_alias``
+# with the ``privateKey2`` endpoint; the response shape is identical either way.
+CERT_PRIVATE_KEY_ALIAS = "/v1/appliance/AKA/privateKey"
+CERT_PRIVATE_KEY_ALIAS_OEM = "/v2/open/sdk/appliance/privateKey2"
 CERT_APPLY_ALIAS = "/cert/pki/applyCertByP10"
-# privateKey2 returns the AP private key under this name; it keys the frame MD5
-# signature (SecurityUtils.encodeMD5WithDefaultKey). The datakey entry carries
-# the plaintext keyId that seeds the CSR subject common name.
+# The privateKey response returns the AP private key under this name; it keys the
+# frame MD5 signature (SecurityUtils.encodeMD5WithDefaultKey). The datakey entry
+# carries the plaintext keyId that seeds the CSR subject common name.
 AP_PRIVATE_KEY_NAME = "msmartAP"
 # The CSR template the Midea CA expects (MSmartCertKeyVerify.applyCertByP10).
 CERT_TEMPLATE_POLICY_ID = "app_ecdsa"
@@ -413,13 +423,25 @@ class MideaCloud:
                 result[method] = keys
         return result
 
-    def _decrypt_cert_value(self, value: str) -> str:
-        """Decrypt a ``privateKey2`` ``privateKeyValue`` field.
+    @property
+    def _cert_private_key_alias(self) -> str:
+        """Return the privateKey alias for this cloud's work mode.
 
-        The current app ships two schemes (MSmartPrivateKeyVerify): an
-        access-token-keyed AES-128-CBC blob (``iv`` is the first 16 bytes) and a
-        legacy data-key AES-128-ECB blob. Try the CBC scheme first and fall back
-        to ECB so a value from either firmware decrypts.
+        First-party OBM accounts (every cloud in SUPPORTED_CLOUDS) use the AKA
+        path; an OEM/open-platform subclass overrides this with the
+        ``privateKey2`` endpoint.
+        """
+        return CERT_PRIVATE_KEY_ALIAS
+
+    def _decrypt_cert_value(self, value: str) -> str:
+        """Decrypt a privateKey ``privateKeyValue`` field.
+
+        The app ships two schemes (MSmartPrivateKeyVerify): the open-platform
+        (isInlandOpen) build keys an AES-128-CBC blob with
+        ``sha256(accessToken[7:])[:16]`` and carries the IV in the first 16 bytes;
+        first-party OBM accounts use a legacy data-key AES-128-ECB blob. Try the
+        CBC scheme first and fall back to ECB so a value from either build
+        decrypts.
         """
         token = self._access_token or ""
         # CBC: key = sha256(accessToken[7:])[:16], iv = value[:16], ct = value[16:].
@@ -438,18 +460,18 @@ class MideaCloud:
                     iv,
                 )
             except (ValueError, UnicodeDecodeError):
-                _LOGGER.debug("privateKey2 CBC decrypt failed, trying ECB")
+                _LOGGER.debug("privateKey CBC decrypt failed, trying ECB")
         # ECB: legacy data-key scheme (MSContext.getDataKeyBytes()).
         return self._security.aes_decrypt_with_fixed_key(value)
 
     async def apply_cert(self) -> CertBundle | None:
         """Provision an app certificate for udp_version>=4 LAN control.
 
-        Fetches the ``keyId`` and AP private key (``privateKey2``), generates a
-        local EC key pair and PKCS#10 CSR, and exchanges it for a signed
-        certificate chain (``applyCertByP10``). Returns the material the TLS
-        handshake needs, or ``None`` when the cloud does not provision certs
-        (for example the appsmb legacy backend).
+        Fetches the ``keyId`` and AP private key (the work-mode privateKey
+        alias), generates a local EC key pair and PKCS#10 CSR, and exchanges it
+        for a signed certificate chain (``applyCertByP10``). Returns the material
+        the TLS handshake needs, or ``None`` when the cloud does not provision
+        certs (for example the appsmb legacy backend).
         """
         if "alias=" not in self._api_url:
             _LOGGER.debug("Cloud %s does not provision certs", self._api_url)
@@ -491,19 +513,24 @@ class MideaCloud:
         )
 
     async def _get_cert_private_key(self) -> tuple[str, str] | None:
-        """Return the ``(key_id, ap_private_key)`` pair from ``privateKey2``."""
+        """Return the ``(key_id, ap_private_key)`` pair from the privateKey API.
+
+        First-party inland accounts request ``bizGroup = "msmart,datakey"``; the
+        response carries the encrypted AP private key under the ``msmart`` array
+        and the plaintext ``keyId`` under ``datakey`` (MSmartPrivateKeyVerify).
+        """
         data = self._make_general_data()
         data.update({"bizGroup": "msmart,datakey"})
         response = await self._api_request(
-            endpoint=CERT_PRIVATE_KEY_ALIAS,
+            endpoint=self._cert_private_key_alias,
             data=data,
         )
         if not response:
-            _LOGGER.warning("privateKey2 returned no data")
+            _LOGGER.warning("privateKey returned no data")
             return None
         datakey = response.get("datakey") or []
         if not datakey:
-            _LOGGER.warning("privateKey2 response missing datakey")
+            _LOGGER.warning("privateKey response missing datakey")
             return None
         # keyId is plaintext (it seeds the CSR common name); the AP private key
         # value is encrypted.
@@ -516,7 +543,7 @@ class MideaCloud:
                 )
                 break
         if not key_id or not ap_private_key:
-            _LOGGER.warning("privateKey2 response missing keyId or AP private key")
+            _LOGGER.warning("privateKey response missing keyId or AP private key")
             return None
         return key_id, ap_private_key
 

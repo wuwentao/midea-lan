@@ -18,6 +18,8 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 
 from midealan.cloud import (
+    CERT_PRIVATE_KEY_ALIAS,
+    CERT_PRIVATE_KEY_ALIAS_OEM,
     DEFAULT_KEYS,
     SUPPORTED_CLOUDS,
     MeijuCloud,
@@ -2833,7 +2835,7 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         return cloud
 
     def _private_key_response(self) -> dict:
-        """Build a privateKey2 response with the keyId and encrypted AP key."""
+        """Build a privateKey response with the keyId and encrypted AP key."""
         return {
             "datakey": [{"keyId": self._KEY_ID, "privateKeyValue": "00"}],
             "msmart": [
@@ -2884,14 +2886,33 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         )
         assert await cloud.apply_cert() is None
 
+    async def test_apply_cert_uses_aka_private_key_alias(self) -> None:
+        """First-party clouds request the AKA privateKey alias, not privateKey2.
+
+        A personal 美的美居 / MSmartHome account is a first-party OBM work mode,
+        whose privateKey endpoint is ``/v1/appliance/AKA/privateKey``. The
+        OEM-only ``privateKey2`` alias is not registered for these accounts and
+        the gateway answers 40404, so the first provisioning call must target the
+        AKA path (regression guard for midea_ac_lan issue #1168).
+        """
+        cloud = self._cloud()
+        api = AsyncMock(
+            side_effect=[self._private_key_response(), self._cert_response()],
+        )
+        with patch.object(cloud, "_api_request", api):
+            await cloud.apply_cert()
+        first_call = api.await_args_list[0]
+        assert first_call.kwargs["endpoint"] == "/v1/appliance/AKA/privateKey"
+        assert first_call.kwargs["data"]["bizGroup"] == "msmart,datakey"
+
     async def test_apply_cert_private_key_none(self) -> None:
-        """apply_cert aborts when privateKey2 returns nothing."""
+        """apply_cert aborts when the privateKey API returns nothing."""
         cloud = self._cloud()
         with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
             assert await cloud.apply_cert() is None
 
     async def test_apply_cert_missing_datakey(self) -> None:
-        """apply_cert aborts when privateKey2 omits the datakey."""
+        """apply_cert aborts when the privateKey response omits the datakey."""
         cloud = self._cloud()
         with patch.object(
             cloud,
@@ -2932,7 +2953,7 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
             assert await cloud.apply_cert() is None
 
     async def test_cert_value_cbc_scheme(self) -> None:
-        """The CBC privateKey2 scheme decrypts with the access-token key."""
+        """The CBC privateKey scheme decrypts with the access-token key."""
         cloud = self._cloud()
         cloud.set_access_token("prefix_" + "A" * 20)
         token = "prefix_" + "A" * 20
@@ -2952,3 +2973,15 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         # The ECB-encrypted AP key is not valid CBC ciphertext under the
         # token-derived key, so decryption must fall through to the ECB path.
         assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
+
+    def test_private_key_alias_defaults_to_aka(self) -> None:
+        """First-party clouds expose the AKA privateKey alias by default.
+
+        Pins the two alias constants so a future edit cannot silently swap the
+        default back to the OEM ``privateKey2`` endpoint, which is unregistered
+        for first-party accounts (midea_ac_lan issue #1168).
+        """
+        assert CERT_PRIVATE_KEY_ALIAS == "/v1/appliance/AKA/privateKey"
+        assert CERT_PRIVATE_KEY_ALIAS_OEM == "/v2/open/sdk/appliance/privateKey2"
+        cloud = self._cloud()
+        assert cloud._cert_private_key_alias == CERT_PRIVATE_KEY_ALIAS

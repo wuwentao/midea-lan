@@ -218,7 +218,8 @@ class TestMideaC3Device:
 
         assert len(queries) == 6
         assert queries[0].body == bytes.fromhex("002010ffffffff00ffff")
-        assert queries[1].body == bytes.fromhex("002f12ffffffff00ffff")
+        assert queries[1].body == bytes.fromhex("002080ffffffff00ffff")
+        assert queries[2].body == bytes.fromhex("002f12ffffffff00ffff")
         assert not any(isinstance(query, MessageQueryDiagnostic) for query in queries)
         assert device.temperature_step == 0.5
 

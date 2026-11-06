@@ -18,12 +18,12 @@ from .message import (
     C3_SHORT_X01_POWER_OFFSET,
     C3_SHORT_X01_SETPOINT_OFFSET,
     C3_SHORT_X01_TBH_OFFSET,
-    CONTROL_TABLES,
     ENERGY_TABLES,
     FEATURE_ENERGY_ATTRIBUTES,
     MODE_TO_WIRE,
     QUINTUPLE_ENERGY_ATTRIBUTES,
     QUINTUPLE_MODEL,
+    SLOW_TABLES,
     BasicTag,
     C3DeviceMode,
     C3SilentLevel,
@@ -417,6 +417,7 @@ class MideaC3Device(MideaDevice):
         self._short_protocol = str(self.model) in C3_SHORT_PROTOCOL_MODELS
         self._quintuple_protocol = str(self.model) == QUINTUPLE_MODEL
         self._quintuple_ready: bool = False
+        self._room_sensor_enabled: bool | None = None
         self._feature_query_index = 0
         self._silent_level_setting: str | None = None
         if self._quintuple_protocol:
@@ -465,16 +466,17 @@ class MideaC3Device(MideaDevice):
         if self._quintuple_protocol:
             # Every refresh reads basic state, overall/DHW energy,
             # heating/cooling energy, operating telemetry, and running flags.
-            # Rotate one slower user-setting table so each refresh remains six
-            # requests while silent, ECO, and disinfection state stay current.
-            slow = CONTROL_TABLES[self._feature_query_index % len(CONTROL_TABLES)]
+            # Rotate one slower settings/capability table so each refresh stays
+            # at six requests. Read roomSensorEn first to qualify Ta telemetry.
+            slow = SLOW_TABLES[self._feature_query_index % len(SLOW_TABLES)]
             self._feature_query_index += 1
             return [
                 MessageQuery2010(self._message_protocol_version),
+                query_table(slow, self._message_protocol_version),
                 MessageQuery2F12(self._message_protocol_version),
                 *(
                     query_table(table, self._message_protocol_version)
-                    for table in (*ENERGY_TABLES, slow)
+                    for table in ENERGY_TABLES
                 ),
             ]
         queries: list[MessageRequest] = [
@@ -487,6 +489,12 @@ class MideaC3Device(MideaDevice):
         if self._short_protocol:
             queries.append(MessageQueryDiagnostic(self._message_protocol_version))
         return queries
+
+    def reset_init_query(self) -> None:
+        """Reconfirm model-specific sensor capabilities after reconnecting."""
+        super().reset_init_query()
+        self._room_sensor_enabled = None
+        self._feature_query_index = 0
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
         """Serialize and send, preserving raw short-protocol commands."""
@@ -564,6 +572,7 @@ class MideaC3Device(MideaDevice):
                 self._attributes[status] = getattr(message, str(status))
                 new_status[str(status)] = getattr(message, str(status))
         if self._quintuple_protocol:
+            self._apply_quintuple_sensor_availability(new_status)
             basic = getattr(message, "quintuple_basic", False)
             if basic:
                 zones = (
@@ -769,6 +778,12 @@ class MideaC3Device(MideaDevice):
         ):
             return
         values = decode_table(message.body)
+        if "_room_sensor_enabled" in values:
+            room_sensor_enabled = values.pop("_room_sensor_enabled")
+            # Invalid 0xFF and malformed/absent fields do not revoke the last
+            # confirmed capability; an explicit zero does.
+            if isinstance(room_sensor_enabled, bool):
+                self._room_sensor_enabled = room_sensor_enabled
         level_present = "_silent_level" in values
         if level_present:
             level = values.pop("_silent_level")
@@ -787,6 +802,22 @@ class MideaC3Device(MideaDevice):
                 if enabled
                 else "off"
             )
+
+    def _apply_quintuple_sensor_availability(
+        self,
+        status: dict[str, Any],
+    ) -> None:
+        """Hide telemetry until its separate hardware capability is confirmed."""
+        availability = {
+            DeviceAttributes.temp_tw2: self._attributes[DeviceAttributes.double_zone],
+            DeviceAttributes.temp_ta: self._room_sensor_enabled,
+        }
+        for attribute, enabled in availability.items():
+            if enabled is not True and (
+                self._attributes[attribute] is not None or attribute.value in status
+            ):
+                self._attributes[attribute] = None
+                status[attribute.value] = None
 
     def _send_features(self, values: dict[FeatureSetting, bool | str]) -> None:
         """Require actual basic status before sending a native user setting."""

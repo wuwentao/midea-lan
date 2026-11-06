@@ -25,6 +25,7 @@ ENERGY_SCALE = 100
 QUINTUPLE_MODEL = "17100007"
 BASIC_TABLE = 0x2010
 ENERGY_TABLE = 0x2F12
+ROOM_SENSOR_CAPABILITY_TABLE = 0x2080
 
 # An X00 body has a ten-byte envelope: the body type inserted by the message
 # framework, a two-byte table, four reserved bytes, a format byte, and two more
@@ -444,15 +445,28 @@ class C3QuintupleBasicBody(MessageBody):
 SILENT_LEVELS = ("level_1", "level_2", "level_3")
 ENERGY_TABLES = (0x2F11, 0x2F10, 0x2F17)
 CONTROL_TABLES = (0x2050, 0x2070, 0x2090)
+CAPABILITY_TABLES = (ROOM_SENSOR_CAPABILITY_TABLE,)
+SLOW_TABLES = (*CAPABILITY_TABLES, *CONTROL_TABLES)
 TABLE_SIZES: dict[int, tuple[int, ...]] = {
     0x2050: (1,) * 12,
     0x2070: (1,) * 7,
+    # Only the prefix through Lua tag 11 (roomSensorEn) is needed. Later
+    # installer fields remain deliberately unexposed and read-only.
+    ROOM_SENSOR_CAPABILITY_TABLE: (1,) * 12,
     0x2090: (1,) * 7,
     0x2F11: (1,) * 4 + (4,) * 48,
     0x2F12: (1,) + (4,) + (2,) * 3 + (4,) * 31,
     0x2F17: (1,) * 9 + (4,) * 2 + (2,) * 7 + (1,) * 49,
 }
-MIN_FIELDS = {0x2050: 2, 0x2070: 2, 0x2090: 5, 0x2F11: 20, 0x2F12: 12, 0x2F17: 6}
+MIN_FIELDS = {
+    0x2050: 2,
+    0x2070: 2,
+    ROOM_SENSOR_CAPABILITY_TABLE: 12,
+    0x2090: 5,
+    0x2F11: 20,
+    0x2F12: 12,
+    0x2F17: 6,
+}
 # "scaled" means divide the vendor integer by 100. Names preserve the Lua
 # semantics: power_consumption is electrical input in kW, capacity is thermal
 # output in kW, energy_consumption is electrical energy in kWh, and
@@ -519,6 +533,9 @@ TABLE_FIELDS: dict[tuple[int, int], tuple[tuple[str, ...], str]] = {
     (0x2050, 1): (("_silent_level",), "level"),
     (0x2070, 0): (("eco_mode", "eco_function_state"), "boolean"),
     (0x2070, 1): (("eco_timer_state",), "boolean"),
+    # Lua 2080 tag 11 is roomSensorEn. It is distinct from 2010 tag 20,
+    # room_thermalen_state, which enables an external room thermostat.
+    (ROOM_SENSOR_CAPABILITY_TABLE, 11): (("_room_sensor_enabled",), "boolean"),
     (0x2090, 0): (("disinfect",), "boolean"),
     (0x2090, 1): (("disinfect_run",), "boolean"),
     (0x2090, 2): (("disinfect_set_weekday",), "integer"),

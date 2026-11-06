@@ -14,9 +14,11 @@ from midealan.devices.c3 import DeviceAttributes as A
 from midealan.devices.c3 import MideaC3Device
 from midealan.devices.c3.message import (
     BASIC_SIZES,
+    CAPABILITY_TABLES,
     CONTROL_TABLES,
     ENERGY_TABLES,
     FEATURE_ENERGY_ATTRIBUTES,
+    SLOW_TABLES,
     BasicTag,
     C3DeviceMode,
     C3QuintupleBasicBody,
@@ -3267,22 +3269,114 @@ def test_setting_validation(values: dict[Any, Any]) -> None:
 
 
 def test_polling_and_independent_tracking() -> None:
-    """Five recurring tables plus one rotating control table limit polling volume."""
+    """Five recurring tables plus one rotating slow table limit polling volume."""
     d = device()
-    controls = set()
+    slow_tables = set()
     kinds: set[str] = set()
-    for _ in CONTROL_TABLES:
+    for _ in SLOW_TABLES:
         queries = d.build_query()
         assert len(queries) == 6
-        assert [int.from_bytes(q.body[1:3], "big") for q in queries[2:5]] == list(
+        assert int.from_bytes(queries[1].body[1:3], "big") in SLOW_TABLES
+        assert [int.from_bytes(q.body[1:3], "big") for q in queries[3:6]] == list(
             ENERGY_TABLES,
         )
-        controls.add(int.from_bytes(queries[-1].body[1:3], "big"))
+        slow_tables.add(int.from_bytes(queries[1].body[1:3], "big"))
         kinds.update(type(q).__name__ for q in queries)
-    assert controls == set(CONTROL_TABLES)
-    assert len(kinds) == 8
+    assert slow_tables == set(SLOW_TABLES)
+    assert slow_tables == {*CAPABILITY_TABLES, *CONTROL_TABLES}
+    assert len(kinds) == 9
     with pytest.raises(ValueError, match="Unknown"):
         MessageQueryTable(0xFFFF)
+
+
+@pytest.mark.parametrize(
+    ("command", "tw2_offset", "ta_offset"),
+    [("20b0", 94, 102), ("2f10", 29, 37)],
+)
+def test_optional_temperature_capabilities_clear_stale_values(
+    command: str,
+    tw2_offset: int,
+    ta_offset: int,
+) -> None:
+    """Tw2 and Ta require confirmed independent hardware capabilities."""
+    d = device()
+    telemetry = bytearray(ta_offset + 2)
+    telemetry[1:3] = bytes.fromhex(command)
+    telemetry[tw2_offset : tw2_offset + 2] = bytes.fromhex("0123")
+    telemetry[ta_offset : ta_offset + 2] = bytes.fromhex("00d7")
+
+    # Telemetry cannot establish whether these optional sensors are fitted.
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tw2] is None
+    assert status[A.temp_ta] is None
+
+    d.process_message(frame(bytes.fromhex("002010ffffffff01ffff00110101")))
+    d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b0101")))
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tw2] == 29.1
+    assert status[A.temp_ta] == 21.5
+
+    # Turning either capability off explicitly clears its previously cached value.
+    status = d.process_message(frame(bytes.fromhex("002010ffffffff01ffff00110100")))
+    assert status[A.temp_tw2] is None
+    assert d.attributes[A.temp_tw2] is None
+    status = d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b0100")))
+    assert status[A.temp_ta] is None
+    assert d.attributes[A.temp_ta] is None
+
+    # Later non-zero telemetry cannot resurrect sensors disabled by configuration.
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tw2] is None
+    assert status[A.temp_ta] is None
+
+
+def test_invalid_room_sensor_capability_preserves_last_confirmation() -> None:
+    """An invalid 2080 value does not revoke a previously confirmed sensor."""
+    d = device()
+    d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b0101")))
+    d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b01ff")))
+    telemetry = bytearray(39)
+    telemetry[1:3] = bytes.fromhex("2f10")
+    telemetry[37:39] = bytes.fromhex("0000")
+
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+
+    assert status[A.temp_ta] == 0.0
+
+
+def test_reconnect_reconfirms_room_sensor_before_accepting_ta() -> None:
+    """A new connection does not reuse a stale installer capability."""
+    d = device()
+    d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b0101")))
+    telemetry = bytearray(39)
+    telemetry[1:3] = bytes.fromhex("2f10")
+    telemetry[37:39] = bytes.fromhex("00d7")
+    assert (
+        d.process_message(frame(bytes(telemetry), MessageType.notify1))[A.temp_ta]
+        == 21.5
+    )
+    d.build_query()
+
+    d.reset_init_query()
+
+    assert int.from_bytes(d.build_query()[1].body[1:3], "big") == 0x2080
+    assert (
+        d.process_message(frame(bytes(telemetry), MessageType.notify1))[A.temp_ta]
+        is None
+    )
+    d.process_message(frame(bytes.fromhex("002080ffffffff01ffff000b0101")))
+    assert (
+        d.process_message(frame(bytes(telemetry), MessageType.notify1))[A.temp_ta]
+        == 21.5
+    )
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(0, False), (1, True)])
+def test_sequential_room_sensor_capability(raw: int, *, expected: bool) -> None:
+    """Decode the official 2080 prefix without exposing installer settings."""
+    body = bytearray.fromhex("002080ffffffff00ffff") + bytearray(11) + bytes((raw,))
+
+    assert decode_table(body) == {"_room_sensor_enabled": expected}
 
 
 def test_sparse_invalid_and_partial_fields() -> None:

@@ -3181,7 +3181,9 @@ class TestMessageACResponse:
         # Clear bit 0 while leaving another switch bit set.
         frame[20] = 0x02
         response = MessageACResponse(frame)
+        assert hasattr(response, "humidify")
         assert response.humidify is False
+        assert hasattr(response, "target_humidity")
         assert response.target_humidity == 50
 
     def test_bb_0x11_short_frame_skips_humidify(self) -> None:

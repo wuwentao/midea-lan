@@ -3165,7 +3165,7 @@ class TestMessageACResponse:
         assert response.bb_fresh_air_exhaust_speed == 100
 
     def test_captured_bb_0x11_humidify_response(self) -> None:
-        """Test a captured X11 response with humidify on and 50% target."""
+        """Test a captured X11 response with humidify on and off at 50% target."""
         frame = bytearray.fromhex(
             "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
             "010001652c53326600040000000000000000000000000200627c",
@@ -3177,6 +3177,38 @@ class TestMessageACResponse:
         assert response.humidify is True
         assert hasattr(response, "target_humidity")
         assert response.target_humidity == 50
+
+        # Clear bit 0 while leaving another switch bit set.
+        frame[20] = 0x02
+        response = MessageACResponse(frame)
+        assert response.humidify is False
+        assert response.target_humidity == 50
+
+    def test_bb_0x11_short_frame_skips_humidify(self) -> None:
+        """Test that a 13-byte X11 payload does not read the BB trailer."""
+        frame = bytearray(10 + 6 + 13 + 2)
+        frame[0] = 0xAA
+        frame[1] = len(frame)
+        frame[2] = 0xAC
+        frame[8] = 0x08
+        frame[9] = 0x05
+        frame[10] = 0xBB
+        frame[11] = 6 + 13 + 2
+        frame[15] = 0x11
+        frame[16] = 0x01
+        frame[20] = 0x01
+        frame[21] = 0x04
+        frame[22] = 0x53
+        frame[23] = 0x66
+        frame[28] = 0x3C
+        # First BB trailer byte; it must not be parsed as target humidity.
+        frame[29] = 0x32
+        frame[30] = 0x7C
+
+        response = MessageACResponse(frame)
+
+        assert not hasattr(response, "humidify")
+        assert not hasattr(response, "target_humidity")
 
     def test_captured_bb_0x11_humidify_zero_target(self) -> None:
         """Test that a zero X11 target humidity is reported as unknown."""

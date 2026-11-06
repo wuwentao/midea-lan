@@ -42,7 +42,8 @@ AUTO_MODE_TAG = 28
 ERROR_CODE_TAG = 42
 WATTS_PER_ENERGY_UNIT = 10
 ENERGY_SIZES = (1, 4, 2, 2, 2) + (4,) * 31
-MIN_ENERGY_LENGTH = ENVELOPE_LENGTH + sum(ENERGY_SIZES[:12])
+MIN_ENERGY_FIELDS = 12
+MIN_ENERGY_LENGTH = ENVELOPE_LENGTH + sum(ENERGY_SIZES[:MIN_ENERGY_FIELDS])
 QUINTUPLE_ENERGY_FIELDS = {
     2: "current_unit_capacity",
     3: "instant_renew_power0",
@@ -455,7 +456,7 @@ TABLE_SIZES: dict[int, tuple[int, ...]] = {
     ROOM_SENSOR_CAPABILITY_TABLE: (1,) * 12,
     0x2090: (1,) * 7,
     0x2F11: (1,) * 4 + (4,) * 48,
-    0x2F12: (1,) + (4,) + (2,) * 3 + (4,) * 31,
+    ENERGY_TABLE: ENERGY_SIZES,
     0x2F17: (1,) * 9 + (4,) * 2 + (2,) * 7 + (1,) * 49,
 }
 MIN_FIELDS = {
@@ -464,7 +465,7 @@ MIN_FIELDS = {
     ROOM_SENSOR_CAPABILITY_TABLE: 12,
     0x2090: 5,
     0x2F11: 20,
-    0x2F12: 12,
+    ENERGY_TABLE: MIN_ENERGY_FIELDS,
     0x2F17: 6,
 }
 # "scaled" means divide the vendor integer by 100. Names preserve the Lua

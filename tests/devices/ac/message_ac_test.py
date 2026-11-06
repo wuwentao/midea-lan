@@ -3164,6 +3164,92 @@ class TestMessageACResponse:
         assert hasattr(response, "bb_fresh_air_exhaust_speed")
         assert response.bb_fresh_air_exhaust_speed == 100
 
+    def test_captured_bb_0x11_humidify_response(self) -> None:
+        """Test a captured X11 response with humidify on and off at 50% target."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+
+        response = MessageACResponse(frame)
+
+        assert hasattr(response, "humidify")
+        assert response.humidify is True
+        assert hasattr(response, "target_humidity")
+        assert response.target_humidity == 50
+
+        # Clear bit 0 while leaving another switch bit set.
+        frame[20] = 0x02
+        response = MessageACResponse(frame)
+        assert hasattr(response, "humidify")
+        assert response.humidify is False
+        assert hasattr(response, "target_humidity")
+        assert response.target_humidity == 50
+
+    def test_bb_0x11_short_body_skips_humidify(self) -> None:
+        """Test the X11 humidity length guard directly on SubProtocolBody.
+
+        A subprotocol body one byte short of the target-humidity index must
+        still parse the basic fields but must not expose humidify or
+        target_humidity; a trailing byte there is not payload.
+        """
+        # 6-byte BB head + 14-byte body: one byte below the humidity guard.
+        short = bytearray(6 + 14)
+        short[5] = 0x11  # data type X11
+        short[6 + 0] = 0x01  # power on
+        short[6 + 4] = 0x01  # humidify bit set but body too short to read it
+        short[6 + 13] = 0x32  # would be target humidity if the guard were gone
+
+        short_body = SubProtocolBody(short)
+
+        assert short_body.power is True
+        assert not hasattr(short_body, "humidify")
+        assert not hasattr(short_body, "target_humidity")
+
+        # 6-byte BB head + 15-byte body: the guard boundary, fields appear.
+        full = bytearray(6 + 15)
+        full[5] = 0x11
+        full[6 + 0] = 0x01  # power on
+        full[6 + 4] = 0x01  # humidify on
+        full[6 + 13] = 0x32  # target humidity 50
+
+        full_body = SubProtocolBody(full)
+
+        assert full_body.power is True
+        assert full_body.humidify is True
+        assert full_body.target_humidity == 50
+
+    def test_captured_bb_0x11_humidify_zero_target(self) -> None:
+        """Test that a zero X11 target humidity is reported as unknown."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+        # Frame offset 29 is subprotocol_body[13], the target humidity byte.
+        frame[29] = 0x00
+
+        response = MessageACResponse(frame)
+
+        assert hasattr(response, "humidify")
+        assert response.humidify is True
+        assert hasattr(response, "target_humidity")
+        assert response.target_humidity is None
+
+    def test_captured_bb_0x20_skips_humidify(self) -> None:
+        """Test that an X20 response does not expose the humidify fields."""
+        frame = bytearray.fromhex(
+            "aa3aac00000000000805bb3000ffff1101800000010453663200000000320001"
+            "010001652c53326600040000000000000000000000000200627c",
+        )
+        # Frame offset 15 is the BB data type byte; X20 shares the basic
+        # fields but does not carry humidify or target humidity.
+        frame[15] = 0x20
+
+        response = MessageACResponse(frame)
+
+        assert not hasattr(response, "humidify")
+        assert not hasattr(response, "target_humidity")
+
     def test_message_query_bb_0x10(self) -> None:
         """Test Message parse query BB 0x20."""
         self.header[9] = 0x03

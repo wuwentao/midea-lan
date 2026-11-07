@@ -577,6 +577,12 @@ class MideaDevice(threading.Thread):
         """Serialize and send."""
         data = cmd.serialize()
         _LOGGER.debug("[%s] Sending: %s, query is %s", self._device_id, cmd, query)
+        if self._tls_enabled:
+            # The TLS transport CCM-wraps the bare appliance frame directly; it
+            # does not use the ``5a5a0111`` V1 transport envelope (that wrapper
+            # would be an unrecognized inner payload the device drops silently).
+            self.send_message_tls(data, query=query)
+            return
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 

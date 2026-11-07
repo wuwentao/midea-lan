@@ -2515,6 +2515,30 @@ class TestMideaDeviceTLS:
             device.send_message(b"\xaa\x1e\xac\x00", query=True)
         tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
 
+    def test_build_send_tls_wraps_bare_frame(self) -> None:
+        """build_send CCM-wraps the bare appliance frame, no 5a5a0111 envelope.
+
+        The decoded CCM body must equal the raw ``cmd.serialize()`` bytes; the
+        classic PacketBuilder ``5a5a0111`` transport wrapper would be an
+        unrecognized inner payload the device drops silently.
+        """
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        sock = MagicMock()
+        device._socket = sock
+        payload = b"\xaa\x1e\xe3\x00\x00\x00\x00\x00\x03\x03"
+        cmd = MagicMock()
+        cmd.serialize.return_value = payload
+        device.build_send(cmd, query=True)
+        sock.send.assert_called_once()
+        sent = sock.send.call_args.args[0]
+        assert sent[0:2] == b"\x5a\x5a"
+        # The wire frame decodes straight back to the bare appliance payload.
+        parsed = peer.decode(sent)
+        assert parsed.msg_type == MSG_TYPE_DATA_TRANSMIT
+        assert parsed.body == payload
+
     def test_parse_tls_message_no_codec(self) -> None:
         """Parsing before a session exists raises SocketException."""
         device = self._tls_device(_make_bundle())

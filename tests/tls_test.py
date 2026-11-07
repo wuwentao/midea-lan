@@ -442,6 +442,43 @@ class TestHandshake:
         with pytest.raises(DataSignDoesntMatch):
             session.process_cert_response(bytes(reply))
 
+    def test_process_cert_response_truncated_body(self) -> None:
+        """A hello reply truncated mid-field raises DataUnexpectedLength."""
+        bundle = _make_bundle()
+        session = TLSSession(bundle, _DEVICE_ID)
+        session.build_cert_request()
+        codec = MSDatagram(_DEVICE_ID, ap_private_key=_AP_PRIVATE_KEY)
+        # step/pad/status OK, then a cert length that runs past the body end.
+        bad = codec.encode(
+            bytes([1, 0, 0]) + (0xFF).to_bytes(2, "little"),
+            MSG_TYPE_CERT_RESPONSE,
+            encrypt_type=ENCRYPT_TYPE_NONE,
+        )
+        with pytest.raises(DataUnexpectedLength):
+            session.process_cert_response(bad)
+
+    def test_process_cert_response_bad_module_cert(self) -> None:
+        """A module certificate that is not a valid key raises auth failure."""
+        bundle = _make_bundle()
+        session = TLSSession(bundle, _DEVICE_ID)
+        session.build_cert_request()
+        codec = MSDatagram(_DEVICE_ID, ap_private_key=_AP_PRIVATE_KEY)
+        # Well-formed framing (len1=0, a 4-byte garbage module cert, N2, tag)
+        # but the module cert cannot be imported as an EC key.
+        garbage_cert = b"\x00\x01\x02\x03"
+        body = bytearray([1, 0, 0])
+        body += (0).to_bytes(2, "little")  # len1 (center cert) = 0
+        body += len(garbage_cert).to_bytes(2, "little") + garbage_cert
+        body += bytes([2]) + b"\xaa\xbb"  # n2_len + N2
+        body += bytes([1]) + b"\xcc"  # tag_len + tag
+        bad = codec.encode(
+            bytes(body),
+            MSG_TYPE_CERT_RESPONSE,
+            encrypt_type=ENCRYPT_TYPE_NONE,
+        )
+        with pytest.raises(CannotAuthenticate):
+            session.process_cert_response(bad)
+
     def test_build_finish_requires_session_key(self) -> None:
         """Building the finish frame before the key is derived fails."""
         bundle = _make_bundle()
@@ -501,3 +538,17 @@ class TestHandshake:
         device._n2 = get_random_bytes(16)
         with pytest.raises(CannotAuthenticate):
             session.process_finish(device.respond_finish())
+
+    def test_process_finish_bad_mac(self) -> None:
+        """A finish reply whose CCM tag fails to verify raises auth failure."""
+        bundle = _make_bundle()
+        device = _SimulatedDevice(bundle, _DEVICE_ID)
+        session = TLSSession(bundle, _DEVICE_ID)
+        session.process_cert_response(
+            device.respond_hello(session.build_cert_request()),
+        )
+        reply = bytearray(device.respond_finish())
+        # Corrupt a byte inside the CCM ciphertext so the MAC check fails.
+        reply[-SIGNATURE_LENGTH - 1] ^= 0xFF
+        with pytest.raises(CannotAuthenticate):
+            session.process_finish(bytes(reply))

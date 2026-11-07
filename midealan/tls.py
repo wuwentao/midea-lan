@@ -500,6 +500,12 @@ class TLSSession:
             device_id=int(_ZERO_DEVICE_ID, 16),
         )
 
+    @staticmethod
+    def _require(condition: bool) -> None:
+        """Raise :class:`DataUnexpectedLength` when a frame is truncated."""
+        if not condition:
+            raise DataUnexpectedLength
+
     def process_cert_response(self, frame: bytes) -> None:
         """Parse the device reply, verify it and derive the session key."""
         parsed = self._codec.decode(frame)
@@ -510,14 +516,20 @@ class TLSSession:
             raise CannotAuthenticate
         if body[2] != _CERT_STATUS_OK:
             raise CannotAuthenticate
+        # Every length and offset below comes from device-controlled bytes;
+        # validate each slice so a truncated/malformed reply raises a
+        # MideaLanError (caught by authenticate_tls) instead of an IndexError.
         len1 = _u16_le(body[3:5])
         offset = 5 + len1
+        self._require(len(body) >= offset + 2)
         len2 = _u16_le(body[offset : offset + 2])
         offset += 2
+        self._require(len(body) >= offset + len2 + 1)
         module_cert = body[offset : offset + len2]
         offset += len2
         n2_len = body[offset]
         offset += 1
+        self._require(len(body) >= offset + n2_len + 1)
         self._n2 = body[offset : offset + n2_len]
         offset += n2_len
         # The device HMAC's ``hello_body || body[:tag_len_index + 1]`` -- i.e.
@@ -525,10 +537,15 @@ class TLSSession:
         # ``bArr11 = body[0:i5 + 1]``).
         tag_len = body[offset]
         hmac_input_tail = body[: offset + 1]
+        self._require(len(body) >= offset + 1 + tag_len)
         tag = body[offset + 1 : offset + 1 + tag_len]
 
-        module_key = ECC.import_key(module_cert)
-        shared = ecdh_shared_secret(self._bundle.cert_private_key, module_key)
+        try:
+            module_key = ECC.import_key(module_cert)
+            shared = ecdh_shared_secret(self._bundle.cert_private_key, module_key)
+        except (ValueError, TypeError) as e:
+            # A malformed module certificate / public key is an auth failure.
+            raise CannotAuthenticate from e
         session_key = sha256(shared + self._n1 + self._n2).digest()[
             :_SESSION_KEY_LENGTH
         ]
@@ -568,14 +585,20 @@ class TLSSession:
             raise CannotAuthenticate
         inner_len = _u16_le(body[2:4])
         inner = body[4 : 4 + inner_len]
+        self._require(len(inner) >= CCM_NONCE_LENGTH + CCM_TAG_LENGTH)
         nonce = inner[:CCM_NONCE_LENGTH]
         # The finish reply authenticates with an empty AAD.
-        plaintext = ccm_decrypt(
-            self._session_key,
-            nonce,
-            inner[CCM_NONCE_LENGTH:],
-            b"",
-        )
+        try:
+            plaintext = ccm_decrypt(
+                self._session_key,
+                nonce,
+                inner[CCM_NONCE_LENGTH:],
+                b"",
+            )
+        except ValueError as e:
+            # A bad MAC (wrong session key or tampered reply) is an auth failure.
+            raise CannotAuthenticate from e
+        self._require(len(plaintext) >= 1 + _NONCE_N2_EXPECTED)
         status = plaintext[0]
         echoed_n2 = plaintext[1 : 1 + _NONCE_N2_EXPECTED]
         if status != _CERT_STATUS_OK or echoed_n2 != self._n2:

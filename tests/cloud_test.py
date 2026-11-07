@@ -3007,6 +3007,18 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         # so decryption must fall through to the fixed-key ECB scheme.
         assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
 
+    async def test_cert_value_all_schemes_fail(self) -> None:
+        """A value that no scheme can decrypt returns the empty sentinel.
+
+        A malformed ``privateKeyValue`` (here, ciphertext whose length is not a
+        16-byte multiple) makes every scheme raise rather than return garbage.
+        The method must swallow the final ECB failure and return "" so callers
+        produce their established None result instead of propagating the error.
+        """
+        cloud = self._cloud()
+        # 30 hex chars == 15 bytes: not a valid AES block, so decrypt raises.
+        assert cloud._decrypt_cert_value("a" * 30) == ""
+
     def test_private_key_alias_defaults_to_aka(self) -> None:
         """First-party clouds expose the AKA privateKey alias by default.
 

@@ -34,6 +34,7 @@ from .tls import (
     HEADER_LENGTH,
     MSG_TYPE_DATA_TRANSMIT,
     MSG_TYPE_HEARTBEAT,
+    MSG_TYPE_HEARTBEAT_RESPONSE,
     SIGNATURE_LENGTH,
     CertBundle,
     MSDatagram,
@@ -437,15 +438,15 @@ class MideaDevice(threading.Thread):
             raise SocketException
         session = TLSSession(self._cert_bundle, self._device_id)
         _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
-        self._socket.send(session.build_cert_request())
-        reply = self._recv_tls_frame()
-        _LOGGER.debug(
-            "[%s] TLS handshake: cert response %d bytes: %s",
-            self._device_id,
-            len(reply),
-            reply.hex(),
-        )
         try:
+            self._socket.send(session.build_cert_request())
+            reply = self._recv_tls_frame()
+            _LOGGER.debug(
+                "[%s] TLS handshake: cert response %d bytes: %s",
+                self._device_id,
+                len(reply),
+                reply.hex(),
+            )
             session.process_cert_response(reply)
             self._socket.send(session.build_finish())
             finish_reply = self._recv_tls_frame()
@@ -1031,8 +1032,14 @@ class MideaDevice(threading.Thread):
             frame = self._buffer[:length]
             self._buffer = self._buffer[length:]
             parsed = self._tls_codec.decode(frame)
+            if parsed.msg_type == MSG_TYPE_HEARTBEAT_RESPONSE:
+                # A heartbeat reply carries no appliance payload, but it proves
+                # the device is alive; count it so run() resets its timeout
+                # counter instead of eventually reconnecting an idle device.
+                dispatched = True
+                continue
             if parsed.msg_type != MSG_TYPE_DATA_TRANSMIT or not parsed.body:
-                # Heartbeat and handshake replies carry no appliance payload.
+                # Handshake replies carry no appliance payload.
                 continue
             try:
                 self._dispatch_decoded_message(parsed.body)

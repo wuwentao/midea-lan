@@ -34,6 +34,7 @@ from midealan.message import (
 from midealan.tls import (
     MSG_TYPE_DATA_TRANSMIT,
     MSG_TYPE_HEARTBEAT,
+    MSG_TYPE_HEARTBEAT_RESPONSE,
     CertBundle,
     MSDatagram,
 )
@@ -2571,12 +2572,20 @@ class TestMideaDeviceTLS:
         assert device.parse_message(frame) == MessageResult.SUCCESS
 
     def test_parse_tls_message_heartbeat_filtered(self) -> None:
-        """A heartbeat datagram carries no payload and yields PADDING."""
+        """A heartbeat request carries no payload and yields PADDING."""
         bundle = _make_bundle()
         device = self._tls_device(bundle)
         peer = self._install_codec(device, bundle)
         frame = peer.encode(b"", MSG_TYPE_HEARTBEAT)
         assert device.parse_message(frame) == MessageResult.PADDING
+
+    def test_parse_tls_message_heartbeat_response_is_liveness(self) -> None:
+        """A heartbeat reply dispatches nothing but counts as SUCCESS."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"", MSG_TYPE_HEARTBEAT_RESPONSE)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
 
     def test_parse_tls_message_bad_magic_clears_buffer(self) -> None:
         """A non-5a5a buffer of full length is dropped, leaving PADDING."""

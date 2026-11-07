@@ -9,6 +9,7 @@ import warnings
 from argparse import Namespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -280,6 +281,45 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         cert_bundle_mock.assert_awaited_once()
         assert device_selector_mock.call_args.kwargs["cert_bundle"] is cert_bundle
         assert device_selector_mock.call_args.kwargs["token"] == ""
+
+    async def test_discover_tls_devices_provision_cert_once(self) -> None:
+        """Multiple TLS devices share a single cert provisioning."""
+
+        def _tls(device_id: int, ip: str) -> dict[str, Any]:
+            return {
+                "device_id": device_id,
+                "protocol": ProtocolVersion.V3,
+                "type": "E3",
+                "ip_address": ip,
+                "port": 6444,
+                "model": "",
+                "sn": "",
+                "mac": "1234567890AB",
+                "sn_encrypted": True,
+            }
+
+        devices = {3: _tls(3, "192.168.0.3"), 4: _tls(4, "192.168.0.4")}
+        cert_bundle = object()
+        mock_device_instance = MagicMock()
+        mock_device_instance.connect.return_value = True
+        with (
+            patch("midealan.cli.discover", return_value=devices),
+            patch(
+                "midealan.cli.device_selector",
+                return_value=mock_device_instance,
+            ) as device_selector_mock,
+            patch.object(
+                self.cli,
+                "_get_cert_bundle",
+                return_value=cert_bundle,
+            ) as cert_bundle_mock,
+        ):
+            await self.cli.discover()
+        # Two TLS devices, but the certificate is provisioned only once.
+        cert_bundle_mock.assert_awaited_once()
+        assert device_selector_mock.call_count == 2
+        for call in device_selector_mock.call_args_list:
+            assert call.kwargs["cert_bundle"] is cert_bundle
 
     async def test_discover_tls_device_no_cert(self) -> None:
         """A TLS device with no provisionable cert is skipped."""

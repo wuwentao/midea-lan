@@ -480,7 +480,14 @@ class MideaCloud:
             except (ValueError, UnicodeDecodeError):
                 _LOGGER.debug("privateKey CBC decrypt failed, trying ECB")
         # ECB: legacy data-key scheme (MSContext.getDataKeyBytes()).
-        return self._security.aes_decrypt_with_fixed_key(value)
+        try:
+            return self._security.aes_decrypt_with_fixed_key(value)
+        except (ValueError, UnicodeDecodeError):
+            # A malformed value exhausts every scheme; return the empty-string
+            # failure sentinel so callers produce their established None result
+            # instead of propagating a decode exception.
+            _LOGGER.warning("privateKey2 decrypt failed for all schemes")
+            return ""
 
     async def apply_cert(self) -> CertBundle | None:
         """Provision an app certificate for udp_version>=4 LAN control.

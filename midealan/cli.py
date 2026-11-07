@@ -100,8 +100,8 @@ class MideaCLI:
 
         TLS devices do not use a token/key handshake; they need an app
         certificate fetched from the user's own cloud account. Without user
-        credentials the preset account cannot provision one, so return None and
-        let the caller fall back to the (failing) token path.
+        credentials the preset account cannot provision one, so return None; the
+        caller then skips that device (there is no token fallback for TLS).
         """
         if not self._has_user_credentials():
             _LOGGER.error(
@@ -141,12 +141,21 @@ class MideaCLI:
                         device["ip_address"],
                     )
             return device_list
+        # A single certificate serves every TLS device in the scan, so provision
+        # it at most once: more than one encrypted-serial device must not trigger
+        # repeated cloud logins / cert issuances (which can hit rate limits). The
+        # None result is cached too, so a failed provision is not retried.
+        shared_bundle: CertBundle | None = None
+        bundle_loaded = False
         for device in devices.values():
             # TLS (udp_version>=4) devices run the cert/ECDH handshake instead
             # of the token/key 8370 handshake: provision a certificate once and
             # drive control through it with empty token/key.
             if device.get("sn_encrypted"):
-                cert_bundle = await self._get_cert_bundle()
+                if not bundle_loaded:
+                    shared_bundle = await self._get_cert_bundle()
+                    bundle_loaded = True
+                cert_bundle = shared_bundle
                 if cert_bundle is None:
                     continue
                 keys: dict[int, dict[str, Any]] = {0: {"token": "", "key": ""}}

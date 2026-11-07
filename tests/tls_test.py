@@ -2,6 +2,7 @@
 
 import base64
 import hmac
+import re
 import shutil
 import subprocess
 from hashlib import sha256
@@ -93,9 +94,13 @@ class TestCsr:
             text=True,
             check=False,
         )
-        assert "verify OK" in result.stderr
-        assert "OU=MideaCAOperation" in result.stdout
-        assert "CA:TRUE" in result.stdout
+        # OpenSSL version/platform differences: the verification result may land
+        # on stdout or stderr, and OpenSSL 3 prints subject RDNs with spaces
+        # around "=" (``OU = MideaCAOperation``). Search the combined output.
+        output = result.stdout + result.stderr
+        assert "verify OK" in output
+        assert re.search(r"OU\s*=\s*MideaCAOperation", output)
+        assert "CA:TRUE" in output
 
 
 class TestCcm:

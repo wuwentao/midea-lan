@@ -581,7 +581,7 @@ class MideaDevice(threading.Thread):
             # The TLS transport CCM-wraps the bare appliance frame directly; it
             # does not use the ``5a5a0111`` V1 transport envelope (that wrapper
             # would be an unrecognized inner payload the device drops silently).
-            self.send_message_tls(data, query=query)
+            self.send_message_tls(bytes(data), query=query)
             return
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)

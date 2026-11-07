@@ -231,12 +231,14 @@ def _mask_token(token: str) -> str:
 
 def _redact_data(data: str) -> str:
     """Redact sensitive data."""
-    # Mask the values of ``token`` and ``key`` fields first: these carry the
-    # LAN credentials, so a raw getToken response must never reach the log in
-    # full. Handles both JSON (``"token": "abc"``) and dict-repr (``'key': 'abc'``)
+    # Mask the values of credential-bearing fields first: ``token``/``key`` carry
+    # the LAN credentials, while the ``privateKey2`` response carries
+    # ``privateKeyValue`` (the encrypted AP private key that keys the frame MD5
+    # signature) and ``keyId``. A raw response must never reach the log in full.
+    # Handles both JSON (``"token": "abc"``) and dict-repr (``'key': 'abc'``)
     # shapes that reach this function via ``str(raw)`` / ``str(data)``.
     data = re.sub(
-        r"(['\"](?:token|key)['\"]\s*:\s*['\"])([^'\"]+)(['\"])",
+        r"(['\"](?:token|key|privateKeyValue|keyId)['\"]\s*:\s*['\"])([^'\"]+)(['\"])",
         lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
         data,
         flags=re.IGNORECASE,

@@ -2974,6 +2974,39 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         # token-derived key, so decryption must fall through to the ECB path.
         assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
 
+    async def test_cert_value_session_key_scheme(self) -> None:
+        """First-party OBM accounts decrypt the AP key with the session key.
+
+        A personal 美的美居 / MSmartHome login decrypts ``privateKeyValue`` with
+        AES-128-ECB under the per-session data key (not the token CBC or the
+        legacy fixed-key scheme). Using the wrong key yields a garbage AP key
+        that only surfaces later as a silently rejected handshake signature, so
+        the session-key path must win when a session key is present (regression
+        guard for midea_ac_lan issue #1168).
+        """
+        cloud = self._cloud()
+        session_key = b"sessionkey012345"
+        # The session key is set by set_aes_keys at login; inject it directly to
+        # represent the post-login state without replaying the key exchange.
+        cloud._security._aes_key = session_key
+        plaintext = "apsecretapsecret"
+        ct = AES.new(session_key, AES.MODE_ECB).encrypt(pad(plaintext.encode(), 16))
+        assert cloud._decrypt_cert_value(ct.hex()) == plaintext
+
+    async def test_cert_value_session_key_falls_back(self) -> None:
+        """A value that is not session-key ciphertext falls through the chain.
+
+        When the session-key ECB decrypt produces invalid padding the lookup
+        must continue to the token CBC and legacy fixed-key schemes rather than
+        returning garbage.
+        """
+        cloud = self._cloud()
+        cloud._security._aes_key = b"sessionkey012345"
+        cloud.set_access_token("prefix_" + "A" * 20)
+        # The legacy ECB AP key is not valid ciphertext under the session key,
+        # so decryption must fall through to the fixed-key ECB scheme.
+        assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
+
     def test_private_key_alias_defaults_to_aka(self) -> None:
         """First-party clouds expose the AKA privateKey alias by default.
 

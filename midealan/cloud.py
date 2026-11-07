@@ -436,13 +436,29 @@ class MideaCloud:
     def _decrypt_cert_value(self, value: str) -> str:
         """Decrypt a privateKey ``privateKeyValue`` field.
 
-        The app ships two schemes (MSmartPrivateKeyVerify): the open-platform
-        (isInlandOpen) build keys an AES-128-CBC blob with
-        ``sha256(accessToken[7:])[:16]`` and carries the IV in the first 16 bytes;
-        first-party OBM accounts use a legacy data-key AES-128-ECB blob. Try the
-        CBC scheme first and fall back to ECB so a value from either build
-        decrypts.
+        MSmartPrivateKeyVerify decrypts this value differently per work mode:
+
+        - first-party OBM accounts (personal 美的美居 / MSmartHome, the logins
+          this library uses) key an AES-128-ECB blob with the per-session data
+          key -- the same key ``set_aes_keys`` stores at login
+          (``MSContext.getDataKeyBytes()`` is that key's UTF-8 bytes, with a
+          ``null`` IV, i.e. ECB);
+        - the open-platform (isInlandOpen) build keys an AES-128-CBC blob with
+          ``sha256(accessToken[7:])[:16]`` and carries the IV in the first
+          16 bytes;
+        - the legacy data-key scheme uses the compiled-in fixed app key (ECB).
+
+        Try the session-key ECB scheme first (the path these accounts take), then
+        the token CBC scheme, then the legacy fixed-key ECB, so a value from any
+        build decrypts. A wrong result is silent -- it only surfaces later as a
+        rejected handshake signature -- so the session-key path must come first.
         """
+        session_key = self._security.session_key
+        if session_key is not None:
+            try:
+                return self._security.aes_decrypt(value, session_key, b"0")
+            except (ValueError, UnicodeDecodeError):
+                _LOGGER.debug("privateKey session-key decrypt failed, trying CBC")
         token = self._access_token or ""
         # CBC: key = sha256(accessToken[7:])[:16], iv = value[:16], ct = value[16:].
         has_token = len(token) > CERT_TOKEN_PREFIX_LENGTH

@@ -1,5 +1,6 @@
 """Test 0x51 device."""
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -30,7 +31,7 @@ _BATTERY_STATES = (
 
 def _build_device(manufacturer_code: str | None = "0008") -> MideaX51Device:
     """Create a 0x51 device without opening a socket."""
-    identity = (
+    identity: dict[str, Any] = (
         {"manufacturer_code": manufacturer_code}
         if manufacturer_code is not None
         else {}

@@ -1,5 +1,6 @@
 """Test cloud."""
 
+import base64
 import json
 import logging
 from collections.abc import Callable
@@ -13,8 +14,12 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from aiohttp import ClientConnectionError, ClientSession, ClientTimeout, web
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
 from midealan.cloud import (
+    CERT_PRIVATE_KEY_ALIAS,
+    CERT_PRIVATE_KEY_ALIAS_OEM,
     DEFAULT_KEYS,
     SUPPORTED_CLOUDS,
     MeijuCloud,
@@ -2790,3 +2795,226 @@ async def test_cloud_key_token_parsing(
             if value := token.get(field):
                 assert value not in caplog.text
                 assert value.lower() not in caplog.text
+
+
+class CertProvisioningTest(IsolatedAsyncioTestCase):
+    """udp_version>=4 certificate provisioning (apply_cert)."""
+
+    # EC P-256 SubjectPublicKeyInfo DER blobs standing in for the cert chain.
+    _APP_CERT = (
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEF/g83zlX9CUTJyiCttFQ+hmmnIRg"
+        "N2zvQW0MwhzT0R0i2+Ex5bq6fYTNdk0k6LXhg8u0hLNe5vb5hkIGTBvqpQ=="
+    )
+    _CENTER_CERT = (
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE4HOwE+i7EYXcc9rtnHjFWZ/FWhpz"
+        "fSFOCwZCI2+9rGIL7fkq96Pm4A0TDfTkAkfwlYEAezCcrTY9kAE8mqAurw=="
+    )
+    _ROOT_CERT = (
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEVJjUPtIL7YTekCQ+Hqw4EyoY2lQ8"
+        "nUOqqIswo35BH0+QF66yV2y4yNi9L2HbI1UsROteIMTqwTQ+tWLJ+W2O5A=="
+    )
+    # AP private key "deadbeef..." AES-128-ECB encrypted under the SmartHome
+    # fixed key (the legacy data-key scheme).
+    _AP_KEY_ECB_HEX = (
+        "e08be0219ec320f7e9c8d52da88adaaa"
+        "72b004499e737d7aeff58f30f8da68c6"
+        "6d58195f64a674a2b5b45445e01afdf6"
+    )
+    _AP_PRIVATE_KEY = "deadbeefdeadbeefdeadbeefdeadbeef"
+    _KEY_ID = "0123456789abcdef0123456789abcdef"
+
+    def _cloud(self) -> MideaCloud:
+        """Build a SmartHome cloud client (its fixed key decrypts the AP key)."""
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        cloud.set_access_token("token")
+        return cloud
+
+    def _private_key_response(self) -> dict:
+        """Build a privateKey response with the keyId and encrypted AP key."""
+        return {
+            "datakey": [{"keyId": self._KEY_ID, "privateKeyValue": "00"}],
+            "msmart": [
+                {
+                    "privateKeyName": "msmartAP",
+                    "privateKeyValue": self._AP_KEY_ECB_HEX,
+                },
+                {"privateKeyName": "msmartBLE", "privateKeyValue": "00"},
+            ],
+        }
+
+    def _cert_response(self) -> dict:
+        """Build an applyCertByP10 response with the signed cert chain."""
+        return {
+            "cert": self._APP_CERT,
+            "superiorCert": [self._ROOT_CERT, self._CENTER_CERT],
+        }
+
+    async def test_apply_cert_success(self) -> None:
+        """apply_cert returns a bundle with the decoded chain and AP key."""
+        cloud = self._cloud()
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(
+                side_effect=[self._private_key_response(), self._cert_response()],
+            ),
+        ):
+            bundle = await cloud.apply_cert()
+        assert bundle is not None
+        assert bundle.key_id == self._KEY_ID
+        assert bundle.ap_private_key == self._AP_PRIVATE_KEY
+        assert bundle.app_cert == base64.b64decode(self._APP_CERT)
+        assert bundle.center_cert == base64.b64decode(self._CENTER_CERT)
+        assert bundle.root_cert == base64.b64decode(self._ROOT_CERT)
+        assert bundle.cert_private_key.has_private()
+
+    async def test_apply_cert_non_mas_cloud(self) -> None:
+        """A cloud without the MAS proxy does not provision certs."""
+        cloud = MideaCloud(
+            session=Mock(),
+            security=Mock(),
+            app_id="appid",
+            app_key="appkey",
+            account="account",
+            password="password",
+            api_url="https://mapp.appsmb.com",  # codespell:ignore
+        )
+        assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_uses_aka_private_key_alias(self) -> None:
+        """First-party clouds request the AKA privateKey alias, not privateKey2.
+
+        A personal 美的美居 / MSmartHome account is a first-party OBM work mode,
+        whose privateKey endpoint is ``/v1/appliance/AKA/privateKey``. The
+        OEM-only ``privateKey2`` alias is not registered for these accounts and
+        the gateway answers 40404, so the first provisioning call must target the
+        AKA path (regression guard for midea_ac_lan issue #1168).
+        """
+        cloud = self._cloud()
+        api = AsyncMock(
+            side_effect=[self._private_key_response(), self._cert_response()],
+        )
+        with patch.object(cloud, "_api_request", api):
+            await cloud.apply_cert()
+        first_call = api.await_args_list[0]
+        assert first_call.kwargs["endpoint"] == "/v1/appliance/AKA/privateKey"
+        assert first_call.kwargs["data"]["bizGroup"] == "msmart,datakey"
+
+    async def test_apply_cert_private_key_none(self) -> None:
+        """apply_cert aborts when the privateKey API returns nothing."""
+        cloud = self._cloud()
+        with patch.object(cloud, "_api_request", AsyncMock(return_value=None)):
+            assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_missing_datakey(self) -> None:
+        """apply_cert aborts when the privateKey response omits the datakey."""
+        cloud = self._cloud()
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value={"msmart": []}),
+        ):
+            assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_missing_ap_key(self) -> None:
+        """apply_cert aborts when the AP private key entry is absent."""
+        cloud = self._cloud()
+        response = {
+            "datakey": [{"keyId": self._KEY_ID}],
+            "msmart": [{"privateKeyName": "msmartBLE", "privateKeyValue": "00"}],
+        }
+        with patch.object(cloud, "_api_request", AsyncMock(return_value=response)):
+            assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_no_cert_response(self) -> None:
+        """apply_cert aborts when applyCertByP10 returns nothing."""
+        cloud = self._cloud()
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(side_effect=[self._private_key_response(), None]),
+        ):
+            assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_short_chain(self) -> None:
+        """apply_cert aborts when the superior cert chain is incomplete."""
+        cloud = self._cloud()
+        bad = {"cert": self._APP_CERT, "superiorCert": [self._ROOT_CERT]}
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(side_effect=[self._private_key_response(), bad]),
+        ):
+            assert await cloud.apply_cert() is None
+
+    async def test_cert_value_cbc_scheme(self) -> None:
+        """The CBC privateKey scheme decrypts with the access-token key."""
+        cloud = self._cloud()
+        cloud.set_access_token("prefix_" + "A" * 20)
+        token = "prefix_" + "A" * 20
+        key = sha256(token[7:].encode("ascii")).digest()[:16]
+        iv = bytes(range(16))
+        plaintext = "cbcsecretcbcsecret"
+        ct = AES.new(key, AES.MODE_CBC, iv=iv).encrypt(
+            pad(plaintext.encode("ascii"), 16),
+        )
+        value = iv.hex() + ct.hex()
+        assert cloud._decrypt_cert_value(value) == plaintext
+
+    async def test_cert_value_cbc_falls_back_to_ecb(self) -> None:
+        """A value that fails CBC decryption falls back to the ECB scheme."""
+        cloud = self._cloud()
+        cloud.set_access_token("prefix_" + "A" * 20)
+        # The ECB-encrypted AP key is not valid CBC ciphertext under the
+        # token-derived key, so decryption must fall through to the ECB path.
+        assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
+
+    async def test_cert_value_session_key_scheme(self) -> None:
+        """First-party OBM accounts decrypt the AP key with the session key.
+
+        A personal 美的美居 / MSmartHome login decrypts ``privateKeyValue`` with
+        AES-128-ECB under the per-session data key (not the token CBC or the
+        legacy fixed-key scheme). Using the wrong key yields a garbage AP key
+        that only surfaces later as a silently rejected handshake signature, so
+        the session-key path must win when a session key is present (regression
+        guard for midea_ac_lan issue #1168).
+        """
+        cloud = self._cloud()
+        session_key = b"sessionkey012345"
+        # The session key is set by set_aes_keys at login; inject it directly to
+        # represent the post-login state without replaying the key exchange.
+        cloud._security._aes_key = session_key
+        plaintext = "apsecretapsecret"
+        ct = AES.new(session_key, AES.MODE_ECB).encrypt(pad(plaintext.encode(), 16))
+        assert cloud._decrypt_cert_value(ct.hex()) == plaintext
+
+    async def test_cert_value_session_key_falls_back(self) -> None:
+        """A value that is not session-key ciphertext falls through the chain.
+
+        When the session-key ECB decrypt produces invalid padding the lookup
+        must continue to the token CBC and legacy fixed-key schemes rather than
+        returning garbage.
+        """
+        cloud = self._cloud()
+        cloud._security._aes_key = b"sessionkey012345"
+        cloud.set_access_token("prefix_" + "A" * 20)
+        # The legacy ECB AP key is not valid ciphertext under the session key,
+        # so decryption must fall through to the fixed-key ECB scheme.
+        assert cloud._decrypt_cert_value(self._AP_KEY_ECB_HEX) == self._AP_PRIVATE_KEY
+
+    def test_private_key_alias_defaults_to_aka(self) -> None:
+        """First-party clouds expose the AKA privateKey alias by default.
+
+        Pins the two alias constants so a future edit cannot silently swap the
+        default back to the OEM ``privateKey2`` endpoint, which is unregistered
+        for first-party accounts (midea_ac_lan issue #1168).
+        """
+        assert CERT_PRIVATE_KEY_ALIAS == "/v1/appliance/AKA/privateKey"
+        assert CERT_PRIVATE_KEY_ALIAS_OEM == "/v2/open/sdk/appliance/privateKey2"
+        cloud = self._cloud()
+        assert cloud._cert_private_key_alias == CERT_PRIVATE_KEY_ALIAS

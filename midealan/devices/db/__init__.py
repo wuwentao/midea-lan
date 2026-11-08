@@ -89,6 +89,7 @@ class DeviceAttributes(StrEnum):
     remote_control_flag = "remote_control_flag"
     water_consumption = "water_consumption"
     power_consumption = "power_consumption"
+    wash_count = "wash_count"
 
 
 class MideaDBDevice(MideaDevice):

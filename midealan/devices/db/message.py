@@ -117,6 +117,10 @@ V41_REMOTE_CONTROL_MASK = 0x04
 V41_CONSUMPTION_LENGTH = 5
 V41_WATER_CONSUMPTION_OFFSET = 1
 V41_POWER_CONSUMPTION_OFFSET = 3
+# wash_count is not decoded by T_0000_DB_41.lua; the official app plugin for
+# 0xDB reads it from the same 0405 report (bit offset 120, 16 bits).
+V41_WASH_COUNT_OFFSET = 5
+V41_WASH_COUNT_END = 7
 
 
 class ControlAttributes(StrEnum):
@@ -155,6 +159,7 @@ class V41Attributes(StrEnum):
     remote_control_flag = "remote_control_flag"
     water_consumption = "water_consumption"
     power_consumption = "power_consumption"
+    wash_count = "wash_count"
 
 
 type V41Status = dict[V41Attributes, bool | int]
@@ -439,7 +444,7 @@ def decode_v41_consumption(message_type: MessageType, body: bytearray) -> V41Sta
         or body[0] != ListTypes.X05
     ):
         return {}
-    return {
+    report: V41Status = {
         V41Attributes.water_consumption: int.from_bytes(
             body[V41_WATER_CONSUMPTION_OFFSET:V41_POWER_CONSUMPTION_OFFSET],
             "little",
@@ -449,6 +454,12 @@ def decode_v41_consumption(message_type: MessageType, body: bytearray) -> V41Sta
             "little",
         ),
     }
+    if len(body) >= V41_WASH_COUNT_END:
+        report[V41Attributes.wash_count] = int.from_bytes(
+            body[V41_WASH_COUNT_OFFSET:V41_WASH_COUNT_END],
+            "little",
+        )
+    return report
 
 
 def parameter_body(length: int = PARAMETER_BODY_LENGTH) -> bytearray:

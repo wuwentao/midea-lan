@@ -604,6 +604,7 @@ class TestMideaDBDevice:
         assert report == {
             DeviceAttributes.water_consumption: 339,
             DeviceAttributes.power_consumption: 633,
+            DeviceAttributes.wash_count: 9,
         }
         assert device.get_attribute(DeviceAttributes.dryer) == 1
         assert device.get_attribute(DeviceAttributes.progress) == "dry"

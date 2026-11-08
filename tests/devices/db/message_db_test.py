@@ -567,7 +567,8 @@ class TestDBV41Decoders:
     ) -> None:
         """Decode the Lua byte6/13/14-15/24/25/29/31 fields from real frames."""
         status = decode_v41_status(v41_body(name))
-        assert len(status) == len(V41Attributes) - 2
+        # every attribute except the three 0405 report counters
+        assert len(status) == len(V41Attributes) - 3
         for attr, value in expected.items():
             assert status[attr] == value
 
@@ -610,10 +611,21 @@ class TestDBV41Decoders:
         assert decode_v41_status(body) == {}
 
     def test_consumption_report(self) -> None:
-        """Decode the little-endian water and power counters of dataType 0405."""
+        """Decode the little-endian counters of dataType 0405."""
         assert decode_v41_consumption(
             MessageType.notify1,
             v41_body("consumption"),
+        ) == {
+            V41Attributes.water_consumption: 339,
+            V41Attributes.power_consumption: 633,
+            V41Attributes.wash_count: 9,
+        }
+
+    def test_consumption_report_without_wash_count(self) -> None:
+        """Keep the Lua counters when a short report stops before wash_count."""
+        assert decode_v41_consumption(
+            MessageType.notify1,
+            v41_body("consumption")[:5],
         ) == {
             V41Attributes.water_consumption: 339,
             V41Attributes.power_consumption: 633,

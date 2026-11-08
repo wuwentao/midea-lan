@@ -598,11 +598,16 @@ class TestDBV41Decoders:
         assert V41Attributes.remote_control_flag not in status
         assert status[V41Attributes.dryer] == 1
 
+    def test_status_accepts_set_response_body(self) -> None:
+        """Decode dataType 0202 (set response) bodies like the Lua decoder."""
+        body = bytearray([ListTypes.X02]) + v41_body("drying")[1:]
+        assert decode_v41_status(body) == decode_v41_status(v41_body("drying"))
+
     @pytest.mark.parametrize(
         "body",
         [
             bytearray(30),
-            bytearray([ListTypes.X02]) + v41_body("drying")[1:],
+            bytearray([ListTypes.X01]) + v41_body("drying")[1:],
             v41_body("consumption"),
         ],
     )

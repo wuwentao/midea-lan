@@ -98,6 +98,8 @@ APPOINTMENT_ON = 0xF7
 
 # DB v41 read-only status fields, named after T_0000_DB_41.lua
 # (updateGlobalPropertyValueByByte / assembleJsonByGlobalProperty).
+# The Lua decoder reads them from dataType 0202, 0303 and 0404 bodies.
+V41_STATUS_BODY_TYPES = (0x02, 0x03, 0x04)
 V41_DRYER_OFFSET = 6  # low nibble: dryer, high nibble: soakCount
 V41_DRYER_MASK = 0x0F
 V41_SOAK_COUNT_MASK = 0xF0
@@ -405,7 +407,7 @@ APPOINTMENT_ATTRIBUTES = (
 
 def decode_v41_status(body: bytearray) -> V41Status:
     """Decode v41-only fields of a full status body (dataType 0202/0303/0404)."""
-    if len(body) < MINIMUM_STATUS_LENGTH or body[0] not in STATUS_BODY_TYPES:
+    if len(body) < MINIMUM_STATUS_LENGTH or body[0] not in V41_STATUS_BODY_TYPES:
         return {}
     function = body[V41_FUNCTION_OFFSET]
     wash_option = body[V41_WASH_OPTION_OFFSET]

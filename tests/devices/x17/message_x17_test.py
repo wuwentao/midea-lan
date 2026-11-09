@@ -1,5 +1,7 @@
 """Test x17 message."""
 
+from collections.abc import Sequence
+
 from midealan.const import DeviceType
 from midealan.devices.x17.message import (
     CONTROL_COMMAND,
@@ -23,7 +25,7 @@ from midealan.devices.x17.message import (
 from midealan.message import MessageType
 
 
-def _report_frame(body: bytes, message_type: int = MessageType.query) -> bytes:
+def _report_frame(body: Sequence[int], message_type: int = MessageType.query) -> bytes:
     """Wrap a report body in a full x17 response frame (header + checksum)."""
     header = bytearray(
         [0xAA, 10 + len(body) + 1, DeviceType.X17, 0, 0, 0, 0, 0, 3, message_type],
@@ -135,16 +137,18 @@ class TestMessage17Response:
     def test_query_reply_decodes(self) -> None:
         """A query reply (0x03) populates the state attributes."""
         response = Message17Response(_report_frame([VALUE_ON, UPDOWN_UP, 0x01, 0x00]))
-        assert response.power is True
-        assert response.updown == "up"
-        assert response.light is True
+        # Attributes are set dynamically by set_attr(); read them via getattr so
+        # mypy does not flag the wrapper's lack of static fields.
+        assert getattr(response, "power") is True  # noqa: B009
+        assert getattr(response, "updown") == "up"  # noqa: B009
+        assert getattr(response, "light") is True  # noqa: B009
 
     def test_notify_decodes(self) -> None:
         """A notify (0x04) is decoded the same as a query reply."""
         response = Message17Response(
             _report_frame([VALUE_ON, 0x00, 0x00, 0x00], MessageType.notify1),
         )
-        assert response.power is True
+        assert getattr(response, "power") is True  # noqa: B009
 
     def test_set_echo_not_decoded(self) -> None:
         """The set echo (0x02) is ignored, mirroring the Lua binToModel guard."""

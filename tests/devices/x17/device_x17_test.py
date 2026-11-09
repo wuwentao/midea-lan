@@ -1,5 +1,6 @@
 """Test x17 device."""
 
+from collections.abc import Sequence
 from unittest.mock import patch
 
 import pytest
@@ -25,7 +26,7 @@ from midealan.exceptions import ValueWrongType
 from midealan.message import MessageType
 
 
-def _report_frame(body: bytes) -> bytes:
+def _report_frame(body: Sequence[int]) -> bytes:
     """Wrap a report body in a full x17 query-reply frame."""
     header = bytearray([0xAA, 10 + len(body) + 1, 0x17, 0, 0, 0, 0, 0, 3, 0x03])
     return bytes(header + bytearray(body) + bytearray([0x00]))

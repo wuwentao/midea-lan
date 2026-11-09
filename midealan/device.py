@@ -11,7 +11,7 @@ from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
 from typing_extensions import deprecated
 
 from .const import DeviceType, ProtocolVersion
-from .exceptions import SocketException
+from .exceptions import MessageWrongFormat, MideaLanError, SocketException
 from .message import (
     TOSHIBA_FRAME_MAGIC,
     MessageApplianceResponse,
@@ -29,11 +29,29 @@ from .security import (
     MSGTYPE_HANDSHAKE_REQUEST,
     LocalSecurity,
 )
+from .tls import (
+    FRAME_MAGIC,
+    HEADER_LENGTH,
+    MSG_TYPE_DATA_TRANSMIT,
+    MSG_TYPE_HEARTBEAT,
+    MSG_TYPE_HEARTBEAT_RESPONSE,
+    SIGNATURE_LENGTH,
+    CertBundle,
+    MSDatagram,
+    TLSSession,
+)
 
 MIN_AUTH_RESPONSE = 20
 MIN_MSG_LENGTH = 56
 MESSAGE_TYPE_INDEX = 9  # offset of the message-type byte in the 10-byte header
 MIN_V2_FACTUAL_MSG_LENGTH = 6
+# The MSDatagram length lives in header bytes [4:6] (little-endian); a complete
+# TLS frame is at least the 40-byte header plus its 16-byte trailing signature.
+TLS_LENGTH_OFFSET = 4
+TLS_MIN_FRAME_LENGTH = HEADER_LENGTH + SIGNATURE_LENGTH
+# A TLS handshake reply can exceed the classic 512-byte recv window because it
+# carries the module certificate chain.
+TLS_RECV_BUFFER = 4096
 RESPONSE_TIMEOUT = 12  # main loop socket recv timeout, 12 * 10s = 120s
 SOCKET_TIMEOUT = 10  # socket connection default timeout
 # fix https://github.com/wuwentao/midea_ac_lan/issues/658#issuecomment-4555804288
@@ -108,6 +126,11 @@ class MideaDeviceInitKwargs(TypedDict):
     sn8: NotRequired[str | None]
     manufacturer_code: NotRequired[str | None]
     cloud_name: NotRequired[str | None]
+    # udp_version>=4 "TLS" appliances are controlled over an app certificate +
+    # ECDH session instead of the token/key 8370 handshake. The caller
+    # provisions the bundle from the cloud (see ``cloud.apply_cert``) and passes
+    # it here; its presence selects the TLS transport.
+    cert_bundle: NotRequired[CertBundle | None]
 
 
 class MideaDevice(threading.Thread):
@@ -187,6 +210,13 @@ class MideaDevice(threading.Thread):
         )
         self._last_response_toshiba: bool | None = False
         self._selected_toshiba_wire_type: DeviceType | int | None = None
+        # udp_version>=4 "TLS" transport: when a provisioned certificate bundle
+        # is supplied the device runs the 0x75 cert/ECDH handshake instead of
+        # the 8370 token handshake, and all control frames are AES-128-CCM
+        # MSWifiDatagrams keyed by the negotiated session key.
+        self._cert_bundle: CertBundle | None = kwargs.get("cert_bundle")
+        self._tls_enabled = self._cert_bundle is not None
+        self._tls_codec: MSDatagram | None = None
 
     _fahrenheit_default: ClassVar[bool] = False
 
@@ -321,7 +351,9 @@ class MideaDevice(threading.Thread):
                 )
                 sock.connect((self._ip_address, self._port))
                 _LOGGER.debug("[%s] Connected", self._device_id)
-                if self._device_protocol_version == ProtocolVersion.V3:
+                if self._tls_enabled:
+                    self.authenticate_tls()
+                elif self._device_protocol_version == ProtocolVersion.V3:
                     self.authenticate()
                 # 1. midea_ac_lan add device verify token with connect and auth
                 # 2. init connection, check_protocol
@@ -391,12 +423,99 @@ class MideaDevice(threading.Thread):
         self._security.tcp_key(response, self._key)
         _LOGGER.debug("[%s] Authentication success", self._device_id)
 
+    def authenticate_tls(self) -> None:
+        """Run the udp_version>=4 cert/ECDH handshake and derive the session key.
+
+        Unlike :meth:`authenticate`, this uses no device token/key: the session
+        key is negotiated live from the provisioned app certificate and the
+        device's module certificate (see :class:`midealan.tls.TLSSession`).
+        """
+        if not self._socket or self._cert_bundle is None:
+            _LOGGER.debug(
+                "[%s] authenticate_tls failure, socket or cert bundle is none",
+                self._device_id,
+            )
+            raise SocketException
+        session = TLSSession(self._cert_bundle, self._device_id)
+        _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
+        try:
+            self._socket.send(session.build_cert_request())
+            reply = self._recv_tls_frame()
+            _LOGGER.debug(
+                "[%s] TLS handshake: cert response %d bytes: %s",
+                self._device_id,
+                len(reply),
+                reply.hex(),
+            )
+            session.process_cert_response(reply)
+            self._socket.send(session.build_finish())
+            finish_reply = self._recv_tls_frame()
+            _LOGGER.debug(
+                "[%s] TLS handshake: finish response %d bytes: %s",
+                self._device_id,
+                len(finish_reply),
+                finish_reply.hex(),
+            )
+            session.process_finish(finish_reply)
+        except MideaLanError as e:
+            _LOGGER.warning(
+                "[%s] TLS handshake failed: %s",
+                self._device_id,
+                repr(e),
+            )
+            raise AuthException from e
+        self._tls_codec = MSDatagram(
+            self._device_id,
+            ap_private_key=self._cert_bundle.ap_private_key,
+            session_key=session.session_key,
+        )
+        _LOGGER.debug("[%s] TLS handshake success", self._device_id)
+
+    def _recv_tls_frame(self) -> bytes:
+        """Read one complete MSWifiDatagram frame from the socket.
+
+        A single ``recv`` may return a partial frame (the cert chain is large)
+        or several frames at once; read until the declared length arrives and
+        keep any trailing bytes in the buffer for the next read.
+        """
+        if not self._socket:
+            raise SocketException
+        while True:
+            if len(self._buffer) >= TLS_MIN_FRAME_LENGTH:
+                if self._buffer[0:2] != FRAME_MAGIC:
+                    raise MessageWrongFormat("not a 5a5a datagram")
+                length = int.from_bytes(
+                    self._buffer[TLS_LENGTH_OFFSET : TLS_LENGTH_OFFSET + 2],
+                    "little",
+                )
+                if length >= TLS_MIN_FRAME_LENGTH and len(self._buffer) >= length:
+                    frame = self._buffer[:length]
+                    self._buffer = self._buffer[length:]
+                    return frame
+            chunk = self._socket.recv(TLS_RECV_BUFFER)
+            if len(chunk) == 0:
+                raise SocketException
+            self._buffer += chunk
+
     def send_message(self, data: bytes, query: bool = False) -> None:
         """Send message."""
-        if self._device_protocol_version == ProtocolVersion.V3:
+        if self._tls_enabled:
+            self.send_message_tls(data, query=query)
+        elif self._device_protocol_version == ProtocolVersion.V3:
             self.send_message_v3(data, msg_type=MSGTYPE_ENCRYPTED_REQUEST, query=query)
         else:
             self.send_message_v2(data, query=query)
+
+    def send_message_tls(self, data: bytes, query: bool = False) -> None:
+        """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
+        if self._tls_codec is None:
+            _LOGGER.debug(
+                "[%s] send_message_tls failure, TLS session not established",
+                self._device_id,
+            )
+            raise SocketException
+        frame = self._tls_codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
+        self.send_message_v2(frame, query=query)
 
     def send_message_v2(self, data: bytes, query: bool = False) -> None:
         """Send message V2."""
@@ -459,6 +578,12 @@ class MideaDevice(threading.Thread):
         """Serialize and send."""
         data = cmd.serialize()
         _LOGGER.debug("[%s] Sending: %s, query is %s", self._device_id, cmd, query)
+        if self._tls_enabled:
+            # The TLS transport CCM-wraps the bare appliance frame directly; it
+            # does not use the ``5a5a0111`` V1 transport envelope (that wrapper
+            # would be an unrecognized inner payload the device drops silently).
+            self.send_message_tls(bytes(data), query=query)
+            return
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
@@ -853,8 +978,84 @@ class MideaDevice(threading.Thread):
             return False
         return True
 
+    def _dispatch_decoded_message(self, decrypted: bytes) -> None:
+        """Pre-process and dispatch one decrypted appliance frame."""
+        cont = True
+        if self._appliance_query:
+            cont = self.pre_process_message(bytearray(decrypted))
+        if not cont:
+            return
+        _LOGGER.debug(
+            "[%s] process message %s for device %s,"
+            "model %s, subtype %s, "
+            "device protocol %s, message protocol %s",
+            self._device_id,
+            decrypted.hex(),
+            self._device_name,
+            self._model,
+            self._subtype,
+            self._device_protocol_version,
+            self._message_protocol_version,
+        )
+        status = self.process_message(decrypted)
+        if len(status) > 0:
+            self.update_all(status)
+        else:
+            _LOGGER.debug("[%s] Unidentified protocol", self._device_id)
+
+    def _parse_tls_message(self, msg: bytes) -> MessageResult:
+        """Decode buffered AES-128-CCM MSWifiDatagrams and dispatch each one.
+
+        The decrypted body (after the 2-byte session counter is stripped by the
+        codec) is the same plaintext appliance frame the non-TLS path produces,
+        so it feeds the existing ``process_message`` pipeline unchanged.
+        """
+        if self._tls_codec is None:
+            raise SocketException
+        self._buffer += msg
+        dispatched = False
+        while len(self._buffer) >= TLS_MIN_FRAME_LENGTH:
+            if self._buffer[0:2] != FRAME_MAGIC:
+                _LOGGER.warning(
+                    "[%s] Dropping non-5a5a TLS buffer: %s",
+                    self._device_id,
+                    self._buffer.hex(),
+                )
+                self._buffer = b""
+                break
+            length = int.from_bytes(
+                self._buffer[TLS_LENGTH_OFFSET : TLS_LENGTH_OFFSET + 2],
+                "little",
+            )
+            if length < TLS_MIN_FRAME_LENGTH or len(self._buffer) < length:
+                break
+            frame = self._buffer[:length]
+            self._buffer = self._buffer[length:]
+            parsed = self._tls_codec.decode(frame)
+            if parsed.msg_type == MSG_TYPE_HEARTBEAT_RESPONSE:
+                # A heartbeat reply carries no appliance payload, but it proves
+                # the device is alive; count it so run() resets its timeout
+                # counter instead of eventually reconnecting an idle device.
+                dispatched = True
+                continue
+            if parsed.msg_type != MSG_TYPE_DATA_TRANSMIT or not parsed.body:
+                # Handshake replies carry no appliance payload.
+                continue
+            try:
+                self._dispatch_decoded_message(parsed.body)
+                dispatched = True
+            except Exception:
+                _LOGGER.exception(
+                    "[%s] Error in process TLS message %s",
+                    self._device_id,
+                    parsed.body.hex(),
+                )
+        return MessageResult.SUCCESS if dispatched else MessageResult.PADDING
+
     def parse_message(self, msg: bytes) -> MessageResult:
         """Parse message."""
+        if self._tls_enabled:
+            return self._parse_tls_message(msg)
         if self._device_protocol_version == ProtocolVersion.V3:
             messages, self._buffer = self._security.decode_8370(self._buffer + msg)
         else:
@@ -1043,6 +1244,13 @@ class MideaDevice(threading.Thread):
 
     def send_heartbeat(self) -> None:
         """Send heartbeat."""
+        if self._tls_enabled:
+            if self._tls_codec is None:
+                raise SocketException
+            # A TLS heartbeat is an empty-bodied MSWifiDatagram of type 0x7B.
+            frame = self._tls_codec.encode(b"", MSG_TYPE_HEARTBEAT)
+            self.send_message_v2(frame)
+            return
         msg = PacketBuilder(self._device_id, bytearray([0x00])).finalize(msg_type=0)
         self.send_message(msg)
 
@@ -1114,6 +1322,9 @@ class MideaDevice(threading.Thread):
                 # reconnected device re-probes instead of reusing stale results.
                 self.reset_init_query()
                 self._buffer = b""
+                # Drop the negotiated session key so a reconnect re-runs the
+                # TLS cert/ECDH handshake instead of reusing a stale key.
+                self._tls_codec = None
         if sock is not None:
             try:
                 sock.shutdown(socket.SHUT_RDWR)

@@ -9,6 +9,7 @@ import warnings
 from argparse import Namespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -108,6 +109,35 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             assert keys[99]["token"] == "token99"
             mock_default_keys.assert_called_once()
             mock_cloud_keys.assert_not_called()
+
+    async def test_get_cert_bundle_no_credentials(self) -> None:
+        """Without user credentials cert provisioning is refused."""
+        self.namespace.cloud_name = None
+        with self.assertLogs("cli", level="ERROR") as logs:
+            assert await self.cli._get_cert_bundle() is None
+        assert any("certificate" in line for line in logs.output)
+
+    async def test_get_cert_bundle_login_failure(self) -> None:
+        """A failed cloud login returns no cert bundle."""
+        mock_cloud = AsyncMock()
+        mock_cloud.login.return_value = False
+        with (
+            patch.object(self.cli, "_get_cloud", return_value=mock_cloud),
+            self.assertLogs("cli", level="WARNING") as logs,
+        ):
+            assert await self.cli._get_cert_bundle() is None
+        assert any("cert apply" in line for line in logs.output)
+        mock_cloud.apply_cert.assert_not_called()
+
+    async def test_get_cert_bundle_success(self) -> None:
+        """A successful login provisions a cert bundle from the cloud."""
+        sentinel = object()
+        mock_cloud = AsyncMock()
+        mock_cloud.login.return_value = True
+        mock_cloud.apply_cert.return_value = sentinel
+        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud):
+            assert await self.cli._get_cert_bundle() is sentinel
+        mock_cloud.apply_cert.assert_awaited_once()
 
     def test_extract_mac(self) -> None:
         """Test _extract_mac."""
@@ -218,6 +248,101 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_discover.return_value = {}
 
             await self.cli.discover()  # No devices
+
+    async def test_discover_tls_device(self) -> None:
+        """A TLS device provisions a cert bundle and drives control with it."""
+        tls_device = {
+            "device_id": 3,
+            "protocol": ProtocolVersion.V3,
+            "type": "E3",
+            "ip_address": "192.168.0.3",
+            "port": 6444,
+            "model": "",
+            "sn": "",
+            "mac": "1234567890AB",
+            "sn_encrypted": True,
+        }
+        cert_bundle = object()
+        mock_device_instance = MagicMock()
+        mock_device_instance.connect.return_value = True
+        with (
+            patch("midealan.cli.discover", return_value={3: tls_device}),
+            patch(
+                "midealan.cli.device_selector",
+                return_value=mock_device_instance,
+            ) as device_selector_mock,
+            patch.object(
+                self.cli,
+                "_get_cert_bundle",
+                return_value=cert_bundle,
+            ) as cert_bundle_mock,
+        ):
+            await self.cli.discover()
+        cert_bundle_mock.assert_awaited_once()
+        assert device_selector_mock.call_args.kwargs["cert_bundle"] is cert_bundle
+        assert device_selector_mock.call_args.kwargs["token"] == ""
+
+    async def test_discover_tls_devices_provision_cert_once(self) -> None:
+        """Multiple TLS devices share a single cert provisioning."""
+
+        def _tls(device_id: int, ip: str) -> dict[str, Any]:
+            return {
+                "device_id": device_id,
+                "protocol": ProtocolVersion.V3,
+                "type": "E3",
+                "ip_address": ip,
+                "port": 6444,
+                "model": "",
+                "sn": "",
+                "mac": "1234567890AB",
+                "sn_encrypted": True,
+            }
+
+        devices = {3: _tls(3, "192.168.0.3"), 4: _tls(4, "192.168.0.4")}
+        cert_bundle = object()
+        mock_device_instance = MagicMock()
+        mock_device_instance.connect.return_value = True
+        with (
+            patch("midealan.cli.discover", return_value=devices),
+            patch(
+                "midealan.cli.device_selector",
+                return_value=mock_device_instance,
+            ) as device_selector_mock,
+            patch.object(
+                self.cli,
+                "_get_cert_bundle",
+                return_value=cert_bundle,
+            ) as cert_bundle_mock,
+        ):
+            await self.cli.discover()
+        # Two TLS devices, but the certificate is provisioned only once.
+        cert_bundle_mock.assert_awaited_once()
+        assert device_selector_mock.call_count == 2
+        for call in device_selector_mock.call_args_list:
+            assert call.kwargs["cert_bundle"] is cert_bundle
+
+    async def test_discover_tls_device_no_cert(self) -> None:
+        """A TLS device with no provisionable cert is skipped."""
+        tls_device = {
+            "device_id": 3,
+            "protocol": ProtocolVersion.V3,
+            "type": "E3",
+            "ip_address": "192.168.0.3",
+            "port": 6444,
+            "model": "",
+            "sn": "",
+            "mac": "1234567890AB",
+            "sn_encrypted": True,
+        }
+        with (
+            patch("midealan.cli.discover", return_value={3: tls_device}),
+            patch(
+                "midealan.cli.device_selector",
+            ) as device_selector_mock,
+            patch.object(self.cli, "_get_cert_bundle", return_value=None),
+        ):
+            assert await self.cli.discover() == []
+        device_selector_mock.assert_not_called()
 
     def test_message(self) -> None:
         """Test message."""

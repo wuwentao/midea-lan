@@ -213,17 +213,15 @@ class MessageCookSet(Message9aBase):
         self.mode = 0
         self.temperature = 0
         self.watt = VALUE_INVALID
-        self.weight = VALUE_INVALID
+        # weight is stored in grams; None means "unchanged" and only maps to the
+        # 0xFF wire sentinel at serialization, so a real 255 g is not dropped.
+        self.weight: int | None = None
 
     @property
     def _body(self) -> bytearray:
         # body_type byte is the 0x22 sub-command; the 18-byte FORM_COOK record
         # (Lua bodyBytes[1..18]) follows. weight is sent in units of 10 g.
-        weight = (
-            VALUE_INVALID
-            if self.weight == VALUE_INVALID
-            else self.weight // WEIGHT_UNIT
-        )
+        weight = VALUE_INVALID if self.weight is None else self.weight // WEIGHT_UNIT
         return bytearray(
             [
                 FORM_COOK,

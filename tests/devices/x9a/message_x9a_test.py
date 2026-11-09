@@ -262,6 +262,12 @@ class TestMessageCookSet:
         message = MessageCookSet(3)
         assert message.body[16] == VALUE_INVALID
 
+    def test_cook_weight_255_not_dropped(self) -> None:
+        """A real 255 g weight serializes to 25, not the 0xFF 'unchanged' byte."""
+        message = MessageCookSet(3)
+        message.weight = 255
+        assert message.body[16] == 255 // WEIGHT_UNIT
+
 
 class TestMessage9aResponse:
     """Test x9a response wrapper."""

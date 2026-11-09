@@ -37,6 +37,7 @@ class DeviceType(IntEnum):
     E2 = 0xE2
     E3 = 0xE3
     E6 = 0xE6
+    E7 = 0xE7
     E8 = 0xE8
     EA = 0xEA
     EB = 0xEB

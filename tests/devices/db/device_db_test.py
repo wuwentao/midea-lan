@@ -24,6 +24,16 @@ DB_RESERVED = bytes.fromhex(
     "040106001f0540060303020400427a01208a0000db5933b10000003f0c080000"
     "02ffff000000ffffffffffffffff140101ffffffff01ff200000080000",
 )
+# Real notify1 frames from a v41 washer-dryer (SN8 38123703, subtype 16695):
+# drying status of a wash & dry cycle, then the end-of-cycle report (0405).
+V41_DRYING = (
+    "aa33db000000000000040401020002012101050000000000000010290000db37414c"
+    "0000000403000000000000000000000000de"
+)
+V41_CONSUMPTION = (
+    "aa33db000000000000040553017902090000ffffffffffffffffffffffffdb37414c"
+    "ffffffffffffff0000000000000000000085"
+)
 BASE_ARGS: MideaDeviceInitKwargs = {
     "name": "Test laundry appliance",
     "device_id": 1,
@@ -570,3 +580,43 @@ class TestMideaDBDevice:
             device.get_attribute(DeviceAttributes.appointment_controls_available)
             is True
         )
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38123703", None), ("MF200D80WB/T-A1", "38123703")],
+    )
+    def test_v41_washer_dryer_profile_publishes_lua_fields(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Expose drying, option, error and consumption fields for the profile."""
+        device = MideaDBDevice(customize="", **device_args(model, 16695, sn8=sn8))
+        assert DeviceAttributes.dryer in device.attributes
+        assert device.get_attribute(DeviceAttributes.dryer) is None
+        status = device.process_message(bytes.fromhex(V41_DRYING))
+        assert status[DeviceAttributes.program] == "fast_wash"
+        assert status[DeviceAttributes.progress] == "dry"
+        assert status[DeviceAttributes.dryer] == 1
+        assert status[DeviceAttributes.wind_dispel] is False
+        assert status[DeviceAttributes.remote_control_flag] is False
+        report = device.process_message(bytes.fromhex(V41_CONSUMPTION))
+        assert report == {
+            DeviceAttributes.water_consumption: 339,
+            DeviceAttributes.power_consumption: 633,
+            DeviceAttributes.wash_count: 9,
+        }
+        assert device.get_attribute(DeviceAttributes.dryer) == 1
+        assert device.get_attribute(DeviceAttributes.progress) == "dry"
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("38123703", 0), ("other", 16695), ("other", 0)],
+    )
+    def test_v41_fields_are_profile_scoped(self, model: str, subtype: int) -> None:
+        """Keep legacy DB profiles free of v41-only attributes."""
+        device = MideaDBDevice(customize="", **device_args(model, subtype))
+        status = device.process_message(bytes.fromhex(V41_DRYING))
+        assert DeviceAttributes.dryer not in device.attributes
+        assert DeviceAttributes.dryer not in status
+        assert device.process_message(bytes.fromhex(V41_CONSUMPTION)) == {}

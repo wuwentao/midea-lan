@@ -1,5 +1,6 @@
 """Midea lan discover test."""
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -380,7 +381,13 @@ class TestParseDiscoverResponse:
         data = b"\xaa" * DISCOVERY_MIN_REPLY_LENGTH + b"\xbb" * 70
         with caplog.at_level("DEBUG", logger="midealan.discover"):
             assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
-        assert "unrecognized discovery datagram" in caplog.text
+        records = [
+            r for r in caplog.records if "unrecognized discovery datagram" in r.message
+        ]
+        assert len(records) == 1
+        # Assert the level itself, not just the captured text: a regression back
+        # to WARNING on this shared-port noise path must fail the test.
+        assert records[0].levelno == logging.DEBUG
         assert DEVICE_IP in caplog.text
 
     def test_parse_undecryptable_body_logs_reason(
@@ -395,7 +402,11 @@ class TestParseDiscoverResponse:
         data = _build_v2_packet(encrypt_data=b"\xde\xad" * 40)
         with caplog.at_level("INFO", logger="midealan.discover"):
             assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
-        assert "could not be" in caplog.text
+        records = [r for r in caplog.records if "could not be" in r.message]
+        assert len(records) == 1
+        # A real but undecodable Midea frame is worth surfacing at INFO; assert
+        # the level so it cannot silently drop to DEBUG or rise to WARNING.
+        assert records[0].levelno == logging.INFO
         assert DEVICE_IP in caplog.text
 
 

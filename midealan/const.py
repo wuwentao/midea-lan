@@ -53,6 +53,7 @@ class DeviceType(IntEnum):
     X40 = 0x40
     X44 = 0x44
     X51 = 0x51
+    X9A = 0x9A
     X9B = 0x9B
     X9C = 0x9C
     X00 = 0x00

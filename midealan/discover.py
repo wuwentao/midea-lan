@@ -7,13 +7,14 @@ import select
 import socket
 import time
 from collections.abc import Callable
+from importlib import util as importlib_util
 from ipaddress import IPv4Network
 from typing import Any, NamedTuple
 
 import ifaddr
 from defusedxml import ElementTree
 
-from .const import ProtocolVersion
+from .const import DeviceType, ProtocolVersion
 from .exceptions import ElementMissing, MideaLanError
 from .security import LocalSecurity
 
@@ -193,6 +194,63 @@ SEND_BROADCAST_PORTS = (6445, 20086)
 RECEIVE_BROADCAST_PORTS = (7083, 15000)
 # Overall time budget for one discover() scan.
 DISCOVERY_TIMEOUT = 5.0
+
+# Support-verdict values attached to every discovered device so callers (CLI,
+# HA) can surface a device even when midealan cannot control it yet, together
+# with a human-readable reason, instead of silently dropping it. This answers
+# the recurring "my device isn't found" reports: an unsupported device now
+# appears with an explanation rather than vanishing.
+SUPPORT_SUPPORTED = "supported"
+SUPPORT_EXPERIMENTAL = "experimental"
+SUPPORT_UNSUPPORTED = "unsupported"
+
+
+def _device_package_exists(device_type: int) -> bool:
+    """Return whether a ``devices/<hextype>`` package exists for this type.
+
+    Mirrors the naming rule in :func:`midealan.devices.device_selector`: types
+    below ``0xA0`` are prefixed with ``x`` (e.g. ``x13``). Uses
+    ``importlib.util.find_spec`` so no device module is imported as a side
+    effect of discovery.
+    """
+    suffix = (
+        f"x{device_type:02x}" if device_type < DeviceType.A0 else f"{device_type:02x}"
+    )
+    try:
+        return importlib_util.find_spec(f"midealan.devices.{suffix}") is not None
+    except ModuleNotFoundError:
+        # A parent package is missing; treat as "no package" rather than raising.
+        return False
+
+
+def _support_verdict(device_type: int, udp_version: int) -> tuple[str, str]:
+    """Classify a discovered device into a support verdict plus a reason.
+
+    - ``supported``: a device package exists and the classic LAN transport
+      applies (``udp_version < 4``).
+    - ``experimental``: a ``udp_version >= 4`` ("TLS") device. These need the
+      certificate/ECDH handshake transport whose control path is still being
+      verified against real hardware, so flag them rather than claiming full
+      support.
+    - ``unsupported``: no ``devices/<hextype>`` package implements this type.
+
+    The reason is a short English string suitable for logging or a diagnostic
+    entity; it is empty only for the plain ``supported`` case.
+    """
+    if not _device_package_exists(device_type):
+        return (
+            SUPPORT_UNSUPPORTED,
+            f"no device package for type 0x{device_type:02x}",
+        )
+    if udp_version >= SECURE_UDP_VERSION:
+        return (
+            SUPPORT_EXPERIMENTAL,
+            (
+                f"type 0x{device_type:02x} uses the udp_version>={SECURE_UDP_VERSION} "
+                "TLS transport; LAN control is still being verified"
+            ),
+        )
+    return (SUPPORT_SUPPORTED, "")
 
 
 def _ext_le_int(raw: bytes | bytearray) -> int:
@@ -408,10 +466,16 @@ def _parse_discover_response(
         encrypt_data = data[40:-16]
         reply = _decrypt_or_plaintext_reply(security, encrypt_data)
         if reply is None:
+            # G2: the body neither decrypts nor is a valid plaintext reply. Log
+            # the reason and source so an undecryptable device is visible in the
+            # debug log instead of silently vanishing from the scan.
             _LOGGER.warning(
-                "Failed to decrypt the encrypt_data: %s from %s. Maybe not support.",
-                encrypt_data.hex(),
+                "Discovered device %s (id %s) but its reply could not be "
+                "decoded (body: %s); skipping. This device is reachable but "
+                "midealan cannot parse its discovery reply.",
                 ip,
+                device_id,
+                encrypt_data.hex(),
             )
             return 0, None
         _LOGGER.debug("Declassified reply: %s", reply.hex())
@@ -464,16 +528,34 @@ def _parse_discover_response(
         mac = _extract_mac(b"", 0, sn)
         extended = {}
     else:
+        # G1: a datagram arrived from this address but its leading bytes match
+        # no known discovery frame (not 5a5a/8370 v2/v3, not a v1 XML header).
+        # Log the source and header so a reachable-but-unrecognized device is
+        # visible in the debug log instead of being dropped without a trace.
+        _LOGGER.warning(
+            "Ignoring an unrecognized discovery datagram from %s "
+            "(%d bytes, header %s); not a known Midea discovery frame.",
+            ip,
+            len(data),
+            data[:8].hex(),
+        )
         return 0, None
+    type_int = int(device_type, 16)
+    support, support_reason = _support_verdict(
+        type_int,
+        extended.get("udp_version", 0),
+    )
     return device_id, {
         "device_id": device_id,
-        "type": int(device_type, 16),
+        "type": type_int,
         "ip_address": ip,
         "port": port,
         "model": model,
         "sn": sn,
         "protocol": protocol,
         "mac": mac,
+        "support": support,
+        "support_reason": support_reason,
         **extended,
     }
 
@@ -573,11 +655,32 @@ def _discover_receive_loop(
                 device_id, device = _parse_discover_response(sock, found_devices)
                 if device is None:
                     continue
-                if len(discover_type) == 0 or device.get("type") in discover_type:
-                    found_devices[device_id] = device
+                if len(discover_type) != 0 and device.get("type") not in discover_type:
+                    # The caller restricted the scan to specific device types
+                    # and this one isn't on the list, so it is filtered out by
+                    # request -- not a support problem.
+                    _LOGGER.debug(
+                        "Skipping device (type 0x%02x) not in the requested "
+                        "discover_type filter: %s",
+                        device.get("type", 0),
+                        device,
+                    )
+                    continue
+                found_devices[device_id] = device
+                support = device.get("support", SUPPORT_SUPPORTED)
+                if support == SUPPORT_SUPPORTED:
                     _LOGGER.debug("Found a supported device: %s", device)
                 else:
-                    _LOGGER.debug("Found a unsupported device: %s", device)
+                    # Surface the device anyway, but make the reason explicit so
+                    # a user whose device "isn't found" can see why midealan
+                    # can't fully drive it yet.
+                    _LOGGER.info(
+                        "Found a %s device (type 0x%02x) at %s: %s",
+                        support,
+                        device.get("type", 0),
+                        device.get("ip_address"),
+                        device.get("support_reason") or "see protocol notes",
+                    )
             except OSError:
                 _LOGGER.exception("Socket error")
             except (MideaLanError, ValueError, IndexError, KeyError):

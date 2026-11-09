@@ -83,9 +83,11 @@ class Midea14Device(MideaDevice):
                 raise ValueWrongType("[x14] curtain_position expects a number")
             position = int(value)
             if not POSITION_MIN <= position <= POSITION_MAX:
-                raise ValueOutOfRange(
-                    f"[x14] curtain_position must be in [{POSITION_MIN}, {POSITION_MAX}]",
+                msg = (
+                    f"[x14] curtain_position must be in "
+                    f"[{POSITION_MIN}, {POSITION_MAX}]"
                 )
+                raise ValueOutOfRange(msg)
             message.position = position
         elif attr == DeviceAttributes.curtain_direction:
             if not isinstance(value, str) or value not in DIRECTION_CODES:

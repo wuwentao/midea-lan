@@ -1,5 +1,6 @@
 """Midea lan discover test."""
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -7,11 +8,16 @@ import pytest
 
 from midealan.discover import (
     DISCOVERY_MIN_REPLY_LENGTH,
+    SUPPORT_EXPERIMENTAL,
+    SUPPORT_SUPPORTED,
+    SUPPORT_UNSUPPORTED,
     _decode_ascii_or_hex,
     _decrypt_or_plaintext_reply,
+    _device_package_exists,
     _extract_mac,
     _is_valid_reply,
     _parse_discover_response,
+    _support_verdict,
     bytes2port,
     discover,
     enum_all_broadcast,
@@ -207,6 +213,10 @@ class TestParseDiscoverResponse:
             "is_master_gateway": False,
             "manufacturer_code": 0,
             "device_subtype": 0,
+            # 0xAC has a device package and udp_version < 4, so it is fully
+            # supported with no reason attached.
+            "support": "supported",
+            "support_reason": "",
         }
 
     def test_parse_extended_fields(self) -> None:
@@ -334,6 +344,129 @@ class TestParseDiscoverResponse:
         assert device["udp_version"] == 4
         assert device["protocol"] == 3
         assert device["sn_encrypted"] is True
+        # 0xAC has a package, but udp_version >= 4 means the TLS transport, so
+        # the verdict is experimental rather than fully supported.
+        assert device["support"] == SUPPORT_EXPERIMENTAL
+        assert "TLS" in device["support_reason"]
+
+    def test_parse_unsupported_device_type_surfaced(self) -> None:
+        """Test a reachable device with no package is surfaced, not dropped.
+
+        A device whose type has no ``devices/<hextype>`` package must still be
+        returned by the parser, tagged ``unsupported`` with a reason, so the
+        user can see it (and why it can't be driven) instead of it silently
+        vanishing from the scan.
+        """
+        # 0x99 has no device package in midealan.
+        reply = _build_reply(ssid=b"net_99_XXXX")
+        data = _build_v2_packet(encrypt_data=reply)
+        device_id, device = _parse_discover_response(_mock_sock_with(data), {})
+        assert device_id == DEVICE_ID
+        assert device is not None
+        assert device["type"] == 0x99
+        assert device["support"] == SUPPORT_UNSUPPORTED
+        assert "0x99" in device["support_reason"]
+
+    def test_parse_unknown_frame_logs_reason(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test G1: an unrecognized frame logs its source and header.
+
+        A datagram long enough to inspect but matching no known frame header
+        must be skipped with a logged reason rather than dropped silently. It
+        logs at debug: a stray non-Midea datagram on a shared port is likely
+        LAN noise, so it must not raise a warning.
+        """
+        data = b"\xaa" * DISCOVERY_MIN_REPLY_LENGTH + b"\xbb" * 70
+        with caplog.at_level("DEBUG", logger="midealan.discover"):
+            assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+        records = [
+            r for r in caplog.records if "unrecognized discovery datagram" in r.message
+        ]
+        assert len(records) == 1
+        # Assert the level itself, not just the captured text: a regression back
+        # to WARNING on this shared-port noise path must fail the test.
+        assert records[0].levelno == logging.DEBUG
+        assert DEVICE_IP in caplog.text
+
+    def test_parse_undecryptable_body_logs_reason(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test G2: an undecryptable 5a5a body logs its source, then skips.
+
+        Logged at info: the body is a real Midea frame we could not decode, so
+        it is worth surfacing to the user without alarming them.
+        """
+        data = _build_v2_packet(encrypt_data=b"\xde\xad" * 40)
+        with caplog.at_level("INFO", logger="midealan.discover"):
+            assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+        records = [r for r in caplog.records if "could not be" in r.message]
+        assert len(records) == 1
+        # A real but undecodable Midea frame is worth surfacing at INFO; assert
+        # the level so it cannot silently drop to DEBUG or rise to WARNING.
+        assert records[0].levelno == logging.INFO
+        assert DEVICE_IP in caplog.text
+
+
+class TestSupportVerdict:
+    """_support_verdict / _device_package_exists test case."""
+
+    def test_package_exists_known_type(self) -> None:
+        """Test a type with a package is recognized (0xAC -> devices/ac)."""
+        assert _device_package_exists(0xAC) is True
+
+    def test_package_exists_low_type_prefixed(self) -> None:
+        """Test a type < 0xA0 maps to the x-prefixed package (0x13 -> x13)."""
+        assert _device_package_exists(0x13) is True
+
+    def test_package_missing_unknown_type(self) -> None:
+        """Test a type with no package is reported missing (0x99)."""
+        assert _device_package_exists(0x99) is False
+
+    @pytest.mark.parametrize("device_type", [-5, 0x100, 0x7FFFFFFF])
+    def test_package_out_of_range_type(self, device_type: int) -> None:
+        """Test a type outside the single-byte range is rejected up front.
+
+        A malformed reply can parse to a negative or oversized value; it must be
+        reported missing without ever building a bogus module name or calling
+        find_spec.
+        """
+        with patch("midealan.discover.importlib_util.find_spec") as find_spec:
+            assert _device_package_exists(device_type) is False
+            find_spec.assert_not_called()
+
+    def test_package_exists_parent_missing(self) -> None:
+        """Test a ModuleNotFoundError from find_spec is treated as missing.
+
+        ``find_spec`` raises ``ModuleNotFoundError`` when a parent package can't
+        be imported; that must be reported as "no package" rather than
+        propagating and aborting the scan.
+        """
+        with patch(
+            "midealan.discover.importlib_util.find_spec",
+            side_effect=ModuleNotFoundError,
+        ):
+            assert _device_package_exists(0xAC) is False
+
+    def test_verdict_supported(self) -> None:
+        """Test a known type on the classic transport is fully supported."""
+        support, reason = _support_verdict(0xAC, udp_version=0)
+        assert support == SUPPORT_SUPPORTED
+        assert reason == ""
+
+    def test_verdict_experimental_tls(self) -> None:
+        """Test a known type on the TLS transport is experimental."""
+        support, reason = _support_verdict(0xAC, udp_version=4)
+        assert support == SUPPORT_EXPERIMENTAL
+        assert "TLS" in reason
+
+    def test_verdict_unsupported_no_package(self) -> None:
+        """Test an unknown type is unsupported regardless of udp_version."""
+        support, reason = _support_verdict(0x99, udp_version=0)
+        assert support == SUPPORT_UNSUPPORTED
+        assert "0x99" in reason
 
     def test_parse_garbage(self) -> None:
         """Test a datagram matching no known protocol."""
@@ -368,6 +501,8 @@ class TestParseDiscoverResponse:
             "sn": sn,
             "protocol": 1,
             "mac": "8abbccddeeff" if len(sn) == 32 else None,
+            "support": "supported",
+            "support_reason": "",
         }
 
     def test_parse_v1_missing_element(self) -> None:
@@ -447,6 +582,33 @@ class TestDiscover:
         assert result[DEVICE_ID]["type"] == 0xAC
         # 2 broadcast ports (6445, 20086) on the single send socket.
         assert send_sock.sendto.call_count == 2
+
+    def test_discover_surfaces_unsupported_device(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Test an unsupported device is still returned, with a logged reason.
+
+        A device whose type has no package (0x99) must appear in the result so
+        the user can see it, and the receive loop must log why it isn't fully
+        supported instead of silently adding it as "supported".
+        """
+        reply = _build_reply(ssid=b"net_99_XXXX")
+        packet = _build_v2_packet(encrypt_data=reply)
+        send_sock = MagicMock()
+        send_sock.recvfrom.side_effect = [(packet, (DEVICE_IP, 6445))]
+        with (
+            _patch_discover_sockets(send_sock),
+            patch(
+                "midealan.discover.select.select",
+                side_effect=[([send_sock], [], []), ([], [], [])],
+            ),
+            caplog.at_level("INFO", logger="midealan.discover"),
+        ):
+            result = discover(ip_address=["192.168.1.255"])
+        assert list(result) == [DEVICE_ID]
+        assert result[DEVICE_ID]["support"] == SUPPORT_UNSUPPORTED
+        assert "unsupported" in caplog.text
 
     def test_discover_type_filter(self) -> None:
         """Test a device with a non-matching type is not returned."""

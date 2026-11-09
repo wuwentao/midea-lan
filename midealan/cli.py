@@ -28,7 +28,11 @@ from midealan.device import (
     NoSupportedProtocol,
 )
 from midealan.devices import device_selector
-from midealan.discover import SERIAL_TYPE1_LENGTH, discover
+from midealan.discover import (
+    SERIAL_TYPE1_LENGTH,
+    SUPPORT_UNSUPPORTED,
+    discover,
+)
 from midealan.exceptions import SocketException
 from midealan.version import __version__
 
@@ -120,6 +124,18 @@ class MideaCLI:
                     )
             return device_list
         for device in devices.values():
+            # discover() now surfaces devices midealan has no package for so the
+            # user can see them (and the reason) in the scan. Those can't be
+            # instantiated, so report the reason and move on instead of trying
+            # to open a socket to a device we can't drive.
+            if device.get("support") == SUPPORT_UNSUPPORTED:
+                _LOGGER.warning(
+                    "Skipping unsupported device (type 0x%02x) at %s: %s",
+                    device.get("type", 0),
+                    device.get("ip_address"),
+                    device.get("support_reason") or "no device package",
+                )
+                continue
             keys = (
                 {0: {"token": "", "key": ""}}
                 if device["protocol"] != ProtocolVersion.V3

@@ -219,6 +219,23 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
 
             await self.cli.discover()  # No devices
 
+            # An unsupported device (surfaced by discover but with no package)
+            # is reported and skipped, never passed to device_selector.
+            mock_device_instance.connect.reset_mock()
+            mock_discover.return_value = {
+                3: {
+                    **mock_device,
+                    "device_id": 3,
+                    "type": 0x99,
+                    "support": "unsupported",
+                    "support_reason": "no device package for type 0x99",
+                },
+            }
+            with self.assertLogs("cli", level="WARNING") as logs:
+                assert await self.cli.discover() == []
+            assert any("unsupported" in line for line in logs.output)
+            mock_device_instance.connect.assert_not_called()
+
     def test_message(self) -> None:
         """Test message."""
         mock_device_instance = MagicMock()

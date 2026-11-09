@@ -108,6 +108,22 @@ class TestMideaE9Device:
             device.set_attribute(DeviceAttributes.time_cuisine_min, 45)
         assert build_send.call_args[0][0].body[12] == 45
 
+    def test_write_only_persists_across_sets(self, device: MideaE9Device) -> None:
+        """A write-only field set first is kept in the next control frame.
+
+        The device never reports cuisine time / bake temperature, so the value
+        from the first set must be stored on state and re-seeded into the second
+        set's frame instead of being reset to 0.
+        """
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.bake_temperature, 180)
+            device.set_attribute(DeviceAttributes.time_cuisine_hr, 2)
+            device.set_attribute(DeviceAttributes.work_status, 1)
+        body = build_send.call_args[0][0].body
+        assert body[11] == 1  # new work_status
+        assert body[16] == 180  # bake_temperature kept from the first set
+        assert body[13] == 2  # time_cuisine_hr kept from the second set
+
     def test_set_seeds_from_state(self, device: MideaE9Device) -> None:
         """A single-field change keeps the other control fields from state."""
         device._attributes[DeviceAttributes.control_cmd_code] = 0x0E

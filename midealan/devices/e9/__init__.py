@@ -73,9 +73,17 @@ _NUMERIC_RANGES: dict[str, tuple[int, int]] = {
 }
 # All writable control params.
 _SETTABLE = set(_NUMERIC_RANGES)
+# Write-only control fields: the device never reports these back (the status /
+# echo body decodes neither cuisine time nor bake temperature), so a set must
+# store the written value on the device state itself, otherwise the next set
+# re-seeds them from None and silently resets them to 0.
+_WRITE_ONLY = (
+    DeviceAttributes.time_cuisine_min,
+    DeviceAttributes.time_cuisine_hr,
+    DeviceAttributes.bake_temperature,
+)
 # Control-frame fields seeded from current state (shared attribute names). The
-# cuisine time is write-only (never reported), so it is seeded only when a
-# previous set already stored it on the device state.
+# write-only fields above are seeded from the value the previous set stored.
 _SEED_NUMERIC = (
     DeviceAttributes.control_cmd_code,
     DeviceAttributes.volume,
@@ -169,6 +177,10 @@ class MideaE9Device(MideaDevice):
             msg = f"[e9] {attr} must be in [{low}, {high}]"
             raise ValueOutOfRange(msg)
         setattr(message, str(attr), number)
+        # Persist write-only fields so a later set re-seeds them from state
+        # instead of resetting them to 0 (the device never reports them back).
+        if attr in _WRITE_ONLY:
+            self._attributes[attr] = number
         self.build_send(message)
 
     def set_customize(self, customize: str) -> None:

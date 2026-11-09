@@ -466,10 +466,11 @@ def _parse_discover_response(
         encrypt_data = data[40:-16]
         reply = _decrypt_or_plaintext_reply(security, encrypt_data)
         if reply is None:
-            # G2: the body neither decrypts nor is a valid plaintext reply. Log
-            # the reason and source so an undecryptable device is visible in the
-            # debug log instead of silently vanishing from the scan.
-            _LOGGER.warning(
+            # G2: a 5a5a/8370-framed reply from a real Midea device, but its
+            # body neither decrypts nor is a valid plaintext reply. Log at info
+            # (not warning) so an undecodable but genuine device leaves a trace
+            # for the user without alarming them, then skip it.
+            _LOGGER.info(
                 "Discovered device %s (id %s) but its reply could not be "
                 "decoded (body: %s); skipping. This device is reachable but "
                 "midealan cannot parse its discovery reply.",
@@ -530,9 +531,10 @@ def _parse_discover_response(
     else:
         # G1: a datagram arrived from this address but its leading bytes match
         # no known discovery frame (not 5a5a/8370 v2/v3, not a v1 XML header).
-        # Log the source and header so a reachable-but-unrecognized device is
-        # visible in the debug log instead of being dropped without a trace.
-        _LOGGER.warning(
+        # This can be ordinary non-Midea LAN traffic on the shared fixed ports
+        # (7083/15000), so log at debug -- enough to trace a genuinely missed
+        # device when debugging, without spamming warnings on a busy network.
+        _LOGGER.debug(
             "Ignoring an unrecognized discovery datagram from %s "
             "(%d bytes, header %s); not a known Midea discovery frame.",
             ip,

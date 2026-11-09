@@ -373,10 +373,13 @@ class TestParseDiscoverResponse:
         """Test G1: an unrecognized frame logs its source and header.
 
         A datagram long enough to inspect but matching no known frame header
-        must be skipped with a logged reason rather than dropped silently.
+        must be skipped with a logged reason rather than dropped silently. It
+        logs at debug: a stray non-Midea datagram on a shared port is likely
+        LAN noise, so it must not raise a warning.
         """
         data = b"\xaa" * DISCOVERY_MIN_REPLY_LENGTH + b"\xbb" * 70
-        assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+        with caplog.at_level("DEBUG", logger="midealan.discover"):
+            assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
         assert "unrecognized discovery datagram" in caplog.text
         assert DEVICE_IP in caplog.text
 
@@ -384,9 +387,14 @@ class TestParseDiscoverResponse:
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Test G2: an undecryptable 5a5a body logs its source, then skips."""
+        """Test G2: an undecryptable 5a5a body logs its source, then skips.
+
+        Logged at info: the body is a real Midea frame we could not decode, so
+        it is worth surfacing to the user without alarming them.
+        """
         data = _build_v2_packet(encrypt_data=b"\xde\xad" * 40)
-        assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
+        with caplog.at_level("INFO", logger="midealan.discover"):
+            assert _parse_discover_response(_mock_sock_with(data), {}) == (0, None)
         assert "could not be" in caplog.text
         assert DEVICE_IP in caplog.text
 

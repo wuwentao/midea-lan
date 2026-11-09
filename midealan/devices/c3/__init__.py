@@ -418,6 +418,8 @@ class MideaC3Device(MideaDevice):
         self._quintuple_protocol = str(self.model) == QUINTUPLE_MODEL
         self._quintuple_ready: bool = False
         self._room_sensor_enabled: bool | None = None
+        self._tbt1_probe_enabled: bool | None = None
+        self._tbt2_probe_enabled: bool | None = None
         self._feature_query_index = 0
         self._silent_level_setting: str | None = None
         if self._quintuple_protocol:
@@ -467,7 +469,7 @@ class MideaC3Device(MideaDevice):
             # Every refresh reads basic state, overall/DHW energy,
             # heating/cooling energy, operating telemetry, and running flags.
             # Rotate one slower settings/capability table so each refresh stays
-            # at six requests. Read roomSensorEn first to qualify Ta telemetry.
+            # at six requests. Read 2080 first to qualify Ta/Tbt1/Tbt2 telemetry.
             slow = SLOW_TABLES[self._feature_query_index % len(SLOW_TABLES)]
             self._feature_query_index += 1
             return [
@@ -494,6 +496,8 @@ class MideaC3Device(MideaDevice):
         """Reconfirm model-specific sensor capabilities after reconnecting."""
         super().reset_init_query()
         self._room_sensor_enabled = None
+        self._tbt1_probe_enabled = None
+        self._tbt2_probe_enabled = None
         self._feature_query_index = 0
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
@@ -778,12 +782,18 @@ class MideaC3Device(MideaDevice):
         ):
             return
         values = decode_table(message.body)
-        if "_room_sensor_enabled" in values:
-            room_sensor_enabled = values.pop("_room_sensor_enabled")
+        for capability in (
+            "_room_sensor_enabled",
+            "_tbt1_probe_enabled",
+            "_tbt2_probe_enabled",
+        ):
+            if capability not in values:
+                continue
+            enabled = values.pop(capability)
             # Invalid 0xFF and malformed/absent fields do not revoke the last
             # confirmed capability; an explicit zero does.
-            if isinstance(room_sensor_enabled, bool):
-                self._room_sensor_enabled = room_sensor_enabled
+            if isinstance(enabled, bool):
+                setattr(self, capability, enabled)
         level_present = "_silent_level" in values
         if level_present:
             level = values.pop("_silent_level")
@@ -811,6 +821,8 @@ class MideaC3Device(MideaDevice):
         availability = {
             DeviceAttributes.temp_tw2: self._attributes[DeviceAttributes.double_zone],
             DeviceAttributes.temp_ta: self._room_sensor_enabled,
+            DeviceAttributes.temp_tb_t1: self._tbt1_probe_enabled,
+            DeviceAttributes.temp_tb_t2: self._tbt2_probe_enabled,
         }
         for attribute, enabled in availability.items():
             if enabled is not True and (

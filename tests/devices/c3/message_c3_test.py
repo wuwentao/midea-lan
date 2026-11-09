@@ -632,6 +632,8 @@ class TestMessageC3Response:
             ("20b0", 98, "0123", "temp_t2b", 29.1),
             ("20b0", 100, "0123", "temp_t5", 29.1),
             ("20b0", 102, "0123", "temp_ta", 29.1),
+            ("20b0", 104, "0123", "temp_tb_t1", 29.1),
+            ("20b0", 106, "0123", "temp_tb_t2", 29.1),
             ("20b0", 109, "1234", "pressure_high", 46600),
             ("20b0", 113, "0123", "temp_th", 29.1),
             ("20b0", 119, "0123", "temp_tf", 29.1),
@@ -662,6 +664,7 @@ class TestMessageC3Response:
             ("2f10", 118, "1234", "comp_run_time", 0x1234),
             ("2f10", 122, "0c", "odu_model", 12),
             ("2f10", 127, "1234", "exv_current", 0x1234),
+            ("2f10", 137, "0123", "temp_tb_t1", 29.1),
             ("2f10", 141, "1234", "dc_bus_voltage", 0x1234),
             ("2f10", 143, "0258", "dc_current", 6.0),
             ("2f10", 145, "01", "sv1_open", True),
@@ -734,21 +737,26 @@ class TestMessageC3Response:
         [
             ("20b0", 94, "temp_tw2"),
             ("20b0", 102, "temp_ta"),
+            ("20b0", 104, "temp_tb_t1"),
+            ("20b0", 106, "temp_tb_t2"),
             ("2f10", 29, "temp_tw2"),
             ("2f10", 37, "temp_ta"),
+            ("2f10", 137, "temp_tb_t1"),
         ],
     )
+    @pytest.mark.parametrize("raw", ["7fff", "ffff"])
     def test_message_x00_invalid_zone_sensor_is_unavailable(
         self,
         command: str,
         offset: int,
         attribute: str,
+        raw: str,
     ) -> None:
-        """Test the Lua 0x7FFF sensor sentinel is published as unavailable."""
+        """Test both Lua sensor sentinels are published as unavailable."""
         self.header[-1] = MessageType.notify1
         body = bytearray(offset + 2)
         body[1:3] = bytes.fromhex(command)
-        body[offset:] = bytes.fromhex("7fff")
+        body[offset:] = bytes.fromhex(raw)
 
         response = MessageC3Response(
             bytes(self.header + body + bytes([0x00])),
@@ -756,6 +764,36 @@ class TestMessageC3Response:
         )
 
         assert getattr(response, attribute) is None
+
+    @pytest.mark.parametrize(
+        ("command", "offset", "attribute"),
+        [
+            ("20b0", 104, "temp_tb_t1"),
+            ("20b0", 106, "temp_tb_t2"),
+            ("2f10", 137, "temp_tb_t1"),
+        ],
+    )
+    @pytest.mark.parametrize(("raw", "expected"), [("0000", 0.0), ("800a", -1.0)])
+    def test_message_x00_buffer_temperatures_preserve_valid_values(
+        self,
+        command: str,
+        offset: int,
+        attribute: str,
+        raw: str,
+        expected: float,
+    ) -> None:
+        """Test installed buffer probes preserve valid zero and negative readings."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(offset + 2)
+        body[1:3] = bytes.fromhex(command)
+        body[offset:] = bytes.fromhex(raw)
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert getattr(response, attribute) == expected
 
     @pytest.mark.parametrize("body_hex", ["00", "0020", "002f"])
     def test_message_x00_incomplete_command_is_not_decoded(
@@ -3330,6 +3368,82 @@ def test_optional_temperature_capabilities_clear_stale_values(
     assert status[A.temp_ta] is None
 
 
+@pytest.mark.parametrize(
+    ("command", "offset", "attribute", "capability_tag"),
+    [
+        ("20b0", 104, A.temp_tb_t1, 30),
+        ("20b0", 106, A.temp_tb_t2, 19),
+        ("2f10", 137, A.temp_tb_t1, 30),
+    ],
+)
+def test_buffer_temperature_capabilities_clear_stale_values(
+    command: str,
+    offset: int,
+    attribute: A,
+    capability_tag: int,
+) -> None:
+    """Buffer temperatures require their independent Lua 2080 probe flags."""
+    d = device()
+    telemetry = bytearray(offset + 2)
+    telemetry[1:3] = bytes.fromhex(command)
+    telemetry[offset : offset + 2] = bytes.fromhex("0123")
+    capability = "002080ffffffff01ffff"
+
+    # A non-sentinel temperature cannot prove that an optional probe is installed.
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[attribute] is None
+
+    d.process_message(
+        frame(bytes.fromhex(f"{capability}{capability_tag:04x}0101")),
+    )
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[attribute] == 29.1
+
+    # Invalid capability data preserves the last explicit confirmation.
+    d.process_message(
+        frame(bytes.fromhex(f"{capability}{capability_tag:04x}01ff")),
+    )
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[attribute] == 29.1
+
+    # Explicit disable clears the cached value and blocks later telemetry.
+    status = d.process_message(
+        frame(bytes.fromhex(f"{capability}{capability_tag:04x}0100")),
+    )
+    assert status[attribute] is None
+    assert d.attributes[attribute] is None
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[attribute] is None
+
+
+def test_reconnect_reconfirms_buffer_probes_before_accepting_temperatures() -> None:
+    """A new connection does not reuse stale buffer-probe capabilities."""
+    d = device()
+    capability = "002080ffffffff01ffff00130101001e0101"
+    d.process_message(frame(bytes.fromhex(capability)))
+    telemetry = bytearray(108)
+    telemetry[1:3] = bytes.fromhex("20b0")
+    telemetry[104:106] = bytes.fromhex("0123")
+    telemetry[106:108] = bytes.fromhex("00d7")
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tb_t1] == 29.1
+    assert status[A.temp_tb_t2] == 21.5
+    d.build_query()
+
+    d.reset_init_query()
+
+    assert d._tbt1_probe_enabled is None
+    assert d._tbt2_probe_enabled is None
+    assert int.from_bytes(d.build_query()[1].body[1:3], "big") == 0x2080
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tb_t1] is None
+    assert status[A.temp_tb_t2] is None
+    d.process_message(frame(bytes.fromhex(capability)))
+    status = d.process_message(frame(bytes(telemetry), MessageType.notify1))
+    assert status[A.temp_tb_t1] == 29.1
+    assert status[A.temp_tb_t2] == 21.5
+
+
 def test_invalid_room_sensor_capability_preserves_last_confirmation() -> None:
     """An invalid 2080 value does not revoke a previously confirmed sensor."""
     d = device()
@@ -3377,6 +3491,19 @@ def test_sequential_room_sensor_capability(raw: int, *, expected: bool) -> None:
     body = bytearray.fromhex("002080ffffffff00ffff") + bytearray(11) + bytes((raw,))
 
     assert decode_table(body) == {"_room_sensor_enabled": expected}
+
+
+def test_sequential_buffer_probe_capabilities_remain_private() -> None:
+    """Decode Lua 2080 probe flags without exposing installer settings."""
+    body = bytearray.fromhex("002080ffffffff00ffff") + bytearray(31)
+    body[10 + 19] = 1
+    body[10 + 30] = 1
+
+    assert decode_table(body) == {
+        "_room_sensor_enabled": False,
+        "_tbt2_probe_enabled": True,
+        "_tbt1_probe_enabled": True,
+    }
 
 
 def test_sparse_invalid_and_partial_fields() -> None:

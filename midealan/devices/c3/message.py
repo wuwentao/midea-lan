@@ -451,9 +451,11 @@ SLOW_TABLES = (*CAPABILITY_TABLES, *CONTROL_TABLES)
 TABLE_SIZES: dict[int, tuple[int, ...]] = {
     0x2050: (1,) * 12,
     0x2070: (1,) * 7,
-    # Only the prefix through Lua tag 11 (roomSensorEn) is needed. Later
-    # installer fields remain deliberately unexposed and read-only.
-    ROOM_SENSOR_CAPABILITY_TABLE: (1,) * 12,
+    # Decode through Lua tag 30 so roomSensorEn, tbt2ProbeEn, and tbt1ProbeEn
+    # can qualify their optional temperatures. The installer fields stay
+    # private and read-only; the 12-field sequential minimum below preserves
+    # compatibility with shorter replies that end at roomSensorEn.
+    ROOM_SENSOR_CAPABILITY_TABLE: (1,) * 31,
     0x2090: (1,) * 7,
     0x2F11: (1,) * 4 + (4,) * 48,
     ENERGY_TABLE: ENERGY_SIZES,
@@ -537,6 +539,10 @@ TABLE_FIELDS: dict[tuple[int, int], tuple[tuple[str, ...], str]] = {
     # Lua 2080 tag 11 is roomSensorEn. It is distinct from 2010 tag 20,
     # room_thermalen_state, which enables an external room thermostat.
     (ROOM_SENSOR_CAPABILITY_TABLE, 11): (("_room_sensor_enabled",), "boolean"),
+    # Lua 2080 independently reports whether the lower and upper buffer-tank
+    # probes are installed. Keep both flags internal; they qualify telemetry.
+    (ROOM_SENSOR_CAPABILITY_TABLE, 19): (("_tbt2_probe_enabled",), "boolean"),
+    (ROOM_SENSOR_CAPABILITY_TABLE, 30): (("_tbt1_probe_enabled",), "boolean"),
     (0x2090, 0): (("disinfect",), "boolean"),
     (0x2090, 1): (("disinfect_run",), "boolean"),
     (0x2090, 2): (("disinfect_set_weekday",), "integer"),
@@ -835,12 +841,17 @@ C3_20B0_TEMP_T2_OFFSET = 96
 C3_20B0_TEMP_T2B_OFFSET = 98
 C3_20B0_TEMP_T5_OFFSET = 100
 C3_20B0_TEMP_TA_OFFSET = 102
-C3_20B0_ZONE_TEMPERATURE_OFFSETS = (
+C3_20B0_TEMP_TBT1_OFFSET = 104
+C3_20B0_TEMP_TBT2_OFFSET = 106
+C3_20B0_OPTIONAL_TEMPERATURE_OFFSETS = (
     ("temp_tw2", C3_20B0_TEMP_TW2_OFFSET),
     ("temp_t2", C3_20B0_TEMP_T2_OFFSET),
     ("temp_t2b", C3_20B0_TEMP_T2B_OFFSET),
     ("temp_t5", C3_20B0_TEMP_T5_OFFSET),
     ("temp_ta", C3_20B0_TEMP_TA_OFFSET),
+    # Vendor Lua 0x20B0 tags 77/78: tempTbt1/tempTbt2.
+    ("temp_tb_t1", C3_20B0_TEMP_TBT1_OFFSET),
+    ("temp_tb_t2", C3_20B0_TEMP_TBT2_OFFSET),
 )
 C3_20B0_PRESSURE_HIGH_OFFSET = 109
 C3_20B0_TEMP_TH_OFFSET = 113
@@ -867,12 +878,16 @@ C3_2F10_TEMP_T2_OFFSET = 31
 C3_2F10_TEMP_T2B_OFFSET = 33
 C3_2F10_TEMP_T5_OFFSET = 35
 C3_2F10_TEMP_TA_OFFSET = 37
-C3_2F10_ZONE_TEMPERATURE_OFFSETS = (
+C3_2F10_TEMP_TBT_OFFSET = 137
+C3_2F10_OPTIONAL_TEMPERATURE_OFFSETS = (
     ("temp_tw2", C3_2F10_TEMP_TW2_OFFSET),
     ("temp_t2", C3_2F10_TEMP_T2_OFFSET),
     ("temp_t2b", C3_2F10_TEMP_T2B_OFFSET),
     ("temp_t5", C3_2F10_TEMP_T5_OFFSET),
     ("temp_ta", C3_2F10_TEMP_TA_OFFSET),
+    # Vendor Lua tag 59 calls this TBt_buffer_tank_temp. Hardware logs show
+    # it tracks 0x20B0 tempTbt1, so reuse the existing upper-probe attribute.
+    ("temp_tb_t1", C3_2F10_TEMP_TBT_OFFSET),
 )
 C3_2F10_PRESSURE_HIGH_OFFSET = 39
 C3_2F10_TEMP_TH_OFFSET = 43
@@ -1465,7 +1480,7 @@ class C3X0020B0TelemetryBody(MessageBody):
                 body,
                 C3_20B0_TEMP_T1_OFFSET,
             )
-        for name, offset in C3_20B0_ZONE_TEMPERATURE_OFFSETS:
+        for name, offset in C3_20B0_OPTIONAL_TEMPERATURE_OFFSETS:
             if len(body) >= offset + C3_X00_U16_LENGTH:
                 setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_20B0_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:
@@ -1550,7 +1565,7 @@ class C3X002F10TelemetryBody(MessageBody):
                 body,
                 C3_2F10_TEMP_T1_OFFSET,
             )
-        for name, offset in C3_2F10_ZONE_TEMPERATURE_OFFSETS:
+        for name, offset in C3_2F10_OPTIONAL_TEMPERATURE_OFFSETS:
             if len(body) >= offset + C3_X00_U16_LENGTH:
                 setattr(self, name, _parse_c3_x00_signed_temperature(body, offset))
         if len(body) >= C3_2F10_PRESSURE_HIGH_OFFSET + C3_X00_U16_LENGTH:

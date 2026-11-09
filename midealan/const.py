@@ -45,6 +45,7 @@ class DeviceType(IntEnum):
     FC = 0xFC
     FD = 0xFD
     X13 = 0x13
+    X17 = 0x17
     X26 = 0x26
     X34 = 0x34
     X40 = 0x40

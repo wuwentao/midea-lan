@@ -308,21 +308,24 @@ class E7GeneralMessageBody(MessageBody):
             ) + MessageBody.read_byte(body, FUNCTION_NO_BYTE + 1)
             tail = FUNCTION_NO_BYTE + FUNCTION_NO_WIDTH_16
         self.time_running_hr = MessageBody.read_byte(
-            body, tail + OFFSET_TIME_RUNNING_HR,
+            body,
+            tail + OFFSET_TIME_RUNNING_HR,
         )
         self.time_running_min = MessageBody.read_byte(
             body,
             tail + OFFSET_TIME_RUNNING_MIN,
         )
         self.time_surplus_hr = MessageBody.read_byte(
-            body, tail + OFFSET_TIME_SURPLUS_HR,
+            body,
+            tail + OFFSET_TIME_SURPLUS_HR,
         )
         self.time_surplus_min = MessageBody.read_byte(
             body,
             tail + OFFSET_TIME_SURPLUS_MIN,
         )
         self.time_reserve_hr = MessageBody.read_byte(
-            body, tail + OFFSET_TIME_RESERVE_HR,
+            body,
+            tail + OFFSET_TIME_RESERVE_HR,
         )
         self.time_reserve_min = MessageBody.read_byte(
             body,

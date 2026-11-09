@@ -146,6 +146,13 @@ class MideaF1Device(MideaDevice):
             if isinstance(value, bool) or not isinstance(value, int | float):
                 msg = f"[f1] {attr} expects a number"
                 raise ValueWrongType(msg)
+            # Reject a fractional float (e.g. 3.9) instead of silently
+            # truncating it; a non-finite float (nan / inf) is not an integer
+            # either, so this also rejects it before int() can raise raw
+            # ValueError / OverflowError.
+            if isinstance(value, float) and not value.is_integer():
+                msg = f"[f1] {attr} expects a whole number"
+                raise ValueWrongType(msg)
             number = int(value)
             if not low <= number <= high:
                 msg = f"[f1] {attr} must be in [{low}, {high}]"

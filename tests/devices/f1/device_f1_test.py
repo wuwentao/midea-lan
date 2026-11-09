@@ -143,6 +143,25 @@ class TestMideaF1Device:
         with pytest.raises(ValueWrongType):
             device.set_attribute(DeviceAttributes.speed, True)
 
+    @pytest.mark.parametrize(
+        "value",
+        [3.9, float("nan"), float("inf")],
+    )
+    def test_set_non_integer_float_rejected(
+        self,
+        device: MideaF1Device,
+        value: float,
+    ) -> None:
+        """A fractional / non-finite float is rejected, not truncated."""
+        with pytest.raises(ValueWrongType):
+            device.set_attribute(DeviceAttributes.speed, value)
+
+    def test_set_integer_float_accepted(self, device: MideaF1Device) -> None:
+        """A whole-number float (e.g. 5.0) is accepted and sent as an int."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.speed, 5.0)
+        assert build_send.call_args[0][0].body[17] == 5
+
     def test_set_readonly_ignored(self, device: MideaF1Device) -> None:
         """Report-only fields are read-only: nothing is sent."""
         with patch.object(device, "build_send") as build_send:

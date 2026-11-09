@@ -190,3 +190,11 @@ class TestMessageF1Response:
         """A body shorter than the fixed record decodes to nothing."""
         response = MessageF1Response(_report_frame([INNER_HEAD, 0x55, 0x00, 0x31]))
         assert not hasattr(response, "work_mode")
+
+    def test_wrong_inner_markers_not_decoded(self) -> None:
+        """A long body without the 0xAA 0x55 inner markers is not decoded."""
+        body = _status_body()
+        body[0] = 0x00  # not INNER_HEAD
+        body[1] = 0x00  # not INNER_HEAD2
+        response = MessageF1Response(_report_frame(body))
+        assert not hasattr(response, "work_mode")

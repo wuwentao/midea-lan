@@ -24,6 +24,8 @@ from midealan.message import (
 # Inner application sub-frame markers (Lua bodyBytes[0..1] and selectors).
 INNER_HEAD = 0xAA  # bodyBytes[0]
 INNER_HEAD2 = 0x55  # bodyBytes[1]
+INNER_HEAD_BYTE = 0  # position of bodyBytes[0] in the response body
+INNER_HEAD2_BYTE = 1  # position of bodyBytes[1] in the response body
 SELECTOR_QUERY = 0x31  # bodyBytes[3] for a query
 SELECTOR_CONTROL = 0x20  # bodyBytes[3] for a control
 
@@ -268,10 +270,16 @@ class MessageF1Response(MessageResponse):
         """Initialize f1 message response."""
         super().__init__(bytearray(message))
         body = super().body
+        # Only decode a frame that is a full status record AND carries the
+        # inner 0xAA 0x55 application-frame markers (Lua bodyBytes[0..1]); a
+        # control echo / notify with a different inner selector must not be
+        # reinterpreted as status and overwrite attributes with garbage.
         if (
             self.message_type
             in (MessageType.set, MessageType.query, MessageType.notify1)
             and len(body) >= STATUS_REPORT_MIN_LEN
+            and body[INNER_HEAD_BYTE] == INNER_HEAD
+            and body[INNER_HEAD2_BYTE] == INNER_HEAD2
         ):
             self.set_body(F1GeneralMessageBody(body))
         self.set_attr()

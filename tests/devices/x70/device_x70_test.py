@@ -8,7 +8,6 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.x70 import (
     ALL_ATTRIBUTES,
-    DeviceAttributes,
     MideaX70Device,
 )
 from midealan.devices.x70.message import (
@@ -57,8 +56,8 @@ class TestMideaX70Device:
     def test_initial_attributes(self, device: MideaX70Device) -> None:
         """Every attribute starts unset."""
         assert len(device.attributes) == len(ALL_ATTRIBUTES)
-        assert device.attributes[DeviceAttributes.box1_type] is None
-        assert device.attributes[DeviceAttributes.sub_cmd] is None
+        assert device.attributes["box1_type"] is None
+        assert device.attributes["sub_cmd"] is None
 
     def test_build_query(self, device: MideaX70Device) -> None:
         """build_query returns a single MessageQuery."""
@@ -71,17 +70,30 @@ class TestMideaX70Device:
         new_status = device.process_message(_frame(_status_body(), MessageType.query))
         assert new_status["box1_type"] == 3
         assert new_status["box1_status"] == "no"
-        assert device.attributes[DeviceAttributes.box1_add_time_year] == 24
-        assert device.attributes[DeviceAttributes.box1_clean_time_second] == 10
+        assert device.attributes["box1_add_time_year"] == 24
+        assert device.attributes["box1_clean_time_second"] == 10
 
     def test_process_control_report(self, device: MideaX70Device) -> None:
         """A control reply updates sub_cmd and control_result."""
         new_status = device.process_message(_frame([SUB_CMD_SET, 0], MessageType.set))
         assert new_status["control_result"] == "success"
-        assert device.attributes[DeviceAttributes.sub_cmd] == "seasoning_set"
+        assert device.attributes["sub_cmd"] == "seasoning_set"
+
+    def test_process_message_ignores_unknown_key(
+        self,
+        device: MideaX70Device,
+    ) -> None:
+        """A decoded key not in the attribute map is skipped."""
+        with patch(
+            "midealan.devices.x70.MessageX70Response",
+        ) as response_cls:
+            response_cls.return_value.attributes = {"not_an_attr": 1, "sub_cmd": "x"}
+            new_status = device.process_message(b"")
+        assert "not_an_attr" not in new_status
+        assert new_status == {"sub_cmd": "x"}
 
     def test_dispense(self, device: MideaX70Device) -> None:
-        """dispense builds and sends a MessageSetDispense."""
+        """Dispense builds and sends a MessageSetDispense."""
         with patch.object(device, "build_send") as send:
             device.dispense(2, [10, 20])
         assert send.call_count == 1
@@ -138,13 +150,13 @@ class TestMideaX70Device:
     def test_set_customize_refresh_interval(self, device: MideaX70Device) -> None:
         """A valid refresh_interval customize updates the refresh interval."""
         device.set_customize('{"refresh_interval": 15}')
-        assert device._refresh_interval == 15  # noqa: SLF001
+        assert device._refresh_interval == 15
 
     def test_set_customize_invalid_type(self, device: MideaX70Device) -> None:
         """A non-numeric refresh_interval is logged and ignored."""
-        before = device._refresh_interval  # noqa: SLF001
+        before = device._refresh_interval
         device.set_customize('{"refresh_interval": "bad"}')
-        assert device._refresh_interval == before  # noqa: SLF001
+        assert device._refresh_interval == before
 
     def test_set_customize_invalid_json(self, device: MideaX70Device) -> None:
         """Malformed customize JSON is caught and ignored."""
@@ -156,6 +168,6 @@ class TestMideaX70Device:
 
     def test_set_customize_without_interval(self, device: MideaX70Device) -> None:
         """Valid JSON lacking refresh_interval leaves the interval unchanged."""
-        before = device._refresh_interval  # noqa: SLF001
+        before = device._refresh_interval
         device.set_customize('{"other": 1}')
-        assert device._refresh_interval == before  # noqa: SLF001
+        assert device._refresh_interval == before

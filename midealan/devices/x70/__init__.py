@@ -86,11 +86,11 @@ class MideaX70Device(MideaDevice):
         message = MessageX70Response(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
-        for status in self._attributes:
-            if hasattr(message, str(status)):
-                value = getattr(message, str(status))
-                self._attributes[status] = value
-                new_status[str(status)] = value
+        for name, value in message.attributes.items():
+            if name not in self._attributes:
+                continue
+            self._attributes[name] = value
+            new_status[name] = value
         return new_status
 
     def _build_structured_message(

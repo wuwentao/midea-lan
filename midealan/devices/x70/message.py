@@ -196,14 +196,21 @@ def _box_status_label(value: int) -> str | int:
 
 
 class X70StatusBody(MessageBody):
-    """x70 query status body (Lua binToModel, dataType 0x03)."""
+    """x70 query status body (Lua binToModel, dataType 0x03).
+
+    0x70 reports up to eight homogeneous 14-byte box records, so (like 0x9C)
+    decoded values are collected into an ``attributes`` dict keyed by the Lua
+    field name rather than as fixed instance attributes.
+    """
 
     def __init__(self, body: bytearray) -> None:
         """Initialize x70 status body."""
         super().__init__(body)
-        self.sub_cmd = QUERY_SUB_CMD_NAMES.get(
-            MessageBody.read_byte(body, SUB_CMD_BYTE),
-        )
+        self.attributes: dict[str, object] = {
+            "sub_cmd": QUERY_SUB_CMD_NAMES.get(
+                MessageBody.read_byte(body, SUB_CMD_BYTE),
+            ),
+        }
         # Decode each complete 14-byte box record present in the body.
         for box in range(1, MAX_BOXES + 1):
             base = BOX_RECORD_BASE + BOX_RECORD_SIZE * (box - 1)
@@ -213,21 +220,17 @@ class X70StatusBody(MessageBody):
 
     def _set_box(self, body: bytearray, box: int, base: int) -> None:
         """Decode one box record starting at ``base`` into box{N}_* attributes."""
-        setattr(
-            self,
-            f"box{box}_type",
-            MessageBody.read_byte(body, base + BOX_TYPE_OFFSET),
+        self.attributes[f"box{box}_type"] = MessageBody.read_byte(
+            body,
+            base + BOX_TYPE_OFFSET,
         )
-        setattr(
-            self,
-            f"box{box}_status",
-            _box_status_label(MessageBody.read_byte(body, base + BOX_STATUS_OFFSET)),
+        self.attributes[f"box{box}_status"] = _box_status_label(
+            MessageBody.read_byte(body, base + BOX_STATUS_OFFSET),
         )
         for name, offset in (*_BOX_ADD_FIELDS, *_BOX_CLEAN_FIELDS):
-            setattr(
-                self,
-                f"box{box}_{name}",
-                MessageBody.read_byte(body, base + offset),
+            self.attributes[f"box{box}_{name}"] = MessageBody.read_byte(
+                body,
+                base + offset,
             )
 
 
@@ -237,11 +240,13 @@ class X70ControlResultBody(MessageBody):
     def __init__(self, body: bytearray) -> None:
         """Initialize x70 control-result body."""
         super().__init__(body)
-        self.sub_cmd = CONTROL_SUB_CMD_NAMES.get(
-            MessageBody.read_byte(body, SUB_CMD_BYTE),
-        )
         result = MessageBody.read_byte(body, CONTROL_RESULT_BYTE)
-        self.control_result = CONTROL_RESULT_NAMES.get(result, result)
+        self.attributes: dict[str, object] = {
+            "sub_cmd": CONTROL_SUB_CMD_NAMES.get(
+                MessageBody.read_byte(body, SUB_CMD_BYTE),
+            ),
+            "control_result": CONTROL_RESULT_NAMES.get(result, result),
+        }
 
 
 class X70NotifyBody(MessageBody):
@@ -250,9 +255,11 @@ class X70NotifyBody(MessageBody):
     def __init__(self, body: bytearray) -> None:
         """Initialize x70 notify body."""
         super().__init__(body)
-        self.sub_cmd = NOTIFY_SUB_CMD_NAMES.get(
-            MessageBody.read_byte(body, SUB_CMD_BYTE),
-        )
+        self.attributes: dict[str, object] = {
+            "sub_cmd": NOTIFY_SUB_CMD_NAMES.get(
+                MessageBody.read_byte(body, SUB_CMD_BYTE),
+            ),
+        }
 
 
 class MessageX70Response(MessageResponse):
@@ -261,14 +268,21 @@ class MessageX70Response(MessageResponse):
     def __init__(self, message: bytes) -> None:
         """Initialize x70 message response."""
         super().__init__(bytearray(message))
+        self.attributes: dict[str, object] = {}
         body = super().body
-        if self.message_type == MessageType.query and len(body) >= STATUS_REPORT_MIN_LEN:
-            self.set_body(X70StatusBody(body))
-        elif (
-            self.message_type == MessageType.set
-            and len(body) >= CONTROL_REPORT_MIN_LEN
+        parsed: MessageBody | None = None
+        if (
+            self.message_type == MessageType.query
+            and len(body) >= STATUS_REPORT_MIN_LEN
         ):
-            self.set_body(X70ControlResultBody(body))
+            parsed = X70StatusBody(body)
+        elif (
+            self.message_type == MessageType.set and len(body) >= CONTROL_REPORT_MIN_LEN
+        ):
+            parsed = X70ControlResultBody(body)
         elif self.message_type == MessageType.notify1 and len(body) >= 1:
-            self.set_body(X70NotifyBody(body))
+            parsed = X70NotifyBody(body)
+        if parsed is not None:
+            self.set_body(parsed)
+            self.attributes = parsed.attributes  # type: ignore[attr-defined]
         self.set_attr()

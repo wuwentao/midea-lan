@@ -145,6 +145,15 @@ reports are incomplete and get closed or stalled. Follow these rules:
   [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue/PR and the
   `midea-lua` source as the template asks, so the three-repo change set stays
   traceable.
+- **Cross-repo issue/PR references MUST use the full URL — never a bare `#NNN`.**
+  On GitHub a bare `#NNN` always resolves to an issue/PR _in the repository where
+  the text is posted_. Use the bare `#NNN` form **only** when the issue/PR lives in
+  this same repo (`midea-lan`) and you have confirmed that. For anything in a
+  different repo — `midea_ac_lan`, `midea-lua` — always write the complete
+  `https://github.com/<owner>/<repo>/issues/NNN` or `.../pull/NNN` URL. This matters
+  most when posting a comment on the `midea_ac_lan` side that points at a `midea-lan`
+  PR/issue: a bare `#NNN` there links to the wrong repo almost every time, leaving
+  reviewers with a pile of mis-linked references. When in doubt, prefer the full URL.
 
 ### Keep code consistent with what exists
 

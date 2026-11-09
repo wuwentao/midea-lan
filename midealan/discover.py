@@ -177,6 +177,11 @@ SSID_MIN_PARTS = 2
 CONNECTED_FLAG = 1
 # A device is the master gateway when exactly these bits are set.
 MASTER_GATEWAY_MASK = 0x81
+# A device-type identifier is a single byte, so any value must fall in this
+# inclusive range. Parsed from device-supplied SSID/XML text, so guard against a
+# malformed reply yielding a negative or oversized value.
+DEVICE_TYPE_MIN = 0x00
+DEVICE_TYPE_MAX = 0xFF
 # Discovery protocol v4 replies use a bare 5a5a datagram even though their TCP
 # connection still requires the token-authenticated 8370 transport.
 SECURE_UDP_VERSION = 4
@@ -213,6 +218,11 @@ def _device_package_exists(device_type: int) -> bool:
     ``importlib.util.find_spec`` so no device module is imported as a side
     effect of discovery.
     """
+    # A real device type is a single byte. A malformed reply can parse to a
+    # negative or oversized value; reject it up front so we never build a bogus
+    # module name (e.g. "x-5") or do a pointless find_spec lookup.
+    if not DEVICE_TYPE_MIN <= device_type <= DEVICE_TYPE_MAX:
+        return False
     suffix = (
         f"x{device_type:02x}" if device_type < DeviceType.A0 else f"{device_type:02x}"
     )

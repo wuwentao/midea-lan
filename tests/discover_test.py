@@ -425,6 +425,18 @@ class TestSupportVerdict:
         """Test a type with no package is reported missing (0x99)."""
         assert _device_package_exists(0x99) is False
 
+    @pytest.mark.parametrize("device_type", [-5, 0x100, 0x7FFFFFFF])
+    def test_package_out_of_range_type(self, device_type: int) -> None:
+        """Test a type outside the single-byte range is rejected up front.
+
+        A malformed reply can parse to a negative or oversized value; it must be
+        reported missing without ever building a bogus module name or calling
+        find_spec.
+        """
+        with patch("midealan.discover.importlib_util.find_spec") as find_spec:
+            assert _device_package_exists(device_type) is False
+            find_spec.assert_not_called()
+
     def test_package_exists_parent_missing(self) -> None:
         """Test a ModuleNotFoundError from find_spec is treated as missing.
 

@@ -13,7 +13,8 @@ from midealan.message import MessageType
 
 
 def _report_frame(
-    body: Sequence[int], message_type: int = MessageType.notify1
+    body: Sequence[int],
+    message_type: int = MessageType.notify1,
 ) -> bytes:
     """Wrap a report body in a full e9 response frame."""
     header = bytearray(

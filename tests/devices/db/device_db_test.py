@@ -581,6 +581,46 @@ class TestMideaDBDevice:
             is True
         )
 
+    def test_verified_start_preserves_parameters(self) -> None:
+        """Start without replaying the stale snapshot that reset spin/time.
+
+        The verified v33 washer restored program-default spin speed and
+        minutes when start replayed MessageStart.washing_data. The profile
+        now sends a no-change parameter body with only the start status and
+        the current function flags (byte 13), so confirmed parameters stay.
+        """
+        device = verified_washer(DB_BODY)
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.start, True)
+        assert len(send.call_args_list) == 2
+        message = send.call_args_list[0].args[0]
+        assert isinstance(message, MessageParameters)
+        assert isinstance(send.call_args_list[1].args[0], MessageQuery)
+        body = message._body
+        # Status byte set to start; all parameters no-change; flags preserved.
+        assert body[1] == 0x01
+        assert body[12] == DB_BODY[13]
+        assert all(byte == 0xFF for i, byte in enumerate(body) if i not in (1, 12))
+
+    def test_verified_pause_preserves_parameters(self) -> None:
+        """Pause sends a no-change body with the pause status (not a snapshot)."""
+        device = verified_washer(DB_BODY)
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.start, False)
+        message = send.call_args_list[0].args[0]
+        assert isinstance(message, MessageParameters)
+        assert message._body[1] == 0x00
+
+    def test_verified_start_without_status_raises(self) -> None:
+        """Reject start before the washer has reported a real status."""
+        device = verified_washer()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="powered on"),
+        ):
+            device.set_attribute(DeviceAttributes.start, True)
+        send.assert_not_called()
+
     @pytest.mark.parametrize(
         ("model", "sn8"),
         [("38123703", None), ("MF200D80WB/T-A1", "38123703")],

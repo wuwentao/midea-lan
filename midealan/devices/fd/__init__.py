@@ -8,16 +8,20 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
-    FD_202Z3119_FAN_SPEEDS,
-    FD_202Z3119_MODEL,
-    FD_202Z3119_MODES,
-    FD_202Z3119_SCREEN_DISPLAYS,
-    FD_20200012_FAN_SPEEDS,
-    FD_20200012_MODEL,
-    FD_20200012_SCREEN_DISPLAYS,
+    FD_LUA_25_AUTO_FAN_SPEED,
+    FD_LUA_25_FAN_SPEEDS,
+    FD_LUA_25_MODE_AUTO,
+    FD_LUA_25_MODE_MANUAL,
+    FD_LUA_25_SCREEN_DISPLAYS,
+    FD_LUA_2024110101_FAN_SPEEDS,
+    FD_LUA_2024110101_MODES,
+    FD_LUA_2024110101_SCREEN_DISPLAYS,
+    FD_LUA_PROTOCOL_25,
+    FD_LUA_PROTOCOL_2024110101,
     MessageFDResponse,
     MessageQuery,
     MessageSet,
+    get_fd_lua_protocol_hint,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,14 +100,17 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.wet_pad_dry: None,
             },
         )
-        self._is_model_20200012 = self.model == FD_20200012_MODEL
-        self._is_model_202z3119 = self.model == FD_202Z3119_MODEL
-        if self._is_model_20200012:
-            self._speeds = FD_20200012_FAN_SPEEDS
-            self._screen_display_values = FD_20200012_SCREEN_DISPLAYS
-        elif self._is_model_202z3119:
-            self._speeds = FD_202Z3119_FAN_SPEEDS
-            self._screen_display_values = FD_202Z3119_SCREEN_DISPLAYS
+        self._configure_lua_protocol(get_fd_lua_protocol_hint(self.model))
+
+    def _configure_lua_protocol(self, lua_protocol: str) -> None:
+        """Configure capabilities for an FD Lua protocol."""
+        self._lua_protocol = lua_protocol
+        if lua_protocol == FD_LUA_PROTOCOL_25:
+            self._speeds = FD_LUA_25_FAN_SPEEDS
+            self._screen_display_values = FD_LUA_25_SCREEN_DISPLAYS
+        elif lua_protocol == FD_LUA_PROTOCOL_2024110101:
+            self._speeds = FD_LUA_2024110101_FAN_SPEEDS
+            self._screen_display_values = FD_LUA_2024110101_SCREEN_DISPLAYS
         elif self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
             self._speeds = MideaFDDevice._speeds_new
             self._screen_display_values = MideaFDDevice._screen_displays
@@ -111,8 +118,8 @@ class MideaFDDevice(MideaDevice):
             self._speeds = MideaFDDevice._speeds_old
             self._screen_display_values = MideaFDDevice._screen_displays
         self._mode_values = (
-            FD_202Z3119_MODES
-            if self._is_model_202z3119
+            FD_LUA_2024110101_MODES
+            if lua_protocol == FD_LUA_PROTOCOL_2024110101
             else {index: mode for index, mode in enumerate(self._modes, start=1)}
         )
 
@@ -142,7 +149,15 @@ class MideaFDDevice(MideaDevice):
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea FD device process message."""
-        message = MessageFDResponse(msg, model=self.model)
+        message = MessageFDResponse(msg, lua_protocol=self._lua_protocol)
+        detected_protocol = getattr(message, "lua_protocol", self._lua_protocol)
+        if detected_protocol != self._lua_protocol:
+            _LOGGER.debug(
+                "[%s] Detected FD Lua protocol: %s",
+                self.device_id,
+                detected_protocol,
+            )
+            self._configure_lua_protocol(detected_protocol)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         for status in self._attributes:
@@ -169,7 +184,10 @@ class MideaFDDevice(MideaDevice):
 
     def make_message_set(self) -> MessageSet:
         """Midea FD device make message set."""
-        message = MessageSet(self._message_protocol_version, model=self.model)
+        message = MessageSet(
+            self._message_protocol_version,
+            lua_protocol=self._lua_protocol,
+        )
         message.power = self._attributes[DeviceAttributes.power]
         message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
         message.disinfect = self._attributes[DeviceAttributes.disinfect]
@@ -183,7 +201,9 @@ class MideaFDDevice(MideaDevice):
             ]
         else:
             message.mode = 1
-        default_fan_speed = 39 if self._is_model_202z3119 else 40
+        default_fan_speed = (
+            39 if self._lua_protocol == FD_LUA_PROTOCOL_2024110101 else 40
+        )
         message.fan_speed = (
             default_fan_speed
             if self._attributes[DeviceAttributes.fan_speed] is None
@@ -195,7 +215,7 @@ class MideaFDDevice(MideaDevice):
         )
         message.screen_display = (
             None
-            if self._is_model_20200012
+            if self._lua_protocol == FD_LUA_PROTOCOL_25
             else 0
             if self._attributes[DeviceAttributes.screen_display] is None
             else list(self._screen_display_values.keys())[
@@ -208,7 +228,10 @@ class MideaFDDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea FD device set attribute."""
-        if attr == DeviceAttributes.prompt_tone and not self._is_model_202z3119:
+        if (
+            attr == DeviceAttributes.prompt_tone
+            and self._lua_protocol != FD_LUA_PROTOCOL_2024110101
+        ):
             self._attributes[DeviceAttributes.prompt_tone] = value
             self.update_all({DeviceAttributes.prompt_tone.value: value})
         else:
@@ -223,6 +246,12 @@ class MideaFDDevice(MideaDevice):
                     message.fan_speed = list(self._speeds.keys())[
                         list(self._speeds.values()).index(str(value))
                     ]
+                    if self._lua_protocol == FD_LUA_PROTOCOL_25:
+                        message.mode = (
+                            FD_LUA_25_MODE_AUTO
+                            if message.fan_speed == FD_LUA_25_AUTO_FAN_SPEED
+                            else FD_LUA_25_MODE_MANUAL
+                        )
             elif attr == DeviceAttributes.screen_display:
                 if value in self._screen_display_values.values():
                     message.screen_display = list(

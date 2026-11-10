@@ -12,54 +12,91 @@ from midealan.message import (
 
 DISINFECT_A0_BODY_LENGTH = 29
 DISINFECT_C8_BODY_LENGTH = 36
-FD_20200012_AUTO_FAN_SPEED = 101
-FD_20200012_DISPLAY_OFF = 0x01
-FD_20200012_DISPLAY_ON = 0x02
-FD_20200012_DISPLAY_STATUS_INDEX = 43
-FD_20200012_FAN_SPEED_SET_INDEX = 2
-FD_20200012_FAN_SPEEDS = {
+FD_LUA_PROTOCOL_DEFAULT = ""
+FD_LUA_PROTOCOL_25 = "25"
+FD_LUA_PROTOCOL_25_MODELS = frozenset({"20200012"})
+FD_LUA_PROTOCOL_2024110101 = "2024110101"
+FD_LUA_PROTOCOL_2024110101_MODELS = frozenset({"202Z3119"})
+SCREEN_DISPLAY_DIM_CODE = 6
+SCREEN_DISPLAY_OFF_CODE = 7
+FD_LUA_25_AUTO_FAN_SPEED = 101
+FD_LUA_25_DISPLAY_STATUS_INDEX = 43
+FD_LUA_25_DISPLAY_STATUS_OFF = 0x01
+FD_LUA_25_DISPLAY_STATUS_ON = 0x02
+FD_LUA_25_FAN_SPEED_SET_INDEX = 2
+FD_LUA_25_FAN_SPEEDS = {
     1: "lowest",
     39: "low",
     59: "medium",
     80: "high",
     101: "auto",
 }
-FD_20200012_MANUAL_FAN_SPEEDS = frozenset({1, 39, 59, 80})
-FD_20200012_MODE_AUTO = 0x02
-FD_20200012_MODE_MANUAL = 0x01
-FD_20200012_MODE_SET_INDEX = 10
-FD_20200012_MODE_STATUS_INDEX = 13
-FD_20200012_MODEL = "20200012"
-FD_20200012_SCREEN_DISPLAY_OFF = 0x40
-FD_20200012_SCREEN_DISPLAY_ON = 0x80
-FD_20200012_SCREEN_DISPLAY_SET_INDEX = 14
-FD_20200012_SCREEN_DISPLAYS = {0: "bright", 7: "off"}
-FD_20200012_SET_BODY_LENGTH = 21
-FD_20200012_TARGET_HUMIDITY_SET_INDEX = 6
-FD_202Z3119_AIR_DRY_OFF = 0x02
-FD_202Z3119_AIR_DRY_ON = 0x01
-FD_202Z3119_AIR_DRY_SET_INDEX = 20
-FD_202Z3119_AIR_DRY_STATUS_INDEX = 42
-FD_202Z3119_AIR_DRY_STATUS_MASK = 0x30
-FD_202Z3119_AIR_DRY_STATUS_SHIFT = 4
-FD_202Z3119_CONTROL_FLAGS = 0x42
-FD_202Z3119_DISINFECT_SET_INDEX = 14
-FD_202Z3119_FAN_SPEED_SET_INDEX = 2
-FD_202Z3119_FAN_SPEEDS = {39: "low", 59: "medium", 80: "high"}
-FD_202Z3119_MODE_SET_INDEX = 10
-FD_202Z3119_MODE_STATUS_INDEX = 13
-FD_202Z3119_MODEL = "202Z3119"
-FD_202Z3119_MODES = {1: "manual", 7: "sleep", 8: "moist_skin"}
-FD_202Z3119_PROMPT_TONE_SET_INDEX = 9
-FD_202Z3119_PROMPT_TONE_STATUS_INDEX = 19
-FD_202Z3119_PROMPT_TONE_STATUS_MASK = 0x80
-FD_202Z3119_SCREEN_DISPLAY_SET_INDEX = 8
-FD_202Z3119_SCREEN_DISPLAY_STATUS_INDEX = 9
-FD_202Z3119_SCREEN_DISPLAYS = {0: "bright", 6: "dim", 7: "off"}
-FD_202Z3119_SET_BODY_LENGTH = 24
-FD_202Z3119_TARGET_HUMIDITY_SET_INDEX = 6
+FD_LUA_25_MANUAL_FAN_SPEEDS = frozenset({1, 39, 59, 80})
+FD_LUA_25_MODE_AUTO = 0x02
+FD_LUA_25_MODE_MANUAL = 0x01
+FD_LUA_25_MODE_SET_INDEX = 10
+FD_LUA_25_MODE_STATUS_INDEX = 13
+FD_LUA_25_DISPLAY_SET_INDEX = 14
+FD_LUA_25_DISPLAY_SET_OFF = 0x40
+FD_LUA_25_DISPLAY_SET_ON = 0x80
+FD_LUA_25_SCREEN_DISPLAYS = {0: "bright", SCREEN_DISPLAY_OFF_CODE: "off"}
+FD_LUA_25_SET_BODY_LENGTH = 21
+FD_LUA_25_TARGET_HUMIDITY_SET_INDEX = 6
+FD_LUA_2024110101_AIR_DRY_OFF = 0x02
+FD_LUA_2024110101_AIR_DRY_ON = 0x01
+FD_LUA_2024110101_AIR_DRY_SET_INDEX = 20
+FD_LUA_2024110101_AIR_DRY_STATUS_INDEX = 42
+FD_LUA_2024110101_AIR_DRY_STATUS_MASK = 0x30
+FD_LUA_2024110101_AIR_DRY_STATUS_SHIFT = 4
+FD_LUA_2024110101_CONTROL_FLAGS = 0x42
+FD_LUA_2024110101_DISINFECT_SET_INDEX = 14
+FD_LUA_2024110101_FAN_SPEED_SET_INDEX = 2
+FD_LUA_2024110101_FAN_SPEEDS = {39: "low", 59: "medium", 80: "high"}
+FD_LUA_2024110101_MODE_SET_INDEX = 10
+FD_LUA_2024110101_MODE_STATUS_INDEX = 13
+FD_LUA_2024110101_MODES = {1: "manual", 7: "sleep", 8: "moist_skin"}
+FD_LUA_2024110101_PROMPT_TONE_SET_INDEX = 9
+FD_LUA_2024110101_PROMPT_TONE_STATUS_INDEX = 19
+FD_LUA_2024110101_PROMPT_TONE_STATUS_MASK = 0x80
+FD_LUA_2024110101_SCREEN_DISPLAY_SET_INDEX = 8
+FD_LUA_2024110101_SCREEN_DISPLAY_STATUS_INDEX = 9
+FD_LUA_2024110101_SCREEN_DISPLAYS = {
+    0: "bright",
+    SCREEN_DISPLAY_DIM_CODE: "dim",
+    SCREEN_DISPLAY_OFF_CODE: "off",
+}
+FD_LUA_2024110101_SET_BODY_LENGTH = 24
+FD_LUA_2024110101_TARGET_HUMIDITY_SET_INDEX = 6
 MAX_FAN_SPEED = 5
 MAX_MSG_SERIAL_NUM = 254
+
+
+def get_fd_lua_protocol_hint(model: str) -> str:
+    """Return an initial FD Lua protocol hint for a known model."""
+    if model in FD_LUA_PROTOCOL_25_MODELS:
+        return FD_LUA_PROTOCOL_25
+    if model in FD_LUA_PROTOCOL_2024110101_MODELS:
+        return FD_LUA_PROTOCOL_2024110101
+    return FD_LUA_PROTOCOL_DEFAULT
+
+
+def detect_fd_lua_protocol(body: bytearray) -> str:
+    """Detect an FD Lua protocol from distinctive C8 status fields."""
+    if len(body) > FD_LUA_2024110101_AIR_DRY_STATUS_INDEX:
+        air_dry = (
+            body[FD_LUA_2024110101_AIR_DRY_STATUS_INDEX]
+            & FD_LUA_2024110101_AIR_DRY_STATUS_MASK
+        ) >> FD_LUA_2024110101_AIR_DRY_STATUS_SHIFT
+        if air_dry in {
+            FD_LUA_2024110101_AIR_DRY_ON,
+            FD_LUA_2024110101_AIR_DRY_OFF,
+        }:
+            return FD_LUA_PROTOCOL_2024110101
+    if len(body) > FD_LUA_25_DISPLAY_STATUS_INDEX and body[
+        FD_LUA_25_DISPLAY_STATUS_INDEX
+    ] in {FD_LUA_25_DISPLAY_STATUS_OFF, FD_LUA_25_DISPLAY_STATUS_ON}:
+        return FD_LUA_PROTOCOL_25
+    return FD_LUA_PROTOCOL_DEFAULT
 
 
 class MessageFDBase(MessageRequest):
@@ -138,7 +175,11 @@ class MessageQuery(MessageFDBase):
 class MessageSet(MessageFDBase):
     """FD message set."""
 
-    def __init__(self, protocol_version: int, model: str = "") -> None:
+    def __init__(
+        self,
+        protocol_version: int,
+        lua_protocol: str = FD_LUA_PROTOCOL_DEFAULT,
+    ) -> None:
         """Initialize FD message set."""
         super().__init__(
             protocol_version=protocol_version,
@@ -153,50 +194,53 @@ class MessageSet(MessageFDBase):
         self.mode = 0x01
         self.disinfect: bool | None = None
         self.wet_pad_dry: bool | None = None
-        self._model = model
+        self._lua_protocol = lua_protocol
 
     @property
     def _body(self) -> bytearray:
         power = 0x01 if self.power else 0x00
         prompt_tone = 0x40 if self.prompt_tone else 0x00
         disinfect = 0 if self.disinfect is None else (1 if self.disinfect else 2)
-        if self._model == FD_20200012_MODEL:
+        if self._lua_protocol == FD_LUA_PROTOCOL_25:
             screen_display_code = self.screen_display
             if screen_display_code == 0:
-                screen_display = FD_20200012_SCREEN_DISPLAY_ON
-            elif screen_display_code in {6, 7}:
-                screen_display = FD_20200012_SCREEN_DISPLAY_OFF
+                screen_display = FD_LUA_25_DISPLAY_SET_ON
+            elif screen_display_code in {
+                SCREEN_DISPLAY_DIM_CODE,
+                SCREEN_DISPLAY_OFF_CODE,
+            }:
+                screen_display = FD_LUA_25_DISPLAY_SET_OFF
             else:
                 screen_display = 0
             fan_speed = (
                 self.fan_speed
-                if self.mode == FD_20200012_MODE_MANUAL
-                and self.fan_speed in FD_20200012_MANUAL_FAN_SPEEDS
+                if self.mode == FD_LUA_25_MODE_MANUAL
+                and self.fan_speed in FD_LUA_25_MANUAL_FAN_SPEEDS
                 else 0
             )
-            body = bytearray(FD_20200012_SET_BODY_LENGTH)
+            body = bytearray(FD_LUA_25_SET_BODY_LENGTH)
             body[0] = power | prompt_tone | 0x02
-            body[FD_20200012_FAN_SPEED_SET_INDEX] = fan_speed
-            body[FD_20200012_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
-            body[FD_20200012_MODE_SET_INDEX] = self.mode
-            body[FD_20200012_SCREEN_DISPLAY_SET_INDEX] = screen_display
+            body[FD_LUA_25_FAN_SPEED_SET_INDEX] = fan_speed
+            body[FD_LUA_25_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
+            body[FD_LUA_25_MODE_SET_INDEX] = self.mode
+            body[FD_LUA_25_DISPLAY_SET_INDEX] = screen_display
             return body
-        if self._model == FD_202Z3119_MODEL:
-            body = bytearray(FD_202Z3119_SET_BODY_LENGTH)
-            body[0] = power | FD_202Z3119_CONTROL_FLAGS
-            body[FD_202Z3119_FAN_SPEED_SET_INDEX] = self.fan_speed
-            body[FD_202Z3119_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
-            body[FD_202Z3119_SCREEN_DISPLAY_SET_INDEX] = (
+        if self._lua_protocol == FD_LUA_PROTOCOL_2024110101:
+            body = bytearray(FD_LUA_2024110101_SET_BODY_LENGTH)
+            body[0] = power | FD_LUA_2024110101_CONTROL_FLAGS
+            body[FD_LUA_2024110101_FAN_SPEED_SET_INDEX] = self.fan_speed
+            body[FD_LUA_2024110101_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
+            body[FD_LUA_2024110101_SCREEN_DISPLAY_SET_INDEX] = (
                 self.screen_display if self.screen_display is not None else 0
             )
-            body[FD_202Z3119_PROMPT_TONE_SET_INDEX] = prompt_tone
-            body[FD_202Z3119_MODE_SET_INDEX] = self.mode
-            body[FD_202Z3119_DISINFECT_SET_INDEX] = disinfect
+            body[FD_LUA_2024110101_PROMPT_TONE_SET_INDEX] = prompt_tone
+            body[FD_LUA_2024110101_MODE_SET_INDEX] = self.mode
+            body[FD_LUA_2024110101_DISINFECT_SET_INDEX] = disinfect
             if self.wet_pad_dry is not None:
-                body[FD_202Z3119_AIR_DRY_SET_INDEX] = (
-                    FD_202Z3119_AIR_DRY_ON
+                body[FD_LUA_2024110101_AIR_DRY_SET_INDEX] = (
+                    FD_LUA_2024110101_AIR_DRY_ON
                     if self.wet_pad_dry
-                    else FD_202Z3119_AIR_DRY_OFF
+                    else FD_LUA_2024110101_AIR_DRY_OFF
                 )
             return body
         return bytearray(
@@ -229,40 +273,53 @@ class MessageSet(MessageFDBase):
 class FDC8MessageBody(MessageBody):
     """FD message C8 body."""
 
-    def __init__(self, body: bytearray, model: str = "") -> None:
+    def __init__(
+        self,
+        body: bytearray,
+        lua_protocol: str = FD_LUA_PROTOCOL_DEFAULT,
+    ) -> None:
         """Initialize FD message C8 body."""
         super().__init__(body)
+        self.lua_protocol = lua_protocol or detect_fd_lua_protocol(body)
         self.power = (body[1] & 0x01) > 0
         self.fan_speed = body[3] & 0x7F
         self.target_humidity = body[7]
         self.current_humidity = body[16]
         self.current_temperature = (body[17] - 50) / 2
         self.tank = body[10]
-        if model == FD_20200012_MODEL and len(body) > FD_20200012_DISPLAY_STATUS_INDEX:
-            self.mode = body[FD_20200012_MODE_STATUS_INDEX]
-            if self.mode == FD_20200012_MODE_AUTO:
-                self.fan_speed = FD_20200012_AUTO_FAN_SPEED
-            display = body[FD_20200012_DISPLAY_STATUS_INDEX]
-            if display == FD_20200012_DISPLAY_ON:
+        if (
+            self.lua_protocol == FD_LUA_PROTOCOL_25
+            and len(body) > FD_LUA_25_DISPLAY_STATUS_INDEX
+        ):
+            self.mode = body[FD_LUA_25_MODE_STATUS_INDEX]
+            if self.mode == FD_LUA_25_MODE_AUTO:
+                self.fan_speed = FD_LUA_25_AUTO_FAN_SPEED
+            display = body[FD_LUA_25_DISPLAY_STATUS_INDEX]
+            if display == FD_LUA_25_DISPLAY_STATUS_ON:
                 self.screen_display = 0
-            elif display == FD_20200012_DISPLAY_OFF:
-                self.screen_display = 7
+            elif display == FD_LUA_25_DISPLAY_STATUS_OFF:
+                self.screen_display = SCREEN_DISPLAY_OFF_CODE
             else:
                 self.screen_display = display
-        elif model == FD_202Z3119_MODEL:
-            self.mode = body[FD_202Z3119_MODE_STATUS_INDEX]
-            self.screen_display = body[FD_202Z3119_SCREEN_DISPLAY_STATUS_INDEX] & 0x07
+        elif (
+            self.lua_protocol == FD_LUA_PROTOCOL_2024110101
+            and len(body) > FD_LUA_2024110101_PROMPT_TONE_STATUS_INDEX
+        ):
+            self.mode = body[FD_LUA_2024110101_MODE_STATUS_INDEX]
+            self.screen_display = (
+                body[FD_LUA_2024110101_SCREEN_DISPLAY_STATUS_INDEX] & 0x07
+            )
             self.prompt_tone = (
-                body[FD_202Z3119_PROMPT_TONE_STATUS_INDEX]
-                & FD_202Z3119_PROMPT_TONE_STATUS_MASK
+                body[FD_LUA_2024110101_PROMPT_TONE_STATUS_INDEX]
+                & FD_LUA_2024110101_PROMPT_TONE_STATUS_MASK
             ) > 0
-            if len(body) > FD_202Z3119_AIR_DRY_STATUS_INDEX:
+            if len(body) > FD_LUA_2024110101_AIR_DRY_STATUS_INDEX:
                 air_dry = (
-                    body[FD_202Z3119_AIR_DRY_STATUS_INDEX]
-                    & FD_202Z3119_AIR_DRY_STATUS_MASK
-                ) >> FD_202Z3119_AIR_DRY_STATUS_SHIFT
+                    body[FD_LUA_2024110101_AIR_DRY_STATUS_INDEX]
+                    & FD_LUA_2024110101_AIR_DRY_STATUS_MASK
+                ) >> FD_LUA_2024110101_AIR_DRY_STATUS_SHIFT
                 if air_dry:
-                    self.wet_pad_dry = air_dry == FD_202Z3119_AIR_DRY_ON
+                    self.wet_pad_dry = air_dry == FD_LUA_2024110101_AIR_DRY_ON
         else:
             self.mode = (body[8] & 0x70) >> 4
             self.screen_display = body[9] & 0x07
@@ -295,7 +352,11 @@ class FDA0MessageBody(MessageBody):
 class MessageFDResponse(MessageResponse):
     """FD message response."""
 
-    def __init__(self, message: bytes, model: str = "") -> None:
+    def __init__(
+        self,
+        message: bytes,
+        lua_protocol: str = FD_LUA_PROTOCOL_DEFAULT,
+    ) -> None:
         """Initialize FD message response."""
         super().__init__(bytearray(message))
         if self.message_type in [
@@ -308,7 +369,7 @@ class MessageFDResponse(MessageResponse):
             elif self.body_type == ListTypes.A0:
                 self.set_body(FDA0MessageBody(super().body))
             elif self.body_type == ListTypes.C8:
-                self.set_body(FDC8MessageBody(super().body, model))
+                self.set_body(FDC8MessageBody(super().body, lua_protocol))
         self.set_attr()
         fan_speed = getattr(self, "fan_speed", None)
         if fan_speed is not None and fan_speed < MAX_FAN_SPEED:

@@ -7,7 +7,11 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.fd import DeviceAttributes, MideaFDDevice
-from midealan.devices.fd.message import MessageQuery, MessageSet
+from midealan.devices.fd.message import (
+    FD_LUA_PROTOCOL_2024110101,
+    MessageQuery,
+    MessageSet,
+)
 from midealan.message import MessageType
 
 
@@ -191,8 +195,8 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.disinfect] is None
 
     def test_process_message_model_202z3119(self) -> None:
-        """Test U12 status decoding using the real issue frame."""
-        device = _build_device(7, model="202Z3119")
+        """Test automatic Lua-protocol detection using the real issue frame."""
+        device = _build_device(7, model="compatible_model")
         body = bytearray.fromhex(
             "c80101277f7f00320006"
             "280000010000425c0040"
@@ -201,6 +205,8 @@ class TestMideaFDDevice:
             "00001000000000000000",
         )
         device.process_message(_build_message(MessageType.notify1, body))
+        assert device._lua_protocol == FD_LUA_PROTOCOL_2024110101
+        assert device.modes == ["manual", "sleep", "moist_skin"]
         assert device.attributes[DeviceAttributes.power] is True
         assert device.attributes[DeviceAttributes.fan_speed] == "low"
         assert device.attributes[DeviceAttributes.mode] == "manual"
@@ -403,6 +409,34 @@ class TestMideaFDDevice:
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageSet)
             assert message.fan_speed == 60
+
+    def test_set_attribute_fan_speed_auto_lua_25(self) -> None:
+        """Test selecting Auto also switches the Lua 25 protocol mode."""
+        device = _build_device(0, model="20200012")
+        device._attributes[DeviceAttributes.mode] = "manual"
+        device._attributes[DeviceAttributes.fan_speed] = "low"
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.fan_speed.value, "auto")
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.mode == 2
+        assert message.fan_speed == 101
+        assert message._body[2] == 0
+        assert message._body[10] == 2
+
+    def test_set_attribute_manual_fan_speed_lua_25(self) -> None:
+        """Test selecting a manual level also switches the Lua 25 mode."""
+        device = _build_device(0, model="20200012")
+        device._attributes[DeviceAttributes.mode] = "auto"
+        device._attributes[DeviceAttributes.fan_speed] = "auto"
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.fan_speed.value, "low")
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.mode == 1
+        assert message.fan_speed == 39
+        assert message._body[2] == 39
+        assert message._body[10] == 1
 
     def test_set_attribute_fan_speed_invalid(self) -> None:
         """Test set attribute with an unknown fan speed keeps the default."""

@@ -7,15 +7,14 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.crc8 import calculate
 from midealan.devices.fd.message import (
-    FD_202Z3119_MODEL,
+    FD_LUA_PROTOCOL_25,
+    FD_LUA_PROTOCOL_2024110101,
     MessageFDBase,
     MessageFDResponse,
     MessageQuery,
     MessageSet,
 )
 from midealan.message import ListTypes, MessageType
-
-FD_20200012_MODEL = "20200012"
 
 
 def _build_message(message_type: MessageType, body: bytearray) -> bytes:
@@ -112,7 +111,7 @@ class TestMessageSet:
         """Test the model 20200012 control layout."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
-            model=FD_20200012_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_25,
         )
         msg.fan_speed = 39
         msg.target_humidity = 45
@@ -130,7 +129,7 @@ class TestMessageSet:
         """Test model 20200012 sends a level only in manual mode."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
-            model=FD_20200012_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_25,
         )
         msg.fan_speed = 39
         msg.mode = 1
@@ -144,7 +143,7 @@ class TestMessageSet:
         """Test switching to manual does not send the synthetic Auto speed."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
-            model=FD_20200012_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_25,
         )
         msg.fan_speed = 101
         msg.mode = 1
@@ -154,7 +153,7 @@ class TestMessageSet:
         """Test the model 202Z3119 control layout from the official Lua."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
-            model=FD_202Z3119_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
         msg.power = True
         msg.fan_speed = 59
@@ -179,7 +178,7 @@ class TestMessageSet:
         """Test model 202Z3119 writes the explicit air-dry off value."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
-            model=FD_202Z3119_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
         msg.wet_pad_dry = False
         body = msg._body
@@ -214,11 +213,9 @@ class TestMessageFDResponse:
         body[8] = 0
         body[13] = 2
         body[43] = 0x02
-        msg = MessageFDResponse(
-            _build_message(MessageType.query, body),
-            model=FD_20200012_MODEL,
-        )
+        msg = MessageFDResponse(_build_message(MessageType.query, body))
         response = cast("Any", msg)
+        assert response.lua_protocol == FD_LUA_PROTOCOL_25
         assert response.mode == 2
         assert response.fan_speed == 101
         assert response.screen_display == 0
@@ -231,7 +228,7 @@ class TestMessageFDResponse:
         body[9] = 0x06
         msg = MessageFDResponse(
             _build_message(MessageType.query, body),
-            model=FD_20200012_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_25,
         )
         response = cast("Any", msg)
         assert response.mode == 1
@@ -245,7 +242,7 @@ class TestMessageFDResponse:
         body[43] = 0x03
         msg = MessageFDResponse(
             _build_message(MessageType.query, body),
-            model=FD_20200012_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_25,
         )
         response = cast("Any", msg)
         assert response.screen_display == 0x03
@@ -259,11 +256,9 @@ class TestMessageFDResponse:
             "00000000000000000000"
             "00001000000000000000",
         )
-        msg = MessageFDResponse(
-            _build_message(MessageType.notify1, body),
-            model=FD_202Z3119_MODEL,
-        )
+        msg = MessageFDResponse(_build_message(MessageType.notify1, body))
         response = cast("Any", msg)
+        assert response.lua_protocol == FD_LUA_PROTOCOL_2024110101
         assert response.power is True
         assert response.fan_speed == 39
         assert response.mode == 1
@@ -280,7 +275,7 @@ class TestMessageFDResponse:
         body[42] = 0x20
         msg = MessageFDResponse(
             _build_message(MessageType.query, body),
-            model=FD_202Z3119_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
         response = cast("Any", msg)
         assert response.mode == 7
@@ -291,11 +286,15 @@ class TestMessageFDResponse:
         """Test model 202Z3119 omits an unknown air-dry status."""
         body = bytearray(50)
         body[0] = 0xC8
+        body[13] = 1
+        body[43] = 1
         msg = MessageFDResponse(
             _build_message(MessageType.query, body),
-            model=FD_202Z3119_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
-        assert not hasattr(msg, "wet_pad_dry")
+        response = cast("Any", msg)
+        assert response.lua_protocol == FD_LUA_PROTOCOL_2024110101
+        assert not hasattr(response, "wet_pad_dry")
 
     def test_response_short_c8_model_202z3119(self) -> None:
         """Test a shorter U12 frame without the optional air-dry status."""
@@ -305,12 +304,27 @@ class TestMessageFDResponse:
         body[19] = 0x80
         msg = MessageFDResponse(
             _build_message(MessageType.query, body),
-            model=FD_202Z3119_MODEL,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
         response = cast("Any", msg)
         assert response.mode == 8
         assert response.prompt_tone is True
         assert not hasattr(response, "wet_pad_dry")
+
+    def test_response_minimum_c8_falls_back_to_legacy_layout(self) -> None:
+        """Test a minimum-length frame cannot enter the newer Lua layout."""
+        body = bytearray(19)
+        body[0] = 0xC8
+        body[8] = 0x10
+        body[9] = 6
+        msg = MessageFDResponse(
+            _build_message(MessageType.query, body),
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
+        )
+        response = cast("Any", msg)
+        assert response.mode == 1
+        assert response.screen_display == 6
+        assert not hasattr(response, "prompt_tone")
 
     def test_response_a0_body(self) -> None:
         """Test response with a short A0 body without disinfect."""

@@ -15,6 +15,7 @@ shape):
 
 import json
 import logging
+import math
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -189,8 +190,12 @@ class MideaB7Device(MideaDevice):
 
     @staticmethod
     def _as_int(attr: str, value: bool | float | str) -> int:
-        """Coerce a numeric control value to int, rejecting bool/str."""
-        if isinstance(value, bool) or not isinstance(value, int | float):
+        """Coerce a numeric control value to int, rejecting bool/str/non-finite."""
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int | float)
+            or (isinstance(value, float) and not math.isfinite(value))
+        ):
             msg = f"[b7] {attr} expects a number"
             raise ValueWrongType(msg)
         return int(value)

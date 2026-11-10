@@ -411,6 +411,35 @@ class B7FailMessageBody(MessageBody):
 class MessageB7Response(MessageResponse):
     """b7 message response."""
 
+    # Fields copied off the decoded body classes by ``set_attr``; declared here
+    # so static type-checking sees them on the response.
+    left_status: int
+    right_status: int
+    left_surplus_hours: int
+    left_surplus_minutes: int
+    right_surplus_hours: int
+    right_surplus_minutes: int
+    left_work_hours: int
+    left_work_minutes: int
+    left_work_seconds: int
+    right_work_hours: int
+    right_work_minutes: int
+    right_work_seconds: int
+    left_gear: int
+    right_gear: int
+    left_work_mode: int
+    right_work_mode: int
+    lock: bool
+    menu_mark: bool
+    gas_warn: bool
+    left_smart_bl: bool
+    right_smart_bl: bool
+    left_temp: int
+    right_temp: int
+    error_code: int
+    tips_code: int
+    fail_resp_reason: int
+
     def __init__(self, message: bytes) -> None:
         """Initialize b7 message response."""
         super().__init__(bytearray(message))

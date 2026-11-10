@@ -15,7 +15,9 @@ from midealan.devices.b7.message import (
     FUNCTION_GEAR,
     FUNCTION_POWER,
     FUNCTION_TEMP_MIN,
+    LOCK_OFF,
     LOCK_ON,
+    MessageB7Response,
 )
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
@@ -129,6 +131,19 @@ class TestMideaB7Device:
         assert body[1] == BURNER_LOCK
         assert body[2] == LOCK_ON
 
+    def test_set_lock_off(self, device: MideaB7Device) -> None:
+        """Lock off routes to the lock burner selector with LOCK_OFF."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.lock, False)
+        body = build_send.call_args[0][0].body
+        assert body[1] == BURNER_LOCK
+        assert body[2] == LOCK_OFF
+
+    def test_fail_response_decode(self) -> None:
+        """A fail-response frame exposes the reason on the response object."""
+        resp = MessageB7Response(_frame(MessageType.set, [0x00, 0xFE, 0x00, 7]))
+        assert resp.fail_resp_reason == 7
+
     def test_gear_out_of_range(self, device: MideaB7Device) -> None:
         """A gear above the byte range raises ValueOutOfRange."""
         with pytest.raises(ValueOutOfRange):
@@ -148,6 +163,16 @@ class TestMideaB7Device:
         """A bool gear value is rejected as the wrong type."""
         with pytest.raises(ValueWrongType):
             device.set_attribute(DeviceAttributes.left_gear_set, True)
+
+    def test_gear_nan_rejected(self, device: MideaB7Device) -> None:
+        """A NaN gear value is rejected (int(nan) would raise ValueError)."""
+        with pytest.raises(ValueWrongType):
+            device.set_attribute(DeviceAttributes.left_gear_set, float("nan"))
+
+    def test_gear_inf_rejected(self, device: MideaB7Device) -> None:
+        """An infinite gear value is rejected (int(inf) would raise OverflowError)."""
+        with pytest.raises(ValueWrongType):
+            device.set_attribute(DeviceAttributes.left_gear_set, float("inf"))
 
     def test_readonly_attrs_noop(self, device: MideaB7Device) -> None:
         """Status / error attributes are read-only and send nothing."""

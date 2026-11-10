@@ -37,6 +37,7 @@ TLV_FORMAT = 1
 TLV_HEADER_LENGTH = 3
 INVALID_BYTE = 0xFF
 INVALID_TEMPERATURE = 0x7FFF
+INVALID_U16 = 0xFFFF
 TEMPERATURE_SCALE = 10
 AUTO_MODE_TAG = 28
 ERROR_CODE_TAG = 42
@@ -189,6 +190,7 @@ TEMPERATURE_FIELDS = {
     41: "tank_actual_temperature",
     52: "outdoor_temperature",
 }
+TANK_ACTUAL_TEMPERATURE_TAG = 41
 TEMPERATURE_LIMIT_FIELDS = frozenset(
     ("room_temp_max", "room_temp_min", "dhw_temp_max", "dhw_temp_min"),
 )
@@ -339,6 +341,16 @@ def _temperature(raw: bytes) -> float | None:
     return int.from_bytes(raw, "big", signed=True) / TEMPERATURE_SCALE
 
 
+def _basic_temperature(tag: int, raw: bytes) -> float | None:
+    """Decode 0x2010 temperatures with the observed tank-only FFFF sentinel."""
+    # Lua only reserves 0x7FFF for generic Temp values. Model 17100007 also
+    # reports 0xFFFF for tank_actual_temp while DHW measurement is unavailable;
+    # keep this exception field-scoped so a real -0.1 C remains representable.
+    if tag == TANK_ACTUAL_TEMPERATURE_TAG and int.from_bytes(raw, "big") == INVALID_U16:
+        return None
+    return _temperature(raw)
+
+
 class C3QuintupleEnergyBody(MessageBody):
     """Decode 0x2F12 energy using the vendor's 0.01 kW/kWh scale."""
 
@@ -378,6 +390,7 @@ class C3QuintupleBasicBody(MessageBody):
 
     quintuple_basic: bool
     quintuple_arrays: dict[str, dict[int, float | bool | None]]
+    tank_actual_temperature: float | None
     outdoor_temperature: float
 
     def __init__(self, body: bytearray) -> None:
@@ -392,7 +405,7 @@ class C3QuintupleBasicBody(MessageBody):
                 setattr(self, name, bool(raw) if raw in (0, 1) else None)
         for tag, name in TEMPERATURE_FIELDS.items():
             if tag in values and (
-                (value := _temperature(values[tag])) is not None
+                (value := _basic_temperature(tag, values[tag])) is not None
                 or name in TEMPERATURE_LIMIT_FIELDS
                 or name in TEMPERATURE_SENSOR_FIELDS
             ):
@@ -806,9 +819,7 @@ C3_X00_PRESSURE_SCALE = 10
 C3_X00_WATER_FLOW_SCALE = 100
 C3_X00_CURRENT_UNIT_CAPACITY_SCALE = 100
 C3_X00_DC_CURRENT_SCALE = 100
-C3_X00_SIGN_BIT = 0x8000
-C3_X00_SIGN_VALUE_MASK = 0x7FFF
-C3_X00_INVALID_U16 = 0xFFFF
+C3_X00_INVALID_TEMPERATURES = frozenset((INVALID_TEMPERATURE, INVALID_U16))
 C3_X00_TELEMETRY_MODEL = QUINTUPLE_MODEL
 
 # Basic state command used by model 17100007. Temperatures in this frame are
@@ -931,18 +942,21 @@ def _parse_c3_2010_temperature(body: bytearray, offset: int) -> float:
 def _parse_c3_x00_signed_temperature(body: bytearray, offset: int) -> float | None:
     """Decode a signed C3 X00 temperature stored as tenths of a degree."""
     raw = _read_u16_be(body, offset)
-    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
+    if raw in C3_X00_INVALID_TEMPERATURES:
         return None
-    magnitude = raw & C3_X00_SIGN_VALUE_MASK
-    if raw & C3_X00_SIGN_BIT:
-        magnitude = -magnitude
-    return magnitude / C3_X00_TEMPERATURE_SCALE
+    # Lua handleIntergerWithRate() decodes Temp U16 fields as two's complement.
+    signed = int.from_bytes(
+        body[offset : offset + C3_X00_U16_LENGTH],
+        byteorder="big",
+        signed=True,
+    )
+    return signed / C3_X00_TEMPERATURE_SCALE
 
 
 def _parse_c3_x00_setpoint(body: bytearray, offset: int) -> float | None:
     """Decode an unsigned C3 X00 setpoint, mapping invalid sentinels to None."""
     raw = _read_u16_be(body, offset)
-    if raw in (C3_X00_INVALID_U16, INVALID_TEMPERATURE):
+    if raw in C3_X00_INVALID_TEMPERATURES:
         return None
     return raw / C3_X00_TEMPERATURE_SCALE
 
@@ -1622,7 +1636,7 @@ class C3X002F10TelemetryBody(MessageBody):
         if len(body) >= C3_2F10_DC_BUS_VOLTAGE_OFFSET + C3_X00_U16_LENGTH:
             self.dc_bus_voltage = _read_u16_be(body, C3_2F10_DC_BUS_VOLTAGE_OFFSET)
         if len(body) >= C3_2F10_DC_CURRENT_OFFSET + C3_X00_U16_LENGTH:
-            # /100 matches the only nonzero sample; request live confirmation.
+            # Vendor Lua tag 62 uses the Current type, defined in hundredths A.
             self.dc_current = (
                 _read_u16_be(body, C3_2F10_DC_CURRENT_OFFSET) / C3_X00_DC_CURRENT_SCALE
             )

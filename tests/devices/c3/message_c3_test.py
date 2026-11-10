@@ -470,7 +470,7 @@ class TestMessageC3Response:
         body = bytearray(body_length)
         body[1:3] = bytes.fromhex(command)
         body[temperature_offset : temperature_offset + 10] = bytes.fromhex(
-            "800cffff000000110022",
+            "fff4ffff000000110022",
         )
 
         response = MessageC3Response(
@@ -773,7 +773,7 @@ class TestMessageC3Response:
             ("2f10", 137, "temp_tb_t1"),
         ],
     )
-    @pytest.mark.parametrize(("raw", "expected"), [("0000", 0.0), ("800a", -1.0)])
+    @pytest.mark.parametrize(("raw", "expected"), [("0000", 0.0), ("fff6", -1.0)])
     def test_message_x00_buffer_temperatures_preserve_valid_values(
         self,
         command: str,
@@ -794,6 +794,20 @@ class TestMessageC3Response:
         )
 
         assert getattr(response, attribute) == expected
+
+    def test_message_x00_negative_th_uses_twos_complement(self) -> None:
+        """Test the Lua Temp conversion decodes the reported FFFB TH as -0.5 C."""
+        self.header[-1] = MessageType.notify1
+        body = bytearray(115)
+        body[1:3] = bytes.fromhex("20b0")
+        body[113:] = bytes.fromhex("fffb")
+
+        response = MessageC3Response(
+            bytes(self.header + body + bytes([0x00])),
+            model="17100007",
+        )
+
+        assert response.temp_th == -0.5
 
     @pytest.mark.parametrize("body_hex", ["00", "0020", "002f"])
     def test_message_x00_incomplete_command_is_not_decoded(
@@ -2873,7 +2887,7 @@ def test_invalid_measured_temperatures_clear_stale_readings() -> None:
     status = d.process_message(
         frame(
             bytes.fromhex(
-                "002010ffffffff01ffff0029027fff0034027fff0007027fff",
+                "002010ffffffff01ffff002902ffff0034027fff0007027fff",
             ),
         ),
     )
@@ -2904,6 +2918,14 @@ def test_signed_temperature() -> None:
     """The Lua's Temp type is signed two's-complement tenths."""
     body = bytes.fromhex("002010ffffffff01ffff003402ffce")
     assert C3QuintupleBasicBody(bytearray(body)).outdoor_temperature == -5
+
+
+def test_ffff_temperature_sentinel_is_tank_only() -> None:
+    """Tank FFFF is unavailable without hiding a valid generic -0.1 C value."""
+    body = bytes.fromhex("002010ffffffff01ffff002902ffff003402ffff")
+    response = C3QuintupleBasicBody(bytearray(body))
+    assert response.tank_actual_temperature is None
+    assert response.outdoor_temperature == -0.1
 
 
 @pytest.mark.parametrize(

@@ -772,7 +772,9 @@ class MideaE1Device(MideaDevice):
                 int(value) if isinstance(value, float) and value.is_integer() else value
             )
             self._check_delay(minutes)
-            self._attributes[DeviceAttributes.delay_minutes] = cast("int", minutes)
+            delay_minutes = cast("int", minutes)
+            self._attributes[DeviceAttributes.delay_minutes] = delay_minutes
+            self.update_all({str(DeviceAttributes.delay_minutes): delay_minutes})
             return
         if attr in _WASH_PARAM_ATTRS:
             number = (

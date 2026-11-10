@@ -670,11 +670,14 @@ class TestMideaE1Device:
             self.device.set_attribute(DeviceAttributes.status.value, "spin")
 
     def test_set_attribute_delay_minutes_stores_value(self) -> None:
-        """Test delay_minutes is stored and reused by a later order."""
+        """Test delay_minutes is stored and published without sending a command."""
+        updates: list[dict[str, Any]] = []
+        self.device.register_update(updates.append)
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.delay_minutes.value, 90)
         mock_build_send.assert_not_called()
         assert self.device.attributes[DeviceAttributes.delay_minutes.value] == 90
+        assert updates == [{DeviceAttributes.delay_minutes.value: 90}]
 
     def test_set_attribute_delay_minutes_rejects_out_of_range(self) -> None:
         """Test delay_minutes rejects out of range values."""

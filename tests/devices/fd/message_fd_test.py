@@ -9,6 +9,7 @@ from midealan.crc8 import calculate
 from midealan.devices.fd.message import (
     FD_LUA_PROTOCOL_25,
     FD_LUA_PROTOCOL_2024110101,
+    FD_LUA_PROTOCOL_DEFAULT,
     MessageFDBase,
     MessageFDResponse,
     MessageQuery,
@@ -107,8 +108,8 @@ class TestMessageSet:
         assert body[0] == first_byte
         assert body[14] == disinfect_byte
 
-    def test_set_body_model_20200012(self) -> None:
-        """Test the model 20200012 control layout."""
+    def test_set_body_lua_25(self) -> None:
+        """Test the Lua 25 control layout."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
             lua_protocol=FD_LUA_PROTOCOL_25,
@@ -125,8 +126,8 @@ class TestMessageSet:
         assert body[10] == 2
         assert body[14] == 0x80
 
-    def test_set_body_model_20200012_manual(self) -> None:
-        """Test model 20200012 sends a level only in manual mode."""
+    def test_set_body_lua_25_manual(self) -> None:
+        """Test Lua 25 sends a level only in manual mode."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
             lua_protocol=FD_LUA_PROTOCOL_25,
@@ -139,7 +140,7 @@ class TestMessageSet:
         assert body[10] == 1
         assert body[14] == 0x40
 
-    def test_set_body_model_20200012_manual_ignores_auto_speed(self) -> None:
+    def test_set_body_lua_25_manual_ignores_auto_speed(self) -> None:
         """Test switching to manual does not send the synthetic Auto speed."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
@@ -149,8 +150,8 @@ class TestMessageSet:
         msg.mode = 1
         assert msg._body[2] == 0
 
-    def test_set_body_model_202z3119(self) -> None:
-        """Test the model 202Z3119 control layout from the official Lua."""
+    def test_set_body_lua_2024110101(self) -> None:
+        """Test the Lua 2024110101 control layout."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
             lua_protocol=FD_LUA_PROTOCOL_2024110101,
@@ -174,8 +175,8 @@ class TestMessageSet:
         assert body[14] == 1
         assert body[20] == 1
 
-    def test_set_body_model_202z3119_air_dry_off(self) -> None:
-        """Test model 202Z3119 writes the explicit air-dry off value."""
+    def test_set_body_lua_2024110101_air_dry_off(self) -> None:
+        """Test Lua 2024110101 writes the explicit air-dry off value."""
         msg = MessageSet(
             protocol_version=ProtocolVersion.V1,
             lua_protocol=FD_LUA_PROTOCOL_2024110101,
@@ -184,6 +185,15 @@ class TestMessageSet:
         body = msg._body
         assert body[9] == 0
         assert body[20] == 2
+
+    def test_set_body_lua_2024110101_leaves_air_dry_unchanged(self) -> None:
+        """Test Lua 2024110101 omits air-dry when no state is available."""
+        msg = MessageSet(
+            protocol_version=ProtocolVersion.V1,
+            lua_protocol=FD_LUA_PROTOCOL_2024110101,
+        )
+        assert msg.wet_pad_dry is None
+        assert msg._body[20] == 0
 
 
 class TestMessageFDResponse:
@@ -205,13 +215,14 @@ class TestMessageFDResponse:
         msg = MessageFDResponse(_build_message(MessageType.query, body))
         assert msg.fan_speed == 1
 
-    def test_response_c8_model_20200012(self) -> None:
-        """Test the model 20200012 status layout."""
+    def test_response_c8_detects_lua_25(self) -> None:
+        """Test automatic Lua 25 detection from its status signature."""
         body = bytearray(46)
         body[0] = 0xC8
         body[3] = 0
         body[8] = 0
         body[13] = 2
+        body[42] = 0x40
         body[43] = 0x02
         msg = MessageFDResponse(_build_message(MessageType.query, body))
         response = cast("Any", msg)
@@ -220,8 +231,8 @@ class TestMessageFDResponse:
         assert response.fan_speed == 101
         assert response.screen_display == 0
 
-    def test_response_short_c8_model_20200012(self) -> None:
-        """Test short model 20200012 frames use the legacy-safe layout."""
+    def test_response_short_c8_lua_25(self) -> None:
+        """Test short Lua 25 frames use the legacy-safe layout."""
         body = bytearray(38)
         body[0] = 0xC8
         body[8] = 0x10
@@ -234,8 +245,8 @@ class TestMessageFDResponse:
         assert response.mode == 1
         assert response.screen_display == 6
 
-    def test_response_c8_model_20200012_unknown_display(self) -> None:
-        """Test model 20200012 preserves an unknown display status."""
+    def test_response_c8_lua_25_unknown_display(self) -> None:
+        """Test Lua 25 preserves an unknown display status."""
         body = bytearray(46)
         body[0] = 0xC8
         body[13] = 1
@@ -247,8 +258,22 @@ class TestMessageFDResponse:
         response = cast("Any", msg)
         assert response.screen_display == 0x03
 
-    def test_response_c8_model_202z3119_issue_frame(self) -> None:
-        """Test model 202Z3119 against the status frame from issue 525."""
+    @pytest.mark.parametrize("mode", [1, 8])
+    def test_response_ambiguous_fields_do_not_select_lua_protocol(
+        self,
+        mode: int,
+    ) -> None:
+        """Test ambiguous mode/display fields do not select a protocol."""
+        body = bytearray(46)
+        body[0] = 0xC8
+        body[13] = mode
+        body[43] = 1
+        msg = MessageFDResponse(_build_message(MessageType.query, body))
+        response = cast("Any", msg)
+        assert response.lua_protocol == FD_LUA_PROTOCOL_DEFAULT
+
+    def test_response_c8_lua_2024110101_issue_frame(self) -> None:
+        """Test Lua 2024110101 against the status frame from issue 525."""
         body = bytearray.fromhex(
             "c80101277f7f00320006"
             "280000010000425c0040"
@@ -266,24 +291,21 @@ class TestMessageFDResponse:
         assert response.prompt_tone is False
         assert response.wet_pad_dry is True
 
-    def test_response_c8_model_202z3119_flags_off(self) -> None:
-        """Test model 202Z3119 prompt-tone on and air-dry off status."""
+    def test_response_c8_detects_lua_2024110101_air_dry_off(self) -> None:
+        """Test Lua 2024110101 detection with air-dry off status."""
         body = bytearray(50)
         body[0] = 0xC8
         body[13] = 7
         body[19] = 0x80
         body[42] = 0x20
-        msg = MessageFDResponse(
-            _build_message(MessageType.query, body),
-            lua_protocol=FD_LUA_PROTOCOL_2024110101,
-        )
+        msg = MessageFDResponse(_build_message(MessageType.query, body))
         response = cast("Any", msg)
         assert response.mode == 7
         assert response.prompt_tone is True
         assert response.wet_pad_dry is False
 
-    def test_response_c8_model_202z3119_unknown_air_dry(self) -> None:
-        """Test model 202Z3119 omits an unknown air-dry status."""
+    def test_response_c8_lua_2024110101_unknown_air_dry(self) -> None:
+        """Test Lua 2024110101 omits an unknown air-dry status."""
         body = bytearray(50)
         body[0] = 0xC8
         body[13] = 1
@@ -296,8 +318,8 @@ class TestMessageFDResponse:
         assert response.lua_protocol == FD_LUA_PROTOCOL_2024110101
         assert not hasattr(response, "wet_pad_dry")
 
-    def test_response_short_c8_model_202z3119(self) -> None:
-        """Test a shorter U12 frame without the optional air-dry status."""
+    def test_response_short_c8_lua_2024110101(self) -> None:
+        """Test a configured U12 parser accepts a shorter status frame."""
         body = bytearray(38)
         body[0] = 0xC8
         body[13] = 8
@@ -307,6 +329,7 @@ class TestMessageFDResponse:
             lua_protocol=FD_LUA_PROTOCOL_2024110101,
         )
         response = cast("Any", msg)
+        assert response.lua_protocol == FD_LUA_PROTOCOL_2024110101
         assert response.mode == 8
         assert response.prompt_tone is True
         assert not hasattr(response, "wet_pad_dry")

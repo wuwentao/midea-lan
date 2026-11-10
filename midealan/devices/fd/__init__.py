@@ -18,10 +18,10 @@ from .message import (
     FD_LUA_2024110101_SCREEN_DISPLAYS,
     FD_LUA_PROTOCOL_25,
     FD_LUA_PROTOCOL_2024110101,
+    FD_LUA_PROTOCOL_DEFAULT,
     MessageFDResponse,
     MessageQuery,
     MessageSet,
-    get_fd_lua_protocol_hint,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,7 +100,7 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.wet_pad_dry: None,
             },
         )
-        self._configure_lua_protocol(get_fd_lua_protocol_hint(self.model))
+        self._configure_lua_protocol(FD_LUA_PROTOCOL_DEFAULT)
 
     def _configure_lua_protocol(self, lua_protocol: str) -> None:
         """Configure capabilities for an FD Lua protocol."""

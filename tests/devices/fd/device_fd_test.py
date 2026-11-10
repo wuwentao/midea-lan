@@ -8,7 +8,9 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.fd import DeviceAttributes, MideaFDDevice
 from midealan.devices.fd.message import (
+    FD_LUA_PROTOCOL_25,
     FD_LUA_PROTOCOL_2024110101,
+    FD_LUA_PROTOCOL_DEFAULT,
     MessageQuery,
     MessageSet,
 )
@@ -37,6 +39,29 @@ def _build_message(message_type: MessageType, body: bytearray) -> bytes:
         [0xAA] + ([0x0] * 7) + [ProtocolVersion.V1] + [message_type],
     )
     return bytes(header + body + bytearray([0x00]))
+
+
+def _process_lua_25_status(device: MideaFDDevice) -> None:
+    """Detect Lua protocol 25 from its captured status-field signature."""
+    body = bytearray(46)
+    body[0] = 0xC8
+    body[3] = 39
+    body[13] = 1
+    body[42] = 0x40
+    body[43] = 0x01
+    device.process_message(_build_message(MessageType.query, body))
+
+
+def _process_lua_2024110101_status(device: MideaFDDevice) -> None:
+    """Detect Lua protocol 2024110101 from the real issue frame."""
+    body = bytearray.fromhex(
+        "c80101277f7f00320006"
+        "280000010000425c0040"
+        "00000000000000000000"
+        "00000000000000000000"
+        "00001000000000000000",
+    )
+    device.process_message(_build_message(MessageType.notify1, body))
 
 
 class TestMideaFDDevice:
@@ -75,9 +100,19 @@ class TestMideaFDDevice:
             "sleep",
         ]
 
-    def test_modes_model_202z3119(self) -> None:
-        """Test model 202Z3119 exposes only modes supported by the U12."""
-        device = _build_device(7, model="202Z3119")
+    def test_model_name_does_not_select_lua_protocol(self) -> None:
+        """Test known model names do not bypass status-based detection."""
+        assert _build_device(0, model="20200012")._lua_protocol == (
+            FD_LUA_PROTOCOL_DEFAULT
+        )
+        assert _build_device(7, model="202Z3119")._lua_protocol == (
+            FD_LUA_PROTOCOL_DEFAULT
+        )
+
+    def test_modes_lua_2024110101(self) -> None:
+        """Test Lua 2024110101 exposes only modes supported by the U12."""
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         assert device.modes == ["manual", "sleep", "moist_skin"]
 
     def test_fan_speeds_old(self) -> None:
@@ -108,37 +143,36 @@ class TestMideaFDDevice:
         device.process_message(_build_message(MessageType.query, body))
         assert device.attributes[DeviceAttributes.fan_speed] == "low"
 
-    def test_fan_speeds_model_20200012(self) -> None:
-        """Test model 20200012 uses the new speed table for subtype zero."""
-        device = _build_device(0, model="20200012")
+    def test_fan_speeds_lua_25(self) -> None:
+        """Test Lua 25 uses its protocol speed table for subtype zero."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
+        assert device._lua_protocol == FD_LUA_PROTOCOL_25
         assert device.fan_speeds == ["lowest", "low", "medium", "high", "auto"]
-        body = bytearray(46)
-        body[0] = 0xC8
-        body[3] = 39
-        body[13] = 1
-        body[43] = 0x01
-        device.process_message(_build_message(MessageType.query, body))
         assert device.attributes[DeviceAttributes.fan_speed] == "low"
         assert device.attributes[DeviceAttributes.mode] == "manual"
         assert device.attributes[DeviceAttributes.screen_display] == "off"
 
-    def test_fan_speeds_model_202z3119(self) -> None:
-        """Test model 202Z3119 exposes its three manual fan levels."""
-        device = _build_device(7, model="202Z3119")
+    def test_fan_speeds_lua_2024110101(self) -> None:
+        """Test Lua 2024110101 exposes its three manual fan levels."""
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         assert device.fan_speeds == ["low", "medium", "high"]
 
     def test_screen_displays(self) -> None:
         """Test screen displays property."""
         assert self.device.screen_displays == ["bright", "dim", "off"]
 
-    def test_screen_displays_model_20200012(self) -> None:
-        """Test model 20200012 only advertises supported display choices."""
-        device = _build_device(0, model="20200012")
+    def test_screen_displays_lua_25(self) -> None:
+        """Test Lua 25 only advertises supported display choices."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
         assert device.screen_displays == ["bright", "off"]
 
-    def test_screen_displays_model_202z3119(self) -> None:
-        """Test model 202Z3119 exposes all three display levels."""
-        device = _build_device(7, model="202Z3119")
+    def test_screen_displays_lua_2024110101(self) -> None:
+        """Test Lua 2024110101 exposes all three display levels."""
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         assert device.screen_displays == ["bright", "dim", "off"]
 
     def test_detect_modes(self) -> None:
@@ -194,17 +228,10 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.current_temperature] == 10.0
         assert self.device.attributes[DeviceAttributes.disinfect] is None
 
-    def test_process_message_model_202z3119(self) -> None:
+    def test_process_message_lua_2024110101(self) -> None:
         """Test automatic Lua-protocol detection using the real issue frame."""
         device = _build_device(7, model="compatible_model")
-        body = bytearray.fromhex(
-            "c80101277f7f00320006"
-            "280000010000425c0040"
-            "00000000000000000000"
-            "00000000000000000000"
-            "00001000000000000000",
-        )
-        device.process_message(_build_message(MessageType.notify1, body))
+        _process_lua_2024110101_status(device)
         assert device._lua_protocol == FD_LUA_PROTOCOL_2024110101
         assert device.modes == ["manual", "sleep", "moist_skin"]
         assert device.attributes[DeviceAttributes.power] is True
@@ -311,9 +338,10 @@ class TestMideaFDDevice:
         assert message.screen_display == 7
         assert message.disinfect is True
 
-    def test_make_message_set_model_20200012(self) -> None:
-        """Test model 20200012 preserves Auto mode without a fan override."""
-        device = _build_device(0, model="20200012")
+    def test_make_message_set_lua_25(self) -> None:
+        """Test Lua 25 preserves Auto mode without a fan override."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
         device._attributes[DeviceAttributes.mode] = "auto"
         device._attributes[DeviceAttributes.fan_speed] = "auto"
         device._attributes[DeviceAttributes.target_humidity] = 45
@@ -329,9 +357,10 @@ class TestMideaFDDevice:
         assert body[10] == 2
         assert body[14] == 0
 
-    def test_make_message_set_model_202z3119(self) -> None:
-        """Test model 202Z3119 preserves status in the official set layout."""
-        device = _build_device(7, model="202Z3119")
+    def test_make_message_set_lua_2024110101(self) -> None:
+        """Test Lua 2024110101 preserves status in its official set layout."""
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         device._attributes[DeviceAttributes.mode] = "moist_skin"
         device._attributes[DeviceAttributes.fan_speed] = "medium"
         device._attributes[DeviceAttributes.target_humidity] = 50
@@ -363,9 +392,10 @@ class TestMideaFDDevice:
             )
         assert self.device.attributes[DeviceAttributes.prompt_tone] is False
 
-    def test_set_attribute_prompt_tone_model_202z3119(self) -> None:
-        """Test U12 sends prompt-tone controls through its model layout."""
-        device = _build_device(7, model="202Z3119")
+    def test_set_attribute_prompt_tone_lua_2024110101(self) -> None:
+        """Test U12 sends prompt-tone controls through its protocol layout."""
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(DeviceAttributes.prompt_tone.value, True)
         message = mock_build_send.call_args[0][0]
@@ -373,9 +403,10 @@ class TestMideaFDDevice:
         assert message.prompt_tone is True
         assert message._body[9] == 0x40
 
-    def test_set_attribute_wet_pad_dry_model_202z3119(self) -> None:
+    def test_set_attribute_wet_pad_dry_lua_2024110101(self) -> None:
         """Test U12 sends wet-pad air-dry controls."""
-        device = _build_device(7, model="202Z3119")
+        device = _build_device(7, model="another_compatible_model")
+        _process_lua_2024110101_status(device)
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(DeviceAttributes.wet_pad_dry.value, True)
         message = mock_build_send.call_args[0][0]
@@ -412,7 +443,8 @@ class TestMideaFDDevice:
 
     def test_set_attribute_fan_speed_auto_lua_25(self) -> None:
         """Test selecting Auto also switches the Lua 25 protocol mode."""
-        device = _build_device(0, model="20200012")
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
         device._attributes[DeviceAttributes.mode] = "manual"
         device._attributes[DeviceAttributes.fan_speed] = "low"
         with patch.object(device, "build_send") as mock_build_send:
@@ -426,7 +458,8 @@ class TestMideaFDDevice:
 
     def test_set_attribute_manual_fan_speed_lua_25(self) -> None:
         """Test selecting a manual level also switches the Lua 25 mode."""
-        device = _build_device(0, model="20200012")
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
         device._attributes[DeviceAttributes.mode] = "auto"
         device._attributes[DeviceAttributes.fan_speed] = "auto"
         with patch.object(device, "build_send") as mock_build_send:

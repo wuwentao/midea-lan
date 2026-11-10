@@ -14,9 +14,7 @@ DISINFECT_A0_BODY_LENGTH = 29
 DISINFECT_C8_BODY_LENGTH = 36
 FD_LUA_PROTOCOL_DEFAULT = ""
 FD_LUA_PROTOCOL_25 = "25"
-FD_LUA_PROTOCOL_25_MODELS = frozenset({"20200012"})
 FD_LUA_PROTOCOL_2024110101 = "2024110101"
-FD_LUA_PROTOCOL_2024110101_MODELS = frozenset({"202Z3119"})
 SCREEN_DISPLAY_DIM_CODE = 6
 SCREEN_DISPLAY_OFF_CODE = 7
 FD_LUA_25_AUTO_FAN_SPEED = 101
@@ -34,6 +32,7 @@ FD_LUA_25_FAN_SPEEDS = {
 FD_LUA_25_MANUAL_FAN_SPEEDS = frozenset({1, 39, 59, 80})
 FD_LUA_25_MODE_AUTO = 0x02
 FD_LUA_25_MODE_MANUAL = 0x01
+FD_LUA_25_MODES = frozenset(range(1, 8))
 FD_LUA_25_MODE_SET_INDEX = 10
 FD_LUA_25_MODE_STATUS_INDEX = 13
 FD_LUA_25_DISPLAY_SET_INDEX = 14
@@ -42,6 +41,9 @@ FD_LUA_25_DISPLAY_SET_ON = 0x80
 FD_LUA_25_SCREEN_DISPLAYS = {0: "bright", SCREEN_DISPLAY_OFF_CODE: "off"}
 FD_LUA_25_SET_BODY_LENGTH = 21
 FD_LUA_25_TARGET_HUMIDITY_SET_INDEX = 6
+FD_LUA_25_WARM_MIST_STATUS_INDEX = 42
+FD_LUA_25_WARM_MIST_STATUS_OFF = 0x40
+FD_LUA_25_WARM_MIST_STATUS_ON = 0x80
 FD_LUA_2024110101_AIR_DRY_OFF = 0x02
 FD_LUA_2024110101_AIR_DRY_ON = 0x01
 FD_LUA_2024110101_AIR_DRY_SET_INDEX = 20
@@ -52,9 +54,14 @@ FD_LUA_2024110101_CONTROL_FLAGS = 0x42
 FD_LUA_2024110101_DISINFECT_SET_INDEX = 14
 FD_LUA_2024110101_FAN_SPEED_SET_INDEX = 2
 FD_LUA_2024110101_FAN_SPEEDS = {39: "low", 59: "medium", 80: "high"}
+FD_LUA_2024110101_MODE_MOIST_SKIN = 0x08
 FD_LUA_2024110101_MODE_SET_INDEX = 10
 FD_LUA_2024110101_MODE_STATUS_INDEX = 13
-FD_LUA_2024110101_MODES = {1: "manual", 7: "sleep", 8: "moist_skin"}
+FD_LUA_2024110101_MODES = {
+    1: "manual",
+    7: "sleep",
+    FD_LUA_2024110101_MODE_MOIST_SKIN: "moist_skin",
+}
 FD_LUA_2024110101_PROMPT_TONE_SET_INDEX = 9
 FD_LUA_2024110101_PROMPT_TONE_STATUS_INDEX = 19
 FD_LUA_2024110101_PROMPT_TONE_STATUS_MASK = 0x80
@@ -71,18 +78,13 @@ MAX_FAN_SPEED = 5
 MAX_MSG_SERIAL_NUM = 254
 
 
-def get_fd_lua_protocol_hint(model: str) -> str:
-    """Return an initial FD Lua protocol hint for a known model."""
-    if model in FD_LUA_PROTOCOL_25_MODELS:
-        return FD_LUA_PROTOCOL_25
-    if model in FD_LUA_PROTOCOL_2024110101_MODELS:
-        return FD_LUA_PROTOCOL_2024110101
-    return FD_LUA_PROTOCOL_DEFAULT
-
-
 def detect_fd_lua_protocol(body: bytearray) -> str:
-    """Detect an FD Lua protocol from distinctive C8 status fields."""
-    if len(body) > FD_LUA_2024110101_AIR_DRY_STATUS_INDEX:
+    """Detect an FD Lua protocol from its distinctive C8 status fields."""
+    mode = body[FD_LUA_2024110101_MODE_STATUS_INDEX]
+    if (
+        len(body) > FD_LUA_2024110101_AIR_DRY_STATUS_INDEX
+        and mode in FD_LUA_2024110101_MODES
+    ):
         air_dry = (
             body[FD_LUA_2024110101_AIR_DRY_STATUS_INDEX]
             & FD_LUA_2024110101_AIR_DRY_STATUS_MASK
@@ -92,10 +94,18 @@ def detect_fd_lua_protocol(body: bytearray) -> str:
             FD_LUA_2024110101_AIR_DRY_OFF,
         }:
             return FD_LUA_PROTOCOL_2024110101
-    if len(body) > FD_LUA_25_DISPLAY_STATUS_INDEX and body[
-        FD_LUA_25_DISPLAY_STATUS_INDEX
-    ] in {FD_LUA_25_DISPLAY_STATUS_OFF, FD_LUA_25_DISPLAY_STATUS_ON}:
-        return FD_LUA_PROTOCOL_25
+    if len(body) > FD_LUA_25_DISPLAY_STATUS_INDEX:
+        legacy_mode = (body[8] & 0x70) >> 4
+        warm_mist = body[FD_LUA_25_WARM_MIST_STATUS_INDEX]
+        display = body[FD_LUA_25_DISPLAY_STATUS_INDEX]
+        if (
+            legacy_mode == 0
+            and mode in FD_LUA_25_MODES
+            and warm_mist
+            in {FD_LUA_25_WARM_MIST_STATUS_OFF, FD_LUA_25_WARM_MIST_STATUS_ON}
+            and display in {FD_LUA_25_DISPLAY_STATUS_OFF, FD_LUA_25_DISPLAY_STATUS_ON}
+        ):
+            return FD_LUA_PROTOCOL_25
     return FD_LUA_PROTOCOL_DEFAULT
 
 

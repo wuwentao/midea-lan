@@ -8,6 +8,10 @@ from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
 from .message import (
+    FD_202Z3119_FAN_SPEEDS,
+    FD_202Z3119_MODEL,
+    FD_202Z3119_MODES,
+    FD_202Z3119_SCREEN_DISPLAYS,
     FD_20200012_FAN_SPEEDS,
     FD_20200012_MODEL,
     FD_20200012_SCREEN_DISPLAYS,
@@ -34,6 +38,7 @@ class DeviceAttributes(StrEnum):
     mode = "mode"
     screen_display = "screen_display"
     disinfect = "disinfect"
+    wet_pad_dry = "wet_pad_dry"
 
 
 class MideaFDDevice(MideaDevice):
@@ -88,23 +93,33 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.mode: None,
                 DeviceAttributes.screen_display: None,
                 DeviceAttributes.disinfect: None,
+                DeviceAttributes.wet_pad_dry: None,
             },
         )
         self._is_model_20200012 = self.model == FD_20200012_MODEL
+        self._is_model_202z3119 = self.model == FD_202Z3119_MODEL
         if self._is_model_20200012:
             self._speeds = FD_20200012_FAN_SPEEDS
             self._screen_display_values = FD_20200012_SCREEN_DISPLAYS
+        elif self._is_model_202z3119:
+            self._speeds = FD_202Z3119_FAN_SPEEDS
+            self._screen_display_values = FD_202Z3119_SCREEN_DISPLAYS
         elif self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
             self._speeds = MideaFDDevice._speeds_new
             self._screen_display_values = MideaFDDevice._screen_displays
         else:
             self._speeds = MideaFDDevice._speeds_old
             self._screen_display_values = MideaFDDevice._screen_displays
+        self._mode_values = (
+            FD_202Z3119_MODES
+            if self._is_model_202z3119
+            else {index: mode for index, mode in enumerate(self._modes, start=1)}
+        )
 
     @property
     def modes(self) -> list[str]:
         """Midea FD device modes."""
-        return list(MideaFDDevice._modes)
+        return list(self._mode_values.values())
 
     @property
     def fan_speeds(self) -> list[str]:
@@ -134,10 +149,7 @@ class MideaFDDevice(MideaDevice):
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
                 if status == DeviceAttributes.mode:
-                    if 1 <= value <= len(MideaFDDevice._modes):
-                        self._attributes[status] = MideaFDDevice._modes[value - 1]
-                    else:
-                        self._attributes[status] = None
+                    self._attributes[status] = self._mode_values.get(value)
                 elif status == DeviceAttributes.fan_speed:
                     if value in self._speeds:
                         self._attributes[status] = self._speeds.get(value)
@@ -161,15 +173,19 @@ class MideaFDDevice(MideaDevice):
         message.power = self._attributes[DeviceAttributes.power]
         message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
         message.disinfect = self._attributes[DeviceAttributes.disinfect]
+        message.wet_pad_dry = self._attributes[DeviceAttributes.wet_pad_dry]
         message.target_humidity = self._attributes[DeviceAttributes.target_humidity]
-        if self._attributes[DeviceAttributes.mode] in MideaFDDevice._modes:
-            message.mode = (
-                MideaFDDevice._modes.index(self._attributes[DeviceAttributes.mode]) + 1
-            )
+        if self._attributes[DeviceAttributes.mode] in self._mode_values.values():
+            message.mode = list(self._mode_values.keys())[
+                list(self._mode_values.values()).index(
+                    self._attributes[DeviceAttributes.mode],
+                )
+            ]
         else:
             message.mode = 1
+        default_fan_speed = 39 if self._is_model_202z3119 else 40
         message.fan_speed = (
-            40
+            default_fan_speed
             if self._attributes[DeviceAttributes.fan_speed] is None
             else list(self._speeds.keys())[
                 list(self._speeds.values()).index(
@@ -192,14 +208,16 @@ class MideaFDDevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea FD device set attribute."""
-        if attr == DeviceAttributes.prompt_tone:
+        if attr == DeviceAttributes.prompt_tone and not self._is_model_202z3119:
             self._attributes[DeviceAttributes.prompt_tone] = value
             self.update_all({DeviceAttributes.prompt_tone.value: value})
         else:
             message = self.make_message_set()
             if attr == DeviceAttributes.mode:
-                if value in MideaFDDevice._modes:
-                    message.mode = MideaFDDevice._modes.index(str(value)) + 1
+                if value in self._mode_values.values():
+                    message.mode = list(self._mode_values.keys())[
+                        list(self._mode_values.values()).index(str(value))
+                    ]
             elif attr == DeviceAttributes.fan_speed:
                 if value in self._speeds.values():
                     message.fan_speed = list(self._speeds.keys())[

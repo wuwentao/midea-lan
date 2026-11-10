@@ -7,6 +7,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.crc8 import calculate
 from midealan.devices.fd.message import (
+    FD_202Z3119_MODEL,
     MessageFDBase,
     MessageFDResponse,
     MessageQuery,
@@ -149,6 +150,42 @@ class TestMessageSet:
         msg.mode = 1
         assert msg._body[2] == 0
 
+    def test_set_body_model_202z3119(self) -> None:
+        """Test the model 202Z3119 control layout from the official Lua."""
+        msg = MessageSet(
+            protocol_version=ProtocolVersion.V1,
+            model=FD_202Z3119_MODEL,
+        )
+        msg.power = True
+        msg.fan_speed = 59
+        msg.target_humidity = 50
+        msg.prompt_tone = True
+        msg.screen_display = 6
+        msg.mode = 8
+        msg.disinfect = True
+        msg.wet_pad_dry = True
+        body = msg._body
+        assert len(body) == 24
+        assert body[0] == 0x43
+        assert body[2] == 59
+        assert body[6] == 50
+        assert body[8] == 6
+        assert body[9] == 0x40
+        assert body[10] == 8
+        assert body[14] == 1
+        assert body[20] == 1
+
+    def test_set_body_model_202z3119_air_dry_off(self) -> None:
+        """Test model 202Z3119 writes the explicit air-dry off value."""
+        msg = MessageSet(
+            protocol_version=ProtocolVersion.V1,
+            model=FD_202Z3119_MODEL,
+        )
+        msg.wet_pad_dry = False
+        body = msg._body
+        assert body[9] == 0
+        assert body[20] == 2
+
 
 class TestMessageFDResponse:
     """Test FD Message Response."""
@@ -212,6 +249,68 @@ class TestMessageFDResponse:
         )
         response = cast("Any", msg)
         assert response.screen_display == 0x03
+
+    def test_response_c8_model_202z3119_issue_frame(self) -> None:
+        """Test model 202Z3119 against the status frame from issue 525."""
+        body = bytearray.fromhex(
+            "c80101277f7f00320006"
+            "280000010000425c0040"
+            "00000000000000000000"
+            "00000000000000000000"
+            "00001000000000000000",
+        )
+        msg = MessageFDResponse(
+            _build_message(MessageType.notify1, body),
+            model=FD_202Z3119_MODEL,
+        )
+        response = cast("Any", msg)
+        assert response.power is True
+        assert response.fan_speed == 39
+        assert response.mode == 1
+        assert response.screen_display == 6
+        assert response.prompt_tone is False
+        assert response.wet_pad_dry is True
+
+    def test_response_c8_model_202z3119_flags_off(self) -> None:
+        """Test model 202Z3119 prompt-tone on and air-dry off status."""
+        body = bytearray(50)
+        body[0] = 0xC8
+        body[13] = 7
+        body[19] = 0x80
+        body[42] = 0x20
+        msg = MessageFDResponse(
+            _build_message(MessageType.query, body),
+            model=FD_202Z3119_MODEL,
+        )
+        response = cast("Any", msg)
+        assert response.mode == 7
+        assert response.prompt_tone is True
+        assert response.wet_pad_dry is False
+
+    def test_response_c8_model_202z3119_unknown_air_dry(self) -> None:
+        """Test model 202Z3119 omits an unknown air-dry status."""
+        body = bytearray(50)
+        body[0] = 0xC8
+        msg = MessageFDResponse(
+            _build_message(MessageType.query, body),
+            model=FD_202Z3119_MODEL,
+        )
+        assert not hasattr(msg, "wet_pad_dry")
+
+    def test_response_short_c8_model_202z3119(self) -> None:
+        """Test a shorter U12 frame without the optional air-dry status."""
+        body = bytearray(38)
+        body[0] = 0xC8
+        body[13] = 8
+        body[19] = 0x80
+        msg = MessageFDResponse(
+            _build_message(MessageType.query, body),
+            model=FD_202Z3119_MODEL,
+        )
+        response = cast("Any", msg)
+        assert response.mode == 8
+        assert response.prompt_tone is True
+        assert not hasattr(response, "wet_pad_dry")
 
     def test_response_a0_body(self) -> None:
         """Test response with a short A0 body without disinfect."""

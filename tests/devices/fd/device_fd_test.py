@@ -57,6 +57,7 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.mode] is None
         assert self.device.attributes[DeviceAttributes.screen_display] is None
         assert self.device.attributes[DeviceAttributes.disinfect] is None
+        assert self.device.attributes[DeviceAttributes.wet_pad_dry] is None
 
     def test_modes(self) -> None:
         """Test modes property."""
@@ -69,6 +70,11 @@ class TestMideaFDDevice:
             "kitchen",
             "sleep",
         ]
+
+    def test_modes_model_202z3119(self) -> None:
+        """Test model 202Z3119 exposes only modes supported by the U12."""
+        device = _build_device(7, model="202Z3119")
+        assert device.modes == ["manual", "sleep", "moist_skin"]
 
     def test_fan_speeds_old(self) -> None:
         """Test fan speeds property with an old subtype."""
@@ -112,6 +118,11 @@ class TestMideaFDDevice:
         assert device.attributes[DeviceAttributes.mode] == "manual"
         assert device.attributes[DeviceAttributes.screen_display] == "off"
 
+    def test_fan_speeds_model_202z3119(self) -> None:
+        """Test model 202Z3119 exposes its three manual fan levels."""
+        device = _build_device(7, model="202Z3119")
+        assert device.fan_speeds == ["low", "medium", "high"]
+
     def test_screen_displays(self) -> None:
         """Test screen displays property."""
         assert self.device.screen_displays == ["bright", "dim", "off"]
@@ -120,6 +131,11 @@ class TestMideaFDDevice:
         """Test model 20200012 only advertises supported display choices."""
         device = _build_device(0, model="20200012")
         assert device.screen_displays == ["bright", "off"]
+
+    def test_screen_displays_model_202z3119(self) -> None:
+        """Test model 202Z3119 exposes all three display levels."""
+        device = _build_device(7, model="202Z3119")
+        assert device.screen_displays == ["bright", "dim", "off"]
 
     def test_detect_modes(self) -> None:
         """Test detect modes property."""
@@ -173,6 +189,24 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.screen_display] is None
         assert self.device.attributes[DeviceAttributes.current_temperature] == 10.0
         assert self.device.attributes[DeviceAttributes.disinfect] is None
+
+    def test_process_message_model_202z3119(self) -> None:
+        """Test U12 status decoding using the real issue frame."""
+        device = _build_device(7, model="202Z3119")
+        body = bytearray.fromhex(
+            "c80101277f7f00320006"
+            "280000010000425c0040"
+            "00000000000000000000"
+            "00000000000000000000"
+            "00001000000000000000",
+        )
+        device.process_message(_build_message(MessageType.notify1, body))
+        assert device.attributes[DeviceAttributes.power] is True
+        assert device.attributes[DeviceAttributes.fan_speed] == "low"
+        assert device.attributes[DeviceAttributes.mode] == "manual"
+        assert device.attributes[DeviceAttributes.screen_display] == "dim"
+        assert device.attributes[DeviceAttributes.prompt_tone] is False
+        assert device.attributes[DeviceAttributes.wet_pad_dry] is True
 
     def test_process_message_a0(self) -> None:
         """Test process message with an A0 body including disinfect off."""
@@ -289,6 +323,27 @@ class TestMideaFDDevice:
         assert body[10] == 2
         assert body[14] == 0
 
+    def test_make_message_set_model_202z3119(self) -> None:
+        """Test model 202Z3119 preserves status in the official set layout."""
+        device = _build_device(7, model="202Z3119")
+        device._attributes[DeviceAttributes.mode] = "moist_skin"
+        device._attributes[DeviceAttributes.fan_speed] = "medium"
+        device._attributes[DeviceAttributes.target_humidity] = 50
+        device._attributes[DeviceAttributes.screen_display] = "dim"
+        device._attributes[DeviceAttributes.prompt_tone] = False
+        device._attributes[DeviceAttributes.wet_pad_dry] = True
+        message = device.make_message_set()
+        assert message.mode == 8
+        assert message.fan_speed == 59
+        assert message.wet_pad_dry is True
+        body = message._body
+        assert body[2] == 59
+        assert body[6] == 50
+        assert body[8] == 6
+        assert body[9] == 0
+        assert body[10] == 8
+        assert body[20] == 1
+
     def test_set_attribute_prompt_tone(self) -> None:
         """Test set attribute prompt tone updates without sending."""
         with (
@@ -301,6 +356,26 @@ class TestMideaFDDevice:
                 {DeviceAttributes.prompt_tone.value: False},
             )
         assert self.device.attributes[DeviceAttributes.prompt_tone] is False
+
+    def test_set_attribute_prompt_tone_model_202z3119(self) -> None:
+        """Test U12 sends prompt-tone controls through its model layout."""
+        device = _build_device(7, model="202Z3119")
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.prompt_tone.value, True)
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.prompt_tone is True
+        assert message._body[9] == 0x40
+
+    def test_set_attribute_wet_pad_dry_model_202z3119(self) -> None:
+        """Test U12 sends wet-pad air-dry controls."""
+        device = _build_device(7, model="202Z3119")
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.wet_pad_dry.value, True)
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.wet_pad_dry is True
+        assert message._body[20] == 1
 
     def test_set_attribute_mode(self) -> None:
         """Test set attribute mode converts the name to its index."""

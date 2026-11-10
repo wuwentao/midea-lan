@@ -36,6 +36,28 @@ FD_20200012_SCREEN_DISPLAY_SET_INDEX = 14
 FD_20200012_SCREEN_DISPLAYS = {0: "bright", 7: "off"}
 FD_20200012_SET_BODY_LENGTH = 21
 FD_20200012_TARGET_HUMIDITY_SET_INDEX = 6
+FD_202Z3119_AIR_DRY_OFF = 0x02
+FD_202Z3119_AIR_DRY_ON = 0x01
+FD_202Z3119_AIR_DRY_SET_INDEX = 20
+FD_202Z3119_AIR_DRY_STATUS_INDEX = 42
+FD_202Z3119_AIR_DRY_STATUS_MASK = 0x30
+FD_202Z3119_AIR_DRY_STATUS_SHIFT = 4
+FD_202Z3119_CONTROL_FLAGS = 0x42
+FD_202Z3119_DISINFECT_SET_INDEX = 14
+FD_202Z3119_FAN_SPEED_SET_INDEX = 2
+FD_202Z3119_FAN_SPEEDS = {39: "low", 59: "medium", 80: "high"}
+FD_202Z3119_MODE_SET_INDEX = 10
+FD_202Z3119_MODE_STATUS_INDEX = 13
+FD_202Z3119_MODEL = "202Z3119"
+FD_202Z3119_MODES = {1: "manual", 7: "sleep", 8: "moist_skin"}
+FD_202Z3119_PROMPT_TONE_SET_INDEX = 9
+FD_202Z3119_PROMPT_TONE_STATUS_INDEX = 19
+FD_202Z3119_PROMPT_TONE_STATUS_MASK = 0x80
+FD_202Z3119_SCREEN_DISPLAY_SET_INDEX = 8
+FD_202Z3119_SCREEN_DISPLAY_STATUS_INDEX = 9
+FD_202Z3119_SCREEN_DISPLAYS = {0: "bright", 6: "dim", 7: "off"}
+FD_202Z3119_SET_BODY_LENGTH = 24
+FD_202Z3119_TARGET_HUMIDITY_SET_INDEX = 6
 MAX_FAN_SPEED = 5
 MAX_MSG_SERIAL_NUM = 254
 
@@ -129,7 +151,8 @@ class MessageSet(MessageFDBase):
         self.prompt_tone = False
         self.screen_display: int | None = 0x07
         self.mode = 0x01
-        self.disinfect = None
+        self.disinfect: bool | None = None
+        self.wet_pad_dry: bool | None = None
         self._model = model
 
     @property
@@ -157,6 +180,24 @@ class MessageSet(MessageFDBase):
             body[FD_20200012_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
             body[FD_20200012_MODE_SET_INDEX] = self.mode
             body[FD_20200012_SCREEN_DISPLAY_SET_INDEX] = screen_display
+            return body
+        if self._model == FD_202Z3119_MODEL:
+            body = bytearray(FD_202Z3119_SET_BODY_LENGTH)
+            body[0] = power | FD_202Z3119_CONTROL_FLAGS
+            body[FD_202Z3119_FAN_SPEED_SET_INDEX] = self.fan_speed
+            body[FD_202Z3119_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
+            body[FD_202Z3119_SCREEN_DISPLAY_SET_INDEX] = (
+                self.screen_display if self.screen_display is not None else 0
+            )
+            body[FD_202Z3119_PROMPT_TONE_SET_INDEX] = prompt_tone
+            body[FD_202Z3119_MODE_SET_INDEX] = self.mode
+            body[FD_202Z3119_DISINFECT_SET_INDEX] = disinfect
+            if self.wet_pad_dry is not None:
+                body[FD_202Z3119_AIR_DRY_SET_INDEX] = (
+                    FD_202Z3119_AIR_DRY_ON
+                    if self.wet_pad_dry
+                    else FD_202Z3119_AIR_DRY_OFF
+                )
             return body
         return bytearray(
             [
@@ -208,6 +249,20 @@ class FDC8MessageBody(MessageBody):
                 self.screen_display = 7
             else:
                 self.screen_display = display
+        elif model == FD_202Z3119_MODEL:
+            self.mode = body[FD_202Z3119_MODE_STATUS_INDEX]
+            self.screen_display = body[FD_202Z3119_SCREEN_DISPLAY_STATUS_INDEX] & 0x07
+            self.prompt_tone = (
+                body[FD_202Z3119_PROMPT_TONE_STATUS_INDEX]
+                & FD_202Z3119_PROMPT_TONE_STATUS_MASK
+            ) > 0
+            if len(body) > FD_202Z3119_AIR_DRY_STATUS_INDEX:
+                air_dry = (
+                    body[FD_202Z3119_AIR_DRY_STATUS_INDEX]
+                    & FD_202Z3119_AIR_DRY_STATUS_MASK
+                ) >> FD_202Z3119_AIR_DRY_STATUS_SHIFT
+                if air_dry:
+                    self.wet_pad_dry = air_dry == FD_202Z3119_AIR_DRY_ON
         else:
             self.mode = (body[8] & 0x70) >> 4
             self.screen_display = body[9] & 0x07

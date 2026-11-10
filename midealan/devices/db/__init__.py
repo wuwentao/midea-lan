@@ -16,10 +16,9 @@ from midealan.message import MessageRequest, MessageType, ToshibaFrame
 from .message import (
     PROFILE_MODEL,
     PROFILE_SUBTYPE,
-    PROFILE_V41_MODEL,
-    PROFILE_V41_SUBTYPE,
     PROGRAMS,
     TOSHIBA_PROGRAMS,
+    V41_PROFILES,
     V41_PROGRAMS,
     V41_TEMPERATURES,
     DBControls,
@@ -27,6 +26,9 @@ from .message import (
     MessagePower,
     MessageQuery,
     MessageStart,
+    V41Attributes,
+    decode_v41_consumption,
+    decode_v41_status,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +75,21 @@ class DeviceAttributes(StrEnum):
     forget_free = "forget_free"
     stains = "stains"
     dirty_degree = "dirty_degree"
+    # Read-only v41 profile fields (see V41Attributes).
+    dryer = "dryer"
+    soak_count = "soak_count"
+    speedy = "speedy"
+    lock = "lock"
+    appointment_time = "appointment_time"
+    error_code = "error_code"
+    beforehand_wash = "beforehand_wash"
+    steam_wash = "steam_wash"
+    add_rinse = "add_rinse"
+    wind_dispel = "wind_dispel"
+    remote_control_flag = "remote_control_flag"
+    water_consumption = "water_consumption"
+    power_consumption = "power_consumption"
+    wash_count = "wash_count"
 
 
 class MideaDBDevice(MideaDevice):
@@ -289,13 +306,15 @@ class MideaDBDevice(MideaDevice):
             },
         )
 
-        is_v41 = self.subtype == PROFILE_V41_SUBTYPE and PROFILE_V41_MODEL in (
-            self.model,
-            self.sn8,
+        is_v41 = any(
+            self.subtype == subtype and model in (self.model, self.sn8)
+            for model, subtype in V41_PROFILES
         )
         self._is_v41_profile = is_v41
         self._profile_programs = V41_PROGRAMS if is_v41 else {}
         self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
+        if is_v41:
+            self._attributes.update(dict.fromkeys(V41Attributes))
         self._controls = (
             DBControls()
             if not self.toshiba_protocol
@@ -374,6 +393,14 @@ class MideaDBDevice(MideaDevice):
             controls = self._controls.update(message.body)
             self._attributes.update(controls)
             new_status.update({str(attr): value for attr, value in controls.items()})
+        if self._is_v41_profile:
+            v41_status = (
+                decode_v41_status(message.body)
+                if hasattr(message, "washing_data")
+                else decode_v41_consumption(message.message_type, message.body)
+            )
+            self._attributes.update(v41_status)
+            new_status.update({str(attr): value for attr, value in v41_status.items()})
         return new_status
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:

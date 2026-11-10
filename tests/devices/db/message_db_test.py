@@ -7,6 +7,10 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.db.message import (
+    V41_CARE_OPTION_OFFSET,
+    V41_DEVICE_FLAG_OFFSET,
+    V41_FUNCTION_OFFSET,
+    V41_WASH_OPTION_OFFSET,
     ControlAttributes,
     DBControls,
     MessageDBBase,
@@ -14,6 +18,9 @@ from midealan.devices.db.message import (
     MessagePower,
     MessageQuery,
     MessageStart,
+    V41Attributes,
+    decode_v41_consumption,
+    decode_v41_status,
 )
 from midealan.exceptions import ValueWrongType
 from midealan.message import ListTypes, MessageType
@@ -27,6 +34,29 @@ DB_RESERVED = bytes.fromhex(
     "02ffff000000ffffffffffffffff140101ffffffff01ff200000080000",
 )
 NOW = datetime(2026, 10, 12, 15, 24, 30, tzinfo=UTC)
+# Real notify1 frames from a v41 washer-dryer (SN8 38123703, subtype 16695).
+V41_FRAMES = {
+    # Wash & dry 1 h (fast_wash + dryer 1) while drying.
+    "drying": "aa33db000000000000040401020002012101050000000000000010290000db37414c"
+    "0000000403000000000000000000000000de",
+    # Mixed wash in standby with dryer 2 and pre-wash selected.
+    "prewash": "aa33db000000000000040401010003052204030000000000000020730100db37414c"
+    "0001002f08800000000000000000000000cc",
+    # Bulky in standby with the speedy (turbo) key on.
+    "speedy": "aa33db000000000000040401010073032004040000000008000004410000db37414c"
+    "002000200a00000000000000000000000014",
+    # Bulky in standby with fresh air and a 60-minute appointment.
+    "appointment": "aa33db0000000000000404010100730320040500000000023c00046c0000"
+    "db37414c000000340a4000000000000000000000007e",
+    # End-of-cycle report (dataType 0405) sent with the end status.
+    "consumption": "aa33db000000000000040553017902090000ffffffffffffffffffffffff"
+    "db37414cffffffffffffff0000000000000000000085",
+}
+
+
+def v41_body(name: str) -> bytearray:
+    """Return the body of a captured v41 frame (no header, no checksum)."""
+    return bytearray(bytes.fromhex(V41_FRAMES[name])[10:-1])
 
 
 def controls(body: bytes | bytearray = DB_BODY) -> DBControls:
@@ -487,3 +517,137 @@ class TestDBAppointmentControls:
                 False,
                 ProtocolVersion.V1,
             )
+
+
+class TestDBV41Decoders:
+    """Test read-only DB v41 decoders against captured washer-dryer frames."""
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            (
+                "drying",
+                {
+                    V41Attributes.dryer: 1,
+                    V41Attributes.soak_count: 2,
+                    V41Attributes.speedy: False,
+                    V41Attributes.lock: False,
+                    V41Attributes.appointment_time: 0,
+                    V41Attributes.error_code: 0,
+                    V41Attributes.beforehand_wash: False,
+                    V41Attributes.steam_wash: False,
+                    V41Attributes.add_rinse: False,
+                    V41Attributes.wind_dispel: False,
+                    V41Attributes.remote_control_flag: False,
+                },
+            ),
+            (
+                "prewash",
+                {
+                    V41Attributes.dryer: 2,
+                    V41Attributes.beforehand_wash: True,
+                    V41Attributes.wind_dispel: False,
+                },
+            ),
+            ("speedy", {V41Attributes.speedy: True, V41Attributes.dryer: 0}),
+            (
+                "appointment",
+                {
+                    V41Attributes.appointment_time: 60,
+                    V41Attributes.wind_dispel: True,
+                    V41Attributes.speedy: False,
+                },
+            ),
+        ],
+    )
+    def test_status_fields_from_captured_frames(
+        self,
+        name: str,
+        expected: dict[V41Attributes, bool | int],
+    ) -> None:
+        """Decode the Lua byte6/13/14-15/24/25/29/31 fields from real frames."""
+        status = decode_v41_status(v41_body(name))
+        # every attribute except the three 0405 report counters
+        assert len(status) == len(V41Attributes) - 3
+        for attr, value in expected.items():
+            assert status[attr] == value
+
+    @pytest.mark.parametrize(
+        ("offset", "mask", "attr"),
+        [
+            (V41_FUNCTION_OFFSET, 0x20, V41Attributes.lock),
+            (V41_WASH_OPTION_OFFSET, 0x10, V41Attributes.steam_wash),
+            (V41_CARE_OPTION_OFFSET, 0x04, V41Attributes.add_rinse),
+            (V41_DEVICE_FLAG_OFFSET, 0x04, V41Attributes.remote_control_flag),
+        ],
+    )
+    def test_status_flag_bits(
+        self,
+        offset: int,
+        mask: int,
+        attr: V41Attributes,
+    ) -> None:
+        """Map each remaining Lua flag to its own bit."""
+        body = v41_body("drying")
+        body[offset] |= mask
+        assert decode_v41_status(body)[attr] is True
+
+    def test_status_without_device_flag_byte(self) -> None:
+        """Skip byte31 flags when the body stops at the minimum status length."""
+        status = decode_v41_status(v41_body("drying")[:31])
+        assert V41Attributes.remote_control_flag not in status
+        assert status[V41Attributes.dryer] == 1
+
+    def test_status_accepts_set_response_body(self) -> None:
+        """Decode dataType 0202 (set response) bodies like the Lua decoder."""
+        body = bytearray([ListTypes.X02]) + v41_body("drying")[1:]
+        assert decode_v41_status(body) == decode_v41_status(v41_body("drying"))
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            bytearray(30),
+            bytearray([ListTypes.X01]) + v41_body("drying")[1:],
+            v41_body("consumption"),
+        ],
+    )
+    def test_status_ignores_non_status_bodies(self, body: bytearray) -> None:
+        """Return nothing for short bodies and non-status data types."""
+        assert decode_v41_status(body) == {}
+
+    def test_consumption_report(self) -> None:
+        """Decode the little-endian counters of dataType 0405."""
+        assert decode_v41_consumption(
+            MessageType.notify1,
+            v41_body("consumption"),
+        ) == {
+            V41Attributes.water_consumption: 339,
+            V41Attributes.power_consumption: 633,
+            V41Attributes.wash_count: 9,
+        }
+
+    def test_consumption_report_without_wash_count(self) -> None:
+        """Keep the Lua counters when a short report stops before wash_count."""
+        assert decode_v41_consumption(
+            MessageType.notify1,
+            v41_body("consumption")[:5],
+        ) == {
+            V41Attributes.water_consumption: 339,
+            V41Attributes.power_consumption: 633,
+        }
+
+    @pytest.mark.parametrize(
+        ("message_type", "body"),
+        [
+            (MessageType.query, v41_body("consumption")),
+            (MessageType.notify1, v41_body("drying")),
+            (MessageType.notify1, v41_body("consumption")[:4]),
+        ],
+    )
+    def test_consumption_ignores_other_messages(
+        self,
+        message_type: MessageType,
+        body: bytearray,
+    ) -> None:
+        """Only notify1 dataType 0405 bodies carry consumption counters."""
+        assert decode_v41_consumption(message_type, body) == {}

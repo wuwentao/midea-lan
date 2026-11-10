@@ -1,6 +1,7 @@
 """Test b7 message encode / decode."""
 
 from collections.abc import Sequence
+from typing import Any
 
 from midealan.const import ProtocolVersion
 from midealan.devices.b7.message import (
@@ -33,6 +34,11 @@ def _frame(msg_type: int, body: Sequence[int]) -> bytes:
     """Wrap a device body in a full b7 frame (10-byte header + trailer byte)."""
     header = bytearray([0xAA, 10 + len(body) + 1, 0xB7, 0, 0, 0, 0, 0, 3, msg_type])
     return bytes(header + bytearray(body) + bytearray([0x00]))
+
+
+def _attr(response: MessageB7Response, name: str) -> Any:  # noqa: ANN401
+    """Read a response attribute set dynamically by ``MessageResponse.set_attr``."""
+    return getattr(response, name)
 
 
 def _status_body() -> list[int]:
@@ -85,37 +91,37 @@ class TestB7StatusDecode:
     def test_full_status(self) -> None:
         """A long 0x41 frame populates every status field incl. temps."""
         resp = MessageB7Response(_frame(MessageType.notify1, _status_body()))
-        assert resp.left_status == 2
-        assert resp.right_status == 1
-        assert resp.left_surplus_minutes == 30
-        assert resp.left_work_hours == 1
-        assert resp.left_work_minutes == 20
-        assert resp.left_work_seconds == 5
-        assert resp.right_work_minutes == 45
-        assert resp.left_gear == 3
-        assert resp.right_gear == 2
-        assert resp.left_work_mode == 11
-        assert resp.right_work_mode == 12
-        assert resp.lock is True
-        assert resp.menu_mark is True
-        assert resp.gas_warn is True
-        assert resp.right_smart_bl is True
-        assert resp.left_smart_bl is False
-        assert resp.left_temp == 180
-        assert resp.right_temp == 300
+        assert _attr(resp, "left_status") == 2
+        assert _attr(resp, "right_status") == 1
+        assert _attr(resp, "left_surplus_minutes") == 30
+        assert _attr(resp, "left_work_hours") == 1
+        assert _attr(resp, "left_work_minutes") == 20
+        assert _attr(resp, "left_work_seconds") == 5
+        assert _attr(resp, "right_work_minutes") == 45
+        assert _attr(resp, "left_gear") == 3
+        assert _attr(resp, "right_gear") == 2
+        assert _attr(resp, "left_work_mode") == 11
+        assert _attr(resp, "right_work_mode") == 12
+        assert _attr(resp, "lock") is True
+        assert _attr(resp, "menu_mark") is True
+        assert _attr(resp, "gas_warn") is True
+        assert _attr(resp, "right_smart_bl") is True
+        assert _attr(resp, "left_smart_bl") is False
+        assert _attr(resp, "left_temp") == 180
+        assert _attr(resp, "right_temp") == 300
 
     def test_status_query_echo_command(self) -> None:
         """The 0x31 query-echo command is decoded the same as 0x41 notify."""
         body = _status_body()
         body[0] = CMD_STATUS_QUERY
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.left_status == 2
+        assert _attr(resp, "left_status") == 2
 
     def test_short_status_has_no_temp(self) -> None:
         """A short status frame decodes flags but leaves temps unset."""
         body = _status_body()[:18]  # through the packed-flags byte only
         resp = MessageB7Response(_frame(MessageType.notify1, body))
-        assert resp.left_gear == 3
+        assert _attr(resp, "left_gear") == 3
         assert not hasattr(resp, "left_temp")
 
     def test_too_short_status_skipped(self) -> None:
@@ -132,41 +138,41 @@ class TestB7ErrorDecode:
         """First set bit in the error groups wins (bit 2 -> code 3)."""
         body = [CMD_ERROR, 0x03, 0b00000100, 0, 0, 0]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.error_code == 3
-        assert resp.tips_code == 0
+        assert _attr(resp, "error_code") == 3
+        assert _attr(resp, "tips_code") == 0
 
     def test_error_code_second_group(self) -> None:
         """A bit in the second error byte maps to codes 9..16."""
         body = [CMD_ERROR, 0x03, 0x00, 0b00000001, 0, 0]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.error_code == 9
+        assert _attr(resp, "error_code") == 9
 
     def test_tips_code(self) -> None:
         """Tips bits map after the error groups (first tips byte -> 1..6)."""
         body = [CMD_ERROR, 0x03, 0x00, 0x00, 0b00000010, 0]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.error_code == 0
-        assert resp.tips_code == 2
+        assert _attr(resp, "error_code") == 0
+        assert _attr(resp, "tips_code") == 2
 
     def test_tips_code_second_group(self) -> None:
         """The second tips byte maps to tips 7..8."""
         body = [CMD_ERROR, 0x03, 0x00, 0x00, 0x00, 0b00000010]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.tips_code == 8
+        assert _attr(resp, "tips_code") == 8
 
     def test_error_wrong_subtype(self) -> None:
         """A non-0x03 error sub-type leaves error_code/tips_code at zero."""
         body = [CMD_ERROR, 0x01, 0xFF, 0xFF, 0xFF, 0xFF]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.error_code == 0
-        assert resp.tips_code == 0
+        assert _attr(resp, "error_code") == 0
+        assert _attr(resp, "tips_code") == 0
 
     def test_error_subtype_no_bits(self) -> None:
         """A 0x03 error sub-type with no bits set leaves both codes zero."""
         body = [CMD_ERROR, 0x03, 0x00, 0x00, 0x00, 0x00]
         resp = MessageB7Response(_frame(MessageType.query, body))
-        assert resp.error_code == 0
-        assert resp.tips_code == 0
+        assert _attr(resp, "error_code") == 0
+        assert _attr(resp, "tips_code") == 0
 
 
 class TestB7FailDecode:
@@ -176,14 +182,13 @@ class TestB7FailDecode:
         """A set-type frame with body[1] == 0xFE exposes the fail reason."""
         body = [0x00, 0xFE, 0x00, 7]
         resp = MessageB7Response(_frame(MessageType.set, body))
-        assert resp.fail_resp_reason == 7
+        assert _attr(resp, "fail_resp_reason") == 7
 
     def test_non_fail_set_frame(self) -> None:
         """A set-type frame without the 0xFE marker exposes no reason."""
         body = [0x00, 0x00, 0x00, 0x00]
         resp = MessageB7Response(_frame(MessageType.set, body))
         assert not hasattr(resp, "fail_resp_reason")
-
 
 
 class TestB7Control:

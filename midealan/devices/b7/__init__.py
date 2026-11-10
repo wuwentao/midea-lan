@@ -96,10 +96,7 @@ _TEMP_ATTRS = {
 }
 # Every attribute the user may write; anything else is a read-only sensor.
 _WRITABLE = (
-    {DeviceAttributes.lock}
-    | set(_POWER_ATTRS)
-    | set(_GEAR_ATTRS)
-    | set(_TEMP_ATTRS)
+    {DeviceAttributes.lock} | set(_POWER_ATTRS) | set(_GEAR_ATTRS) | set(_TEMP_ATTRS)
 )
 
 

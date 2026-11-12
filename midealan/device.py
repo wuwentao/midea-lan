@@ -78,6 +78,7 @@ class MessageResult(IntEnum):
 
     PADDING = 0
     SUCCESS = 1
+    HEARTBEAT = 2
     UNKNOWN = 96
     UNEXPECTED = 97
     TIMEOUT = 98
@@ -452,13 +453,28 @@ class MideaDevice(threading.Thread):
         query: bool = False,
     ) -> None:
         """Send message V3."""
+        payload_type = int.from_bytes(data[2:4], byteorder="little")
+        _LOGGER.debug(
+            "[%s] Sending V3 wrapper: payload type 0x%04X, payload length %d, "
+            "8370 message type 0x%02X",
+            self._device_id,
+            payload_type,
+            len(data),
+            msg_type,
+        )
         data = self._security.encode_8370(data, msg_type)
         self.send_message_v2(data, query=query)
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
         """Serialize and send."""
         data = cmd.serialize()
-        _LOGGER.debug("[%s] Sending: %s, query is %s", self._device_id, cmd, query)
+        _LOGGER.debug(
+            "[%s] Sending: %s, AA frame: %s, query is %s",
+            self._device_id,
+            cmd,
+            data.hex(),
+            query,
+        )
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
@@ -466,10 +482,12 @@ class MideaDevice(threading.Thread):
         """Block until the current query is answered (checked pass only).
 
         Loops over socket reads until parse_message reports SUCCESS, then
-        restores SOCKET_TIMEOUT. A PADDING result keeps reading; any other
-        result raises ResponseException. A missing socket or a closed peer
-        raises to the connect/main loop. TimeoutError from recv propagates to
-        the caller, which records the query as unsupported.
+        restores SOCKET_TIMEOUT. PADDING and heartbeat-only reads keep waiting:
+        a heartbeat proves transport liveness but does not prove that this
+        business query is supported. Any other result raises ResponseException.
+        A missing socket or a closed peer raises to the connect/main loop.
+        TimeoutError from recv propagates to the caller, which records the
+        query as unsupported.
         """
         while True:
             if not self._socket:
@@ -483,7 +501,7 @@ class MideaDevice(threading.Thread):
             # Prevent infinite loop
             if result == MessageResult.SUCCESS:
                 break
-            if result == MessageResult.PADDING:
+            if result in (MessageResult.PADDING, MessageResult.HEARTBEAT):
                 continue
             raise ResponseException
         # recovery SOCKET_TIMEOUT after recv msg
@@ -861,6 +879,7 @@ class MideaDevice(threading.Thread):
             messages, self._buffer = self.fetch_v2_message(self._buffer + msg)
         if len(messages) == 0:
             return MessageResult.PADDING
+        business_message = False
         for message in messages:
             if message == b"ERROR":
                 return MessageResult.ERROR
@@ -869,6 +888,7 @@ class MideaDevice(threading.Thread):
             if payload_type in [0x1001, 0x0001]:
                 pass
             elif len(message) > MIN_MSG_LENGTH:
+                business_message = True
                 cryptographic = bytes(message[40:-16])
                 if payload_len % 16 == 0:
                     decrypted: bytearray = self._security.aes_decrypt(cryptographic)
@@ -924,6 +944,7 @@ class MideaDevice(threading.Thread):
                         len(cryptographic),
                     )
             else:
+                business_message = True
                 _LOGGER.warning(
                     "[%s] Illegal message, "
                     "original message = %s, buffer = %s, "
@@ -937,7 +958,7 @@ class MideaDevice(threading.Thread):
                     payload_len,
                     len(message),
                 )
-        return MessageResult.SUCCESS
+        return MessageResult.SUCCESS if business_message else MessageResult.HEARTBEAT
 
     def build_query(self) -> list:
         """Build query."""
@@ -1253,7 +1274,7 @@ class MideaDevice(threading.Thread):
                         raise ConnectionResetError("Connection closed by peer")  # noqa: TRY301
                     # parse msg and update latest status
                     result = self.parse_message(msg)
-                    if result == MessageResult.SUCCESS:
+                    if result in (MessageResult.SUCCESS, MessageResult.HEARTBEAT):
                         timeout_counter = 0
                     if result == MessageResult.ERROR:
                         _LOGGER.debug("[%s] Message 'ERROR' received", self._device_id)

@@ -6,6 +6,7 @@ from midealan.const import ProtocolVersion
 from midealan.devices.x9b.message import (
     CookingStep,
     MessageQuery,
+    MessageQueryCameraOta,
     MessageQuerySystemTime,
     MessageSetCooking,
     MessageSetParam,
@@ -13,6 +14,7 @@ from midealan.devices.x9b.message import (
     MessageSetSystemTime,
     MessageX9BBase,
     MessageX9BResponse,
+    X9BProfile,
 )
 from midealan.message import ListTypes, MessageType
 
@@ -70,6 +72,38 @@ def _status_body() -> list[int]:
     return body
 
 
+def _camera_status_body(error_count: int = 1) -> list[int]:
+    """Return a camera-profile status body with a shiftable error tail."""
+    shift = 2 * (max(error_count, 1) - 1)
+    body = [0x00] * (69 + shift)
+    body[0] = 0x01
+    body[1] = 0x00
+    body[2:5] = [0x00, 0x01, 0x02]
+    body[5] = 0x23
+    body[7:9] = [0x51, 0x00]
+    body[9:12] = [1, 30, 5]
+    body[12] = 5
+    body[13:17] = [0, 200, 0, 180]
+    body[19] = 0x43  # steam=3, mouthfeel=crisp
+    body[20] = 15  # weight=150 g
+    body[22:25] = [0, 10, 5]
+    body[25:29] = [0, 150, 0, 140]
+    body[31] = 0x03
+    body[32] = 0b0010_0011
+    body[33] = 0b0001_0100
+    body[34] = 0b1000_0000
+    body[39] = error_count
+    for index in range(error_count):
+        body[40 + index * 2 : 42 + index * 2] = [0xA0 + index, index + 1]
+    body[42 + shift] = 0x04
+    body[47 + shift : 50 + shift] = [1, 2, 3]
+    body[56 + shift] = 0b1100_0000
+    body[57 + shift] = 0b1111_1111
+    body[58 + shift] = 0b0111_0011
+    body[63 + shift : 69 + shift] = [26, 11, 12, 13, 14, 15]
+    return body
+
+
 class TestX9BRequests:
     """Test x9b request messages."""
 
@@ -84,6 +118,13 @@ class TestX9BRequests:
         message = MessageQuerySystemTime(ProtocolVersion.V3)
         assert message.body_type == ListTypes.X04
         assert list(message.body) == [0x04]
+
+    def test_query_camera_ota_body(self) -> None:
+        """Camera firmware state uses its distinctive read-only query."""
+        message = MessageQueryCameraOta(ProtocolVersion.V3)
+        assert message.body_type == ListTypes.X65
+        assert list(message.body) == [0x65, 0x00, 0x02]
+        assert message.serialize().hex() == "aa0d9b00000000000303650002eb"
 
     def test_base_body_not_implemented(self) -> None:
         """The abstract base raises for a missing body."""
@@ -480,3 +521,192 @@ class TestX9BResponse:
         """An unrelated message type yields no attributes."""
         response = MessageX9BResponse(_frame(MessageType.exception, [0x01, 0x00]))
         assert response.attributes == {}
+
+    @pytest.mark.parametrize(
+        ("error_count", "expected_errors"),
+        [
+            (0, []),
+            (1, ["A001"]),
+            (3, ["A001", "A102", "A203"]),
+        ],
+    )
+    def test_camera_status_dynamic_tail(
+        self,
+        error_count: int,
+        expected_errors: list[str],
+    ) -> None:
+        """Camera status follows its conflicting fields and shifted error tail."""
+        response = MessageX9BResponse(
+            _frame(MessageType.query, _camera_status_body(error_count)),
+            profile=X9BProfile.CAMERA,
+        )
+        attrs = response.attributes
+        assert response.profile == X9BProfile.CAMERA
+        assert attrs["report_type"] == "03"
+        assert attrs["fire_power"] == "fire_power_5"
+        assert attrs["temperature"] == 200
+        assert attrs["steam_quantity"] == 3
+        assert attrs["mouthfeel"] == "crisp"
+        assert attrs["weight"] == 150
+        assert attrs["people_number"] == 0
+        assert attrs["app_control"] == 1
+        assert attrs["error_values"] == expected_errors
+        assert attrs["spread_sauce"] == 1
+        assert attrs["cbs_version"] == "V1.2.3"
+        assert attrs["clean_scale"] == 1
+        assert attrs["ota"] == 1
+        assert attrs["camera_status"] == "on"
+        assert attrs["image_shoot_status"] == "on"
+        assert attrs["food_material_recognition"] == "on"
+        assert attrs["food_maturity_recognition"] == "on"
+        assert attrs["live_video_status"] == "on"
+        assert attrs["video_record_status"] == "on"
+        assert attrs["video_record_mode"] == "auto"
+        assert attrs["camera_ota_status"] == "work"
+        assert attrs["clean_sink_ponding"] == 1
+        assert attrs["dissipate_heat"] == "work"
+        assert attrs["drain_humidity_control"] == 1
+        assert attrs["replenish_humidity_control"] == 1
+        assert attrs["supplementary_cooking"] == 1
+        assert attrs["cook_id_timestamp"] == "20261112131415"
+
+    def test_camera_status_idle_normalization_and_people(self) -> None:
+        """Camera idle status clears stale cooking data and people portions."""
+        body = _camera_status_body()
+        body[20] = 4
+        body[31] = 0x02
+        response = MessageX9BResponse(
+            _frame(MessageType.notify1, body),
+            profile=X9BProfile.CAMERA,
+        )
+        attrs = response.attributes
+        assert attrs["work_status"] == "standby"
+        assert attrs["cloudmenuid"] == 0
+        assert attrs["temperature"] == 0
+        assert attrs["weight"] == 0
+        assert attrs["people_number"] == 0
+        assert attrs["work_mode"] == "ff"
+        assert attrs["mouthfeel"] == "ff"
+
+    def test_camera_status_ff_and_short_optional_tail(self) -> None:
+        """Camera sentinels and a missing optional tail retain safe defaults."""
+        body = _camera_status_body()[:59]
+        body[19] = 0xFF
+        body[20] = 0xFF
+        body[25:29] = [0xFF, 150, 0, 0xFF]
+        response = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.CAMERA,
+        )
+        attrs = response.attributes
+        assert attrs["steam_quantity"] == "ff"
+        assert attrs["mouthfeel"] == "ff"
+        assert attrs["weight"] == 0
+        assert attrs["people_number"] == 0
+        assert attrs["cur_temperature"] == 0
+        assert attrs["cur_temperature_above"] == 0
+        assert attrs["cur_temperature_underside"] == 0
+        assert attrs["cook_id_timestamp"] == "ff"
+
+    def test_camera_profile_adds_modes_without_changing_legacy_map(self) -> None:
+        """Camera-only Lua modes decode only under their matching profile."""
+        body = _camera_status_body()
+        body[7:9] = [0xA5, 0x03]
+        camera = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.CAMERA,
+        )
+        legacy = MessageX9BResponse(_frame(MessageType.query, body))
+        assert camera.attributes["work_mode"] == "air_blast_humidity_control"
+        assert legacy.attributes["work_mode"] == "ff"
+
+    def test_camera_status_truncated_error_and_missing_tail(self) -> None:
+        """A truncated error list and absent optional tail decode safely."""
+        body = _camera_status_body(error_count=2)[:41]
+        response = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.CAMERA,
+        )
+        attrs = response.attributes
+        assert attrs["error_values"] == []
+        assert attrs["clean_scale"] == 0
+        assert attrs["ota"] == 0
+        assert attrs["camera_status"] == "off"
+        assert attrs["clean_sink_ponding"] == 0
+
+    @pytest.mark.parametrize(
+        ("prompt", "attribute"),
+        [
+            (0x05, "add_sauce"),
+            (0x06, "stir"),
+            (0x07, "recipe_general_prompt"),
+        ],
+    )
+    def test_camera_prompt_variants(self, prompt: int, attribute: str) -> None:
+        """Each camera recipe prompt uses its own low-six-bit value."""
+        body = _camera_status_body()
+        body[42] = prompt
+        response = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.CAMERA,
+        )
+        assert response.attributes[attribute] == 1
+
+    def test_camera_fresh_mouthfeel_people_and_zero_timestamp(self) -> None:
+        """Small portions, fresh mouthfeel and an empty timestamp follow Lua."""
+        body = _camera_status_body()
+        body[19] = 3
+        body[20] = 4
+        body[63:69] = [0, 0, 0, 0, 0, 0]
+        response = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.CAMERA,
+        )
+        attrs = response.attributes
+        assert attrs["mouthfeel"] == "fresh"
+        assert attrs["weight"] == 0
+        assert attrs["people_number"] == 4
+        assert attrs["cook_id_timestamp"] == "ff"
+
+    @pytest.mark.parametrize(
+        ("download", "install", "expected"),
+        [
+            (1, 0, "downloading"),
+            (2, 0, "download_success"),
+            (3, 0, "download_failure"),
+            (0, 1, "installing"),
+            (0, 2, "install_success"),
+            (0, 3, "install_failure"),
+            (0, 0, "ff"),
+        ],
+    )
+    def test_camera_ota_response(
+        self,
+        download: int,
+        install: int,
+        expected: str,
+    ) -> None:
+        """The distinctive camera OTA response promotes and decodes its state."""
+        body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, download, install]
+        response = MessageX9BResponse(_frame(MessageType.query, body))
+        assert response.profile == X9BProfile.CAMERA
+        assert response.attributes == {
+            "ota_status_hardware": "camera",
+            "camera_version": "V1.2.3",
+            "download_progress": 88,
+            "ota_status": expected,
+            "report_type": "03",
+        }
+
+    def test_short_camera_ota_response_promotes_without_decoding(self) -> None:
+        """A valid 0x65 prefix identifies the profile even if its tail is short."""
+        response = MessageX9BResponse(
+            _frame(MessageType.query, [0x65, 0x00, 0x02]),
+        )
+        assert response.profile == X9BProfile.CAMERA
+        assert response.attributes == {}
+
+    def test_unknown_query_body_is_ignored(self) -> None:
+        """An unknown query sub-command does not invent attributes."""
+        unknown = MessageX9BResponse(_frame(MessageType.query, [0x66]))
+        assert unknown.attributes == {}

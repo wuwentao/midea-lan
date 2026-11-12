@@ -1,18 +1,25 @@
 """Midea lan x9b message.
 
-0x9B is a microwave + steam + convection combi oven (微蒸烤一体机). Two firmware
-revisions of the same appliance exist:
+0x9B is a microwave + steam + convection combi oven (微蒸烤一体机). Multiple
+wire-format families share this device type:
 
 * an older V1 (``VALUE_VERSION=7``) using single-byte temperatures, and
 * a newer V2 (``VALUE_VERSION=2``) that is a strict superset -- two-byte
   temperatures plus food-probe, turntable, hot-wind, ramadan, OTA and
-  system-time fields.
+  system-time fields, and
+* a camera-capable family (``VALUE_VERSION=4``, first seen on ``700ZG249``)
+  whose common status prefix is similar but whose field meanings and
+  variable-length error/tail area are not compatible with V1/V2.
 
-The status body is a flat, fixed-offset record whose first byte is a
-sub-command (``0x01`` = full status, ``0x04`` = system time). The V2 layout is
-decoded here as the canonical superset: for the fields that V1 also reports the
-two encodings coincide (V1 keeps the value in the low byte of the V2 two-byte
-pair), so a single decoder serves both revisions.
+The first byte is a sub-command (``0x01`` = full status, ``0x04`` = system
+time, ``0x65`` = camera OTA status). V1/V2 use the extended fixed layout as a
+canonical decoder. Camera-family messages reuse the common prefix and select a
+profile-specific decoder for conflicting meanings and their dynamic tail.
+
+``VALUE_VERSION`` is a Lua/JSON schema marker and is not transmitted on the
+wire. Callers must therefore pass an :class:`X9BProfile` selected from device
+identity or an unambiguous response; it must never be confused with the outer
+V3 transport protocol or the AA-frame message protocol byte.
 
 Control (set) messages also start with a sub-command byte that selects the
 command group: ``0x01`` start cooking, ``0x02`` state controls, ``0x03`` live
@@ -20,6 +27,8 @@ parameter adjustment (a type-length-value list) and ``0x04`` set system time.
 """
 
 from __future__ import annotations
+
+from enum import StrEnum
 
 from midealan.const import DeviceType
 from midealan.message import (
@@ -35,6 +44,26 @@ SUBCMD_COOKING = 0x01  # start-cooking control (same byte, set direction)
 SUBCMD_STATE = 0x02  # non-cooking state controls
 SUBCMD_PARAM = 0x03  # live parameter adjustment (TLV list)
 SUBCMD_SYSTIME = 0x04  # system time (query and set)
+SUBCMD_CAMERA_OTA = 0x65  # camera firmware information / OTA status
+CAMERA_OTA_GROUP = 0x00
+CAMERA_OTA_TARGET = 0x02
+CAMERA_OTA_PREFIX_LENGTH = 3
+
+
+class X9BProfile(StrEnum):
+    """Known 0x9B wire-format families.
+
+    A profile describes byte semantics, not one product. Multiple models and
+    subtypes that use the same layout belong to the same profile. ``UNKNOWN``
+    deliberately keeps the established V1/V2 decoder behaviour until device
+    identity or a distinctive response proves a more specific family.
+    """
+
+    UNKNOWN = "unknown"
+    LEGACY = "legacy"
+    EXTENDED = "extended"
+    CAMERA = "camera"
+
 
 # --- Generic framing constants ----------------------------------------------
 UNCHANGED = 0xFF  # a byte holding 0xFF means "not present / leave unchanged"
@@ -86,11 +115,24 @@ FLAG33_PROBE_MODE_BIT = BIT_6
 # body[34] / body[35]: single flags high in the byte
 FLAG34_RAMADAN_BIT = BIT_5
 FLAG35_HOT_WIND_BIT = BIT_5
+# Camera-family body[34]: whether the appliance accepts app controls.
+CAMERA_APP_CONTROL_BIT = BIT_7
 # body[56] / body[58]: maintenance flags in the tail
 FLAG56_CLEAN_SCALE_BIT = BIT_6
 FLAG56_OTA_BIT = BIT_7
 FLAG58_CLEAN_SINK_PONDING_BIT = BIT_0
 FLAG58_DISSIPATE_HEAT_BIT = BIT_1
+CAMERA_FLAG57_STATUS_BIT = BIT_0
+CAMERA_FLAG57_IMAGE_SHOOT_BIT = BIT_1
+CAMERA_FLAG57_LIVE_VIDEO_BIT = BIT_2
+CAMERA_FLAG57_OTA_BIT = BIT_3
+CAMERA_FLAG57_VIDEO_RECORD_BIT = BIT_4
+CAMERA_FLAG57_FOOD_MATURITY_BIT = BIT_5
+CAMERA_FLAG57_FOOD_MATERIAL_BIT = BIT_6
+CAMERA_FLAG57_VIDEO_MODE_BIT = BIT_7
+CAMERA_FLAG58_DRAIN_HUMIDITY_BIT = BIT_4
+CAMERA_FLAG58_REPLENISH_HUMIDITY_BIT = BIT_5
+CAMERA_FLAG58_SUPPLEMENTARY_COOKING_BIT = BIT_6
 
 # --- Cooking command bit flags (body byte 5) --------------------------------
 COOK_FLAG_PREHEAT = 0x01
@@ -103,10 +145,36 @@ SINGLE_STEP_FLAG = 0x11  # body[4] value for a single-step recipe
 STEP_BLOCK_LEN = 16  # bytes per cooking step
 STEP_BASE = 5  # first step block starts at body[5]
 WEIGHT_SCALE = 10  # weight is reported/expected in multiples of 10 g
+CAMERA_MIN_WEIGHT = 100
+SHORT_YEAR_LIMIT = 100
+SHORT_YEAR_EPOCH = 2000
 
 # --- Response body length guards --------------------------------------------
 STATUS_MIN_LEN = 36  # last fixed-offset status byte read is body[35]
 SYSTIME_MIN_LEN = 10  # system-time body reads body[1] through body[9]
+CAMERA_OTA_MIN_LEN = 13  # reads camera OTA body[3..5] and body[10..12]
+
+# Camera status has a variable error list at body[39...]. One slot is reserved
+# even when the reported count is zero; each additional error shifts every tail
+# field by two bytes. These offsets match Lua megBodys[49+] after removing the
+# ten-byte AA header.
+CAMERA_ERROR_COUNT_OFFSET = 39
+CAMERA_ERROR_LIST_OFFSET = 40
+CAMERA_ERROR_WIDTH = 2
+CAMERA_PROMPT_BASE_OFFSET = 42
+CAMERA_CBS_VERSION_BASE_OFFSET = 47
+CAMERA_MAINTENANCE_BASE_OFFSET = 56
+CAMERA_FEATURES_BASE_OFFSET = 57
+CAMERA_EXTENDED_FLAGS_BASE_OFFSET = 58
+CAMERA_TIMESTAMP_BASE_OFFSET = 63
+CAMERA_TIMESTAMP_LENGTH = 6
+CAMERA_STEAM_MASK = 0x0F
+CAMERA_MOUTHFEEL_BIT = BIT_6
+CAMERA_PROMPT_MASK = 0x3F
+CAMERA_PROMPT_SPREAD_SAUCE = 0x04
+CAMERA_PROMPT_ADD_SAUCE = 0x05
+CAMERA_PROMPT_STIR = 0x06
+CAMERA_PROMPT_GENERAL = 0x07
 
 VALUE_ON = "on"
 VALUE_OFF = "off"
@@ -131,6 +199,20 @@ EXECUTE_MAP: dict[int, str] = {
     0x03: "param_range_error",
 }
 
+CAMERA_EXECUTE_MAP: dict[int, str] = {
+    0x00: "ok",
+    **EXECUTE_MAP,
+    0x04: "save_power_nonsupport",
+    0x05: "device_fault",
+    0x06: "door_open",
+    0x07: "working_control_nonsupport",
+    0x08: "lack_water",
+    0x09: "lack_box",
+    0x0A: "change_water_notice",
+    0x0B: "high_temperature_nonsupport",
+    0x0C: "remote_control_closed",
+}
+
 FIRE_POWER_MAP: dict[int, str] = {
     0x0A: "high_power",
     0x08: "medium_high_power",
@@ -139,6 +221,13 @@ FIRE_POWER_MAP: dict[int, str] = {
     0x01: "low_power",
 }
 FIRE_POWER_REVERSE: dict[str, int] = {v: k for k, v in FIRE_POWER_MAP.items()}
+
+# 700ZG249 uses level numbers rather than the legacy low/medium/high labels.
+# The raw values overlap, so this must remain profile-specific rather than being
+# merged into FIRE_POWER_MAP.
+CAMERA_FIRE_POWER_MAP: dict[int, str] = {
+    value: f"fire_power_{value}" for value in range(0x0B)
+}
 
 WORK_STATUS_MAP: dict[int, str] = {
     0x01: "save_power",
@@ -156,12 +245,20 @@ WORK_STATUS_MAP: dict[int, str] = {
     0x0E: "after_checking",
     0x10: "wait_to_start",
 }
+WORK_STATUS_WAIT_TO_START = 0x10
 WORK_STATUS_WRITE: dict[str, int] = {
     "save_power": 0x01,
     "standby": 0x02,
     "work": 0x03,
     "pause": 0x06,
 }
+
+CAMERA_WORK_STATUS_MAP: dict[int, str] = {
+    key: value
+    for key, value in WORK_STATUS_MAP.items()
+    if key != WORK_STATUS_WAIT_TO_START
+}
+CAMERA_WORK_STATUS_MAP[0x11] = "ota_updating"
 
 POWER_WRITE: dict[str, int] = {VALUE_ON: 0x11, VALUE_OFF: 0x01}
 
@@ -282,10 +379,59 @@ WORK_MODE_MAP: dict[int, str] = {
 }
 WORK_MODE_REVERSE: dict[str, int] = {v: k for k, v in WORK_MODE_MAP.items()}
 
+# VALUE_VERSION=4 adds modes without changing the names of any established raw
+# value. Keep this as a profile-specific read superset: camera writes remain
+# disabled until verified on hardware, and legacy callers should not be offered
+# modes that their own Lua protocol cannot encode.
+CAMERA_WORK_MODE_MAP: dict[int, str] = {
+    **WORK_MODE_MAP,
+    0x0401: "microwave_hot_wind_tube_fan_1",
+    0x0402: "microwave_hot_wind_tube_fan_2",
+    0x0501: "microwave_underside_tube_hot_wind_tube_fan_1",
+    0x0702: "microwave_steam_2",
+    0x0800: "microwave_above_inside_outside_tube_fan",
+    0x0801: "microwave_above_inside_outside_tube_fan_1",
+    0x0904: "unfreeze_4",
+    0x0905: "unfreeze_5",
+    0x0906: "unfreeze_6",
+    0x0A01: "unfreeze_t_1",
+    0x2909: "pure_steam_9",
+    0x290A: "pure_steam_10",
+    0x2E03: "steam_hot_wind_tube_fan_3",
+    0x2F01: "steam_hot_wind_tube_1",
+    0x3300: "steam_above_inside_outside_tube",
+    0x5306: "double_tube_6",
+    0x5307: "double_tube_7",
+    0x5308: "double_tube_8",
+    0x5406: "hot_wind_tube_fan_6",
+    0x5407: "hot_wind_tube_fan_7",
+    0x540A: "hot_wind_tube_fan_10",
+    0x5501: "pure_preheat_1",
+    0x5801: "zymosis_1",
+    0x5906: "double_tube_hot_wind_tube_fan_6",
+    0x5E01: "warm_1",
+    0x5F01: "double_tube_fan_1",
+    0x5F02: "double_tube_fan_2",
+    0x5F03: "double_tube_fan_3",
+    0x6901: "above_tube_fan_1",
+    0x6902: "above_tube_fan_2",
+    0x6A01: "multiple_layer_roast",
+    0x7901: "scale_clean_1",
+    0x7A01: "clean_1",
+    0xA203: "eco_3",
+    0xA400: "fan_unfreeze",
+    0xA501: "pastry_steam",
+    0xA503: "air_blast_humidity_control",
+    0xA504: "humidity_control_roast",
+    0xC400: "dry",
+    0xC401: "dry1",
+}
+
 # Every attribute the status/system-time decoders can emit. The device class
 # builds its ``DeviceAttributes`` enum from this so the two never drift.
 ALL_ATTRIBUTES: tuple[str, ...] = (
     # whole-appliance status
+    "report_type",
     "execute",
     "cloudmenuid",
     "totalstep",
@@ -302,6 +448,7 @@ ALL_ATTRIBUTES: tuple[str, ...] = (
     "temperature_underside",
     "probe_temperature",
     "steam_quantity",
+    "mouthfeel",
     "weight",
     "people_number",
     "work_hour",
@@ -334,6 +481,30 @@ ALL_ATTRIBUTES: tuple[str, ...] = (
     "ota",
     "clean_sink_ponding",
     "dissipate_heat",
+    # camera-family variable tail and feature state
+    "app_control",
+    "error_values",
+    "spread_sauce",
+    "add_sauce",
+    "stir",
+    "recipe_general_prompt",
+    "drain_humidity_control",
+    "replenish_humidity_control",
+    "supplementary_cooking",
+    "camera_status",
+    "image_shoot_status",
+    "food_material_recognition",
+    "food_maturity_recognition",
+    "live_video_status",
+    "video_record_status",
+    "video_record_mode",
+    "camera_ota_status",
+    "cook_id_timestamp",
+    # response to the distinct read-only camera OTA query (sub-command 0x65)
+    "ota_status_hardware",
+    "camera_version",
+    "download_progress",
+    "ota_status",
     # Write-only controls (not reported by the device, exposed for callers such
     # as Home Assistant that address every control through ``set_attribute``).
     "power",
@@ -450,6 +621,22 @@ class MessageQuerySystemTime(MessageX9BBase):
     @property
     def _body(self) -> bytearray:
         return bytearray([SUBCMD_SYSTIME])
+
+
+class MessageQueryCameraOta(MessageX9BBase):
+    """Read camera firmware and OTA state from camera-capable appliances."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize the read-only camera OTA query."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X65,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray([SUBCMD_CAMERA_OTA, CAMERA_OTA_GROUP, CAMERA_OTA_TARGET])
 
 
 class MessageSetState(MessageX9BBase):
@@ -772,13 +959,21 @@ class MessageSetSystemTime(MessageX9BBase):
         )
 
 
-class X9BStatusBody:
-    """Decode a 0x9B full-status body into an attribute dict."""
+X9BAttributeValue = bool | int | str | list[str]
 
-    def __init__(self, body: bytearray) -> None:
+
+class X9BStatusBody:
+    """Decode a 0x9B full-status body using the selected wire profile."""
+
+    def __init__(
+        self,
+        body: bytearray,
+        profile: X9BProfile = X9BProfile.UNKNOWN,
+    ) -> None:
         """Decode the status body."""
-        self.attributes: dict[str, int | str] = {}
+        self.attributes: dict[str, X9BAttributeValue] = {}
         self._body = body
+        self._profile = profile
         self._decode()
 
     def _get(self, index: int) -> int | None:
@@ -795,13 +990,19 @@ class X9BStatusBody:
         self._decode_work_time()
         self._decode_current()
         self._decode_flags()
-        self._decode_version()
-        self._decode_tail()
+        if self._profile == X9BProfile.CAMERA:
+            self._decode_camera_tail()
+            self._normalize_camera_idle()
+        else:
+            self._decode_fixed_tail()
 
     def _decode_header(self) -> None:
         attrs = self.attributes
         execute = self._body[1]
-        attrs["execute"] = EXECUTE_MAP.get(execute, "ok")
+        if self._profile == X9BProfile.CAMERA:
+            attrs["execute"] = CAMERA_EXECUTE_MAP.get(execute, "unknown")
+        else:
+            attrs["execute"] = EXECUTE_MAP.get(execute, "ok")
         attrs["cloudmenuid"] = (
             self._body[2] * BYTE_BASE * BYTE_BASE
             + self._body[3] * BYTE_BASE
@@ -809,9 +1010,15 @@ class X9BStatusBody:
         )
         attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
         attrs["stepnum"] = self._body[5] & NIBBLE_MASK
-        attrs["probe"] = _bit(self._body[6], HEADER_PROBE_BIT)
-        attrs["turntable"] = bool(_bit(self._body[6], HEADER_TURNTABLE_BIT))
-        attrs["work_mode"] = WORK_MODE_MAP.get(
+        if self._profile != X9BProfile.CAMERA:
+            attrs["probe"] = _bit(self._body[6], HEADER_PROBE_BIT)
+            attrs["turntable"] = bool(_bit(self._body[6], HEADER_TURNTABLE_BIT))
+        work_mode_map = (
+            CAMERA_WORK_MODE_MAP
+            if self._profile == X9BProfile.CAMERA
+            else WORK_MODE_MAP
+        )
+        attrs["work_mode"] = work_mode_map.get(
             _u16be(self._body[7], self._body[8]),
             VALUE_FF,
         )
@@ -821,16 +1028,49 @@ class X9BStatusBody:
         attrs["hour_set"] = self._byte_or_zero(9)
         attrs["minute_set"] = self._byte_or_zero(10)
         attrs["second_set"] = self._byte_or_zero(11)
-        attrs["fire_power"] = FIRE_POWER_MAP.get(self._body[12], VALUE_FF)
+        fire_power_map = (
+            CAMERA_FIRE_POWER_MAP
+            if self._profile == X9BProfile.CAMERA
+            else FIRE_POWER_MAP
+        )
+        attrs["fire_power"] = fire_power_map.get(self._body[12], VALUE_FF)
         above = _u16be(self._body[13], self._body[14])
         underside = _u16be(self._body[15], self._body[16])
         attrs["temperature_above"] = above
         attrs["temperature_underside"] = underside
-        attrs["temperature"] = above if above != 0 else underside
-        attrs["probe_temperature"] = _u16be(self._body[17], self._body[18])
-        attrs["steam_quantity"] = self._byte_or_ff(19)
+        attrs["temperature"] = (
+            above if self._profile == X9BProfile.CAMERA or above != 0 else underside
+        )
+        if self._profile != X9BProfile.CAMERA:
+            attrs["probe_temperature"] = _u16be(self._body[17], self._body[18])
+        steam = self._get(19)
+        if self._profile == X9BProfile.CAMERA:
+            attrs["steam_quantity"] = (
+                VALUE_FF if steam in (None, UNCHANGED) else steam & CAMERA_STEAM_MASK
+            )
+            attrs["mouthfeel"] = (
+                VALUE_FF
+                if steam in (None, UNCHANGED)
+                else "crisp"
+                if _bit(steam, CAMERA_MOUTHFEEL_BIT)
+                else "fresh"
+            )
+        else:
+            attrs["steam_quantity"] = self._byte_or_ff(19)
         weight = self._get(20)
-        if weight is None or weight == UNCHANGED:
+        if self._profile == X9BProfile.CAMERA:
+            attrs["weight"] = (
+                weight * WEIGHT_SCALE
+                if weight not in (None, UNCHANGED)
+                and weight * WEIGHT_SCALE >= CAMERA_MIN_WEIGHT
+                else 0
+            )
+            attrs["people_number"] = (
+                weight
+                if weight not in (None, UNCHANGED) and weight < WEIGHT_SCALE
+                else 0
+            )
+        elif weight is None or weight == UNCHANGED:
             attrs["weight"] = VALUE_FF
             attrs["people_number"] = VALUE_FF
         else:
@@ -845,13 +1085,25 @@ class X9BStatusBody:
 
     def _decode_current(self) -> None:
         attrs = self.attributes
-        above = _u16be(self._body[25], self._body[26])
-        underside = _u16be(self._body[27], self._body[28])
+        if self._profile == X9BProfile.CAMERA:
+            above = self._u16_or_zero(25)
+            underside = self._u16_or_zero(27)
+        else:
+            above = _u16be(self._body[25], self._body[26])
+            underside = _u16be(self._body[27], self._body[28])
         attrs["cur_temperature_above"] = above
         attrs["cur_temperature_underside"] = underside
-        attrs["cur_temperature"] = above if above != 0 else underside
-        attrs["cur_probe_temperature"] = _u16be(self._body[29], self._body[30])
-        status = WORK_STATUS_MAP.get(self._body[31], VALUE_FF)
+        attrs["cur_temperature"] = (
+            above if self._profile == X9BProfile.CAMERA or above != 0 else underside
+        )
+        if self._profile != X9BProfile.CAMERA:
+            attrs["cur_probe_temperature"] = _u16be(self._body[29], self._body[30])
+        status_map = (
+            CAMERA_WORK_STATUS_MAP
+            if self._profile == X9BProfile.CAMERA
+            else WORK_STATUS_MAP
+        )
+        status = status_map.get(self._body[31], VALUE_FF)
         attrs["work_status"] = status
         # The device never reports a dedicated power byte, so infer the on/off
         # state the way the HA power switch expects it: anything other than the
@@ -878,23 +1130,24 @@ class X9BStatusBody:
         attrs["flip_side"] = _bit(byte33, FLAG33_FLIP_SIDE_BIT)
         attrs["reaction"] = _bit(byte33, FLAG33_REACTION_BIT)
         attrs["furnace_light"] = bool(_bit(byte33, FLAG33_FURNACE_LIGHT_BIT))
-        # The high-temperature lock reads inverted: bit set means "off".
-        attrs["high_temperature_lock"] = not _bit(byte33, FLAG33_HIGH_TEMP_LOCK_BIT)
         attrs["high_temperature_work"] = _bit(byte33, FLAG33_HIGH_TEMP_WORK_BIT)
-        attrs["high_temperature"] = _bit(byte33, FLAG33_HIGH_TEMP_BIT)
-        attrs["probe_mode"] = _bit(byte33, FLAG33_PROBE_MODE_BIT)
-        attrs["ramadan"] = _bit(self._body[34], FLAG34_RAMADAN_BIT)
-        attrs["hot_wind"] = bool(_bit(self._body[35], FLAG35_HOT_WIND_BIT))
-
-    def _decode_version(self) -> None:
-        b47, b48, b49 = self._get(47), self._get(48), self._get(49)
-        if b47 is not None and b48 is not None and b49 is not None:
-            self.attributes["cbs_version"] = f"V{b47}.{b48}.{b49}"
+        if self._profile == X9BProfile.CAMERA:
+            attrs["app_control"] = _bit(self._body[34], CAMERA_APP_CONTROL_BIT)
         else:
-            self.attributes["cbs_version"] = "V0.0.0"
+            # The high-temperature lock reads inverted: bit set means "off".
+            attrs["high_temperature_lock"] = not _bit(
+                byte33,
+                FLAG33_HIGH_TEMP_LOCK_BIT,
+            )
+            attrs["high_temperature"] = _bit(byte33, FLAG33_HIGH_TEMP_BIT)
+            attrs["probe_mode"] = _bit(byte33, FLAG33_PROBE_MODE_BIT)
+            attrs["ramadan"] = _bit(self._body[34], FLAG34_RAMADAN_BIT)
+            attrs["hot_wind"] = bool(_bit(self._body[35], FLAG35_HOT_WIND_BIT))
 
-    def _decode_tail(self) -> None:
+    def _decode_fixed_tail(self) -> None:
+        """Decode the fixed V1/V2 tail."""
         attrs = self.attributes
+        attrs["cbs_version"] = self._version_at(CAMERA_CBS_VERSION_BASE_OFFSET)
         attrs["clean_scale"] = 0
         attrs["ota"] = 0
         byte56 = self._get(56)
@@ -909,6 +1162,174 @@ class X9BStatusBody:
             attrs["dissipate_heat"] = (
                 "work" if _bit(byte58, FLAG58_DISSIPATE_HEAT_BIT) else VALUE_OFF
             )
+
+    def _decode_camera_tail(self) -> None:
+        """Decode the VALUE_VERSION=4 variable error and feature tail."""
+        attrs = self.attributes
+        error_count = self._get(CAMERA_ERROR_COUNT_OFFSET)
+        count = error_count if error_count not in (None, 0, UNCHANGED) else 0
+        errors = []
+        for index in range(count):
+            offset = CAMERA_ERROR_LIST_OFFSET + index * CAMERA_ERROR_WIDTH
+            high, low = self._get(offset), self._get(offset + 1)
+            if high is None or low is None:
+                break
+            errors.append(f"{high:02X}{low:02X}")
+        attrs["error_values"] = errors
+
+        # Lua reserves one two-byte error slot for an empty/single-error record;
+        # only errors after the first move the remaining fields.
+        shift = CAMERA_ERROR_WIDTH * (max(count, 1) - 1)
+        prompt = self._get(CAMERA_PROMPT_BASE_OFFSET + shift)
+        prompt_value = (prompt or 0) & CAMERA_PROMPT_MASK
+        attrs["spread_sauce"] = int(prompt_value == CAMERA_PROMPT_SPREAD_SAUCE)
+        attrs["add_sauce"] = int(prompt_value == CAMERA_PROMPT_ADD_SAUCE)
+        attrs["stir"] = int(prompt_value == CAMERA_PROMPT_STIR)
+        attrs["recipe_general_prompt"] = int(
+            prompt_value == CAMERA_PROMPT_GENERAL,
+        )
+        attrs["cbs_version"] = self._version_at(
+            CAMERA_CBS_VERSION_BASE_OFFSET + shift,
+        )
+        self._decode_camera_maintenance(shift)
+        self._decode_camera_features(shift)
+        attrs["cook_id_timestamp"] = self._camera_timestamp(shift)
+
+    def _decode_camera_maintenance(self, shift: int) -> None:
+        attrs = self.attributes
+        attrs["clean_scale"] = 0
+        attrs["ota"] = 0
+        maintenance = self._get(CAMERA_MAINTENANCE_BASE_OFFSET + shift)
+        if maintenance is not None:
+            attrs["clean_scale"] = _bit(maintenance, FLAG56_CLEAN_SCALE_BIT)
+            attrs["ota"] = _bit(maintenance, FLAG56_OTA_BIT)
+
+        attrs["clean_sink_ponding"] = 0
+        attrs["dissipate_heat"] = VALUE_OFF
+        attrs["drain_humidity_control"] = 0
+        attrs["replenish_humidity_control"] = 0
+        attrs["supplementary_cooking"] = 0
+        flags = self._get(CAMERA_EXTENDED_FLAGS_BASE_OFFSET + shift)
+        if flags is not None:
+            attrs["clean_sink_ponding"] = _bit(
+                flags,
+                FLAG58_CLEAN_SINK_PONDING_BIT,
+            )
+            attrs["dissipate_heat"] = (
+                "work" if _bit(flags, FLAG58_DISSIPATE_HEAT_BIT) else VALUE_OFF
+            )
+            attrs["drain_humidity_control"] = _bit(
+                flags,
+                CAMERA_FLAG58_DRAIN_HUMIDITY_BIT,
+            )
+            attrs["replenish_humidity_control"] = _bit(
+                flags,
+                CAMERA_FLAG58_REPLENISH_HUMIDITY_BIT,
+            )
+            attrs["supplementary_cooking"] = _bit(
+                flags,
+                CAMERA_FLAG58_SUPPLEMENTARY_COOKING_BIT,
+            )
+
+    def _decode_camera_features(self, shift: int) -> None:
+        attrs = self.attributes
+        attrs.update(
+            {
+                "camera_status": VALUE_OFF,
+                "image_shoot_status": VALUE_OFF,
+                "food_material_recognition": VALUE_OFF,
+                "food_maturity_recognition": VALUE_OFF,
+                "live_video_status": VALUE_OFF,
+                "video_record_status": VALUE_OFF,
+                "video_record_mode": "manual",
+                "camera_ota_status": VALUE_OFF,
+            },
+        )
+        flags = self._get(CAMERA_FEATURES_BASE_OFFSET + shift)
+        if flags is None:
+            return
+        attrs["camera_status"] = self._on_off(flags, CAMERA_FLAG57_STATUS_BIT)
+        attrs["image_shoot_status"] = self._on_off(
+            flags,
+            CAMERA_FLAG57_IMAGE_SHOOT_BIT,
+        )
+        attrs["live_video_status"] = self._on_off(
+            flags,
+            CAMERA_FLAG57_LIVE_VIDEO_BIT,
+        )
+        attrs["camera_ota_status"] = (
+            "work" if _bit(flags, CAMERA_FLAG57_OTA_BIT) else VALUE_OFF
+        )
+        attrs["video_record_status"] = self._on_off(
+            flags,
+            CAMERA_FLAG57_VIDEO_RECORD_BIT,
+        )
+        attrs["food_maturity_recognition"] = self._on_off(
+            flags,
+            CAMERA_FLAG57_FOOD_MATURITY_BIT,
+        )
+        attrs["food_material_recognition"] = self._on_off(
+            flags,
+            CAMERA_FLAG57_FOOD_MATERIAL_BIT,
+        )
+        attrs["video_record_mode"] = (
+            "auto" if _bit(flags, CAMERA_FLAG57_VIDEO_MODE_BIT) else "manual"
+        )
+
+    def _camera_timestamp(self, shift: int) -> str:
+        offset = CAMERA_TIMESTAMP_BASE_OFFSET + shift
+        raw = [self._get(offset + index) for index in range(CAMERA_TIMESTAMP_LENGTH)]
+        if any(value in (None, UNCHANGED) for value in raw):
+            return VALUE_FF
+        values = [value for value in raw if value is not None]
+        year, month, day, hour, minute, second = values
+        year += SHORT_YEAR_EPOCH if year < SHORT_YEAR_LIMIT else 0
+        timestamp = f"{year:04d}{month:02d}{day:02d}{hour:02d}{minute:02d}{second:02d}"
+        return VALUE_FF if timestamp == "20000000000000" else timestamp
+
+    def _normalize_camera_idle(self) -> None:
+        if self.attributes.get("work_status") not in ("save_power", "standby"):
+            return
+        for name in (
+            "cloudmenuid",
+            "totalstep",
+            "stepnum",
+            "hour_set",
+            "minute_set",
+            "second_set",
+            "temperature",
+            "temperature_above",
+            "temperature_underside",
+            "steam_quantity",
+            "weight",
+            "people_number",
+            "flip_side",
+            "spread_sauce",
+            "add_sauce",
+            "stir",
+            "drain_humidity_control",
+            "replenish_humidity_control",
+            "supplementary_cooking",
+        ):
+            self.attributes[name] = 0
+        self.attributes.update(
+            {
+                "work_mode": VALUE_FF,
+                "fire_power": VALUE_FF,
+                "mouthfeel": VALUE_FF,
+                "pre_heat": VALUE_OFF,
+            },
+        )
+
+    def _version_at(self, offset: int) -> str:
+        values = (self._get(offset), self._get(offset + 1), self._get(offset + 2))
+        if all(value is not None for value in values):
+            return "V" + ".".join(str(value) for value in values)
+        return "V0.0.0"
+
+    @staticmethod
+    def _on_off(value: int, bit: int) -> str:
+        return VALUE_ON if _bit(value, bit) else VALUE_OFF
 
     @staticmethod
     def _water_status(lack_box: int, lack_water: int, change_water: int) -> str:
@@ -936,6 +1357,11 @@ class X9BStatusBody:
         value = self._body[index]
         return VALUE_FF if value == UNCHANGED else value
 
+    def _u16_or_zero(self, index: int) -> int:
+        """Decode a camera u16, treating either 0xFF byte as unavailable."""
+        high, low = self._body[index], self._body[index + 1]
+        return 0 if UNCHANGED in (high, low) else _u16be(high, low)
+
 
 class X9BSystemTimeBody:
     """Decode a 0x9B system-time body into an attribute dict."""
@@ -953,7 +1379,7 @@ class X9BSystemTimeBody:
 
     def __init__(self, body: bytearray) -> None:
         """Decode the system-time body."""
-        self.attributes: dict[str, int | str] = {}
+        self.attributes: dict[str, X9BAttributeValue] = {}
         if len(body) < SYSTIME_MIN_LEN:
             return
         self.attributes["sys_time_src"] = SYS_TIME_SRC_MAP.get(body[1], VALUE_FF)
@@ -962,21 +1388,68 @@ class X9BSystemTimeBody:
             self.attributes[name] = VALUE_FF if value == UNCHANGED else value
 
 
+class X9BCameraOtaBody:
+    """Decode the camera firmware/OTA response selected by sub-command 0x65."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Decode a camera OTA body when all referenced offsets are present."""
+        self.attributes: dict[str, X9BAttributeValue] = {}
+        if len(body) < CAMERA_OTA_MIN_LEN:
+            return
+        self.attributes = {
+            "ota_status_hardware": "camera",
+            "camera_version": f"V{body[3]}.{body[4]}.{body[5]}",
+            "download_progress": body[10],
+            "ota_status": self._ota_status(body[11], body[12]),
+        }
+
+    @staticmethod
+    def _ota_status(download: int, install: int) -> str:
+        install_states = {
+            0x01: "installing",
+            0x02: "install_success",
+            0x03: "install_failure",
+        }
+        download_states = {
+            0x01: "downloading",
+            0x02: "download_success",
+            0x03: "download_failure",
+        }
+        return install_states.get(install, download_states.get(download, VALUE_FF))
+
+
 class MessageX9BResponse(MessageResponse):
     """X9B message response."""
 
-    def __init__(self, message: bytes) -> None:
+    def __init__(
+        self,
+        message: bytes,
+        profile: X9BProfile = X9BProfile.UNKNOWN,
+    ) -> None:
         """Initialize X9B message response."""
         super().__init__(bytearray(message))
         body = super().body
-        self.attributes: dict[str, int | str] = {}
+        self.profile = profile
+        self.attributes: dict[str, X9BAttributeValue] = {}
         sub_command = body[0]
+        is_camera_ota = len(body) >= CAMERA_OTA_PREFIX_LENGTH and body[
+            :CAMERA_OTA_PREFIX_LENGTH
+        ] == bytearray([SUBCMD_CAMERA_OTA, CAMERA_OTA_GROUP, CAMERA_OTA_TARGET])
+        if is_camera_ota:
+            # This prefix is unique to the VALUE_VERSION=4 family and is safe
+            # evidence for promoting an identity that was initially unknown.
+            self.profile = X9BProfile.CAMERA
         if self.message_type == MessageType.set:
             # A set-echo report carries the full status record.
-            self.attributes = X9BStatusBody(body).attributes
+            self.attributes = X9BStatusBody(body, self.profile).attributes
         elif self.message_type in (MessageType.query, MessageType.notify1):
-            if sub_command == SUBCMD_SYSTIME:
+            if is_camera_ota:
+                self.attributes = X9BCameraOtaBody(body).attributes
+            elif sub_command == SUBCMD_SYSTIME:
                 self.attributes = X9BSystemTimeBody(body).attributes
-            else:
-                self.attributes = X9BStatusBody(body).attributes
+            elif sub_command == SUBCMD_STATUS:
+                self.attributes = X9BStatusBody(body, self.profile).attributes
+        if self.attributes:
+            # Lua exposes the AA-frame message type as a two-digit hex string.
+            self.attributes["report_type"] = f"{int(self.message_type):02X}"
         self.set_attr()

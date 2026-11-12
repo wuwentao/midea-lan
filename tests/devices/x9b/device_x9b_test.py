@@ -5,11 +5,18 @@ from unittest.mock import patch
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.devices.x9b import DeviceAttributes, MideaAppliance, MideaX9BDevice
+from midealan.devices.x9b import (
+    DeviceAttributes,
+    MideaAppliance,
+    MideaX9BDevice,
+    X9BProfileRule,
+)
 from midealan.devices.x9b.message import (
     MessageQuery,
+    MessageQueryCameraOta,
     MessageSetParam,
     MessageSetState,
+    X9BProfile,
 )
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
 
@@ -46,16 +53,65 @@ class TestMideaX9BDevice:
         assert DeviceAttributes("work_mode") == "work_mode"
 
     def test_build_query(self) -> None:
-        """The device builds a single status query."""
+        """An unknown identity adds the safe camera-family probe."""
         queries = self.device.build_query()
+        assert len(queries) == 2
+        assert isinstance(queries[0], MessageQuery)
+        assert isinstance(queries[1], MessageQueryCameraOta)
+
+    @pytest.mark.parametrize(
+        ("model", "sn8", "expected"),
+        [
+            ("test_model", "700ZG249", X9BProfile.CAMERA),
+            ("700zg249", None, X9BProfile.CAMERA),
+            ("S50E5", None, X9BProfile.CAMERA),
+            ("70100277", None, X9BProfile.EXTENDED),
+            ("0BS5053W", None, X9BProfile.LEGACY),
+            ("unlisted", None, X9BProfile.UNKNOWN),
+        ],
+    )
+    def test_profile_selection(
+        self,
+        model: str,
+        sn8: str | None,
+        expected: X9BProfile,
+    ) -> None:
+        """Known model/SN8 identities choose their shared wire profile."""
+        device = self._make_device(model=model, sn8=sn8)
+        assert device.profile == expected
+
+    def test_profile_rule_can_share_multiple_subtypes(self) -> None:
+        """One future profile rule can cover several verified subtypes."""
+        rule = X9BProfileRule(
+            profile=X9BProfile.CAMERA,
+            subtypes=frozenset({101, 102}),
+        )
+        assert rule.match(sn8=None, model="unknown", subtype=101) == "subtype=101"
+        assert rule.match(sn8=None, model="unknown", subtype=102) == "subtype=102"
+        assert rule.match(sn8=None, model="unknown", subtype=103) is None
+
+    def test_known_non_camera_profile_skips_camera_probe(self) -> None:
+        """Verified legacy/extended identities only receive the common query."""
+        device = self._make_device(model="70100277")
+        queries = device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    def test_known_camera_profile_includes_camera_probe(self) -> None:
+        """A verified camera identity receives both read-only queries."""
+        device = self._make_device(model="S50E5")
+        queries = device.build_query()
+        assert [type(query) for query in queries] == [
+            MessageQuery,
+            MessageQueryCameraOta,
+        ]
 
     def test_process_message(self) -> None:
         """Known attributes are copied and unknown keys ignored."""
         with patch("midealan.devices.x9b.MessageX9BResponse") as mock_response:
             instance = mock_response.return_value
             instance.protocol_version = ProtocolVersion.V3
+            instance.profile = self.device.profile
             instance.attributes = {
                 "work_mode": "above_tube",
                 "lock": "on",
@@ -65,6 +121,27 @@ class TestMideaX9BDevice:
         assert new_status == {"work_mode": "above_tube", "lock": "on"}
         assert self.device.attributes["work_mode"] == "above_tube"
         assert "not_an_attribute" not in self.device.attributes
+
+    def test_distinctive_response_promotes_unknown_profile(self) -> None:
+        """A camera OTA response can classify an identity absent from the table."""
+        with patch("midealan.devices.x9b.MessageX9BResponse") as mock_response:
+            instance = mock_response.return_value
+            instance.protocol_version = ProtocolVersion.V3
+            instance.profile = X9BProfile.CAMERA
+            instance.attributes = {"camera_version": "V1.2.3"}
+            self.device.process_message(b"camera response")
+        assert self.device.profile == X9BProfile.CAMERA
+        mock_response.assert_called_once_with(
+            b"camera response",
+            profile=X9BProfile.UNKNOWN,
+        )
+
+    def test_camera_profile_controls_are_read_only(self) -> None:
+        """Unverified camera-family controls are ignored until device testing."""
+        device = self._make_device(model="700ZG249")
+        with patch.object(device, "build_send") as mock_send:
+            device.set_attribute("power", value=True)
+        mock_send.assert_not_called()
 
     def test_set_power(self) -> None:
         """Setting power sends a state message with the power flag."""
@@ -198,3 +275,25 @@ class TestMideaX9BDevice:
         with patch.object(self.device, "build_send") as mock_send:
             self.device.set_attribute("does_not_exist", 1)
         mock_send.assert_not_called()
+
+    @staticmethod
+    def _make_device(
+        *,
+        model: str,
+        sn8: str | None = None,
+        subtype: int = 1,
+    ) -> MideaX9BDevice:
+        """Build a device with a selectable identity."""
+        return MideaX9BDevice(
+            name="Profile Device",
+            device_id=2,
+            ip_address="192.168.1.2",
+            port=12345,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model=model,
+            subtype=subtype,
+            sn8=sn8,
+            customize="",
+        )

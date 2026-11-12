@@ -12,6 +12,7 @@ what the protocol actually reports.
 """
 
 import logging
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -32,9 +33,11 @@ from .message import (
     U16_MIN,
     WORK_STATUS_WRITE,
     MessageQuery,
+    MessageQueryCameraOta,
     MessageSetParam,
     MessageSetState,
     MessageX9BResponse,
+    X9BProfile,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +47,61 @@ ATTR_POWER = "power"
 ATTR_WORK_STATUS = "work_status"
 ATTR_DOOR = "door"
 ATTR_FIRE_POWER = "fire_power"
+
+
+@dataclass(frozen=True, slots=True)
+class X9BProfileRule:
+    """Map appliance identities to one shared wire-format profile.
+
+    A rule represents byte-layout compatibility, not a single sellable model.
+    Add a model/SN8/subtype to an existing rule when its query and response
+    bytes have the same meanings. Add a new :class:`X9BProfile`, decoder path,
+    and rule only when offsets or overlapping values mean something different.
+
+    Rules are evaluated in order and the first matching selector wins. Model
+    and SN8 are stronger identifiers and should be preferred. A subtype may be
+    shared by unrelated products, so add subtype-only selectors only after a
+    captured response proves that every device using it has this layout.
+    """
+
+    profile: X9BProfile
+    sn8s: frozenset[str] = frozenset()
+    models: frozenset[str] = frozenset()
+    subtypes: frozenset[int] = frozenset()
+
+    def match(self, *, sn8: str | None, model: str, subtype: int) -> str | None:
+        """Return the matching selector description, or ``None``."""
+        normalized_sn8 = sn8.upper() if sn8 else None
+        normalized_model = model.upper()
+        if normalized_sn8 in self.sn8s:
+            return f"sn8={normalized_sn8}"
+        if normalized_model in self.models:
+            return f"model={normalized_model}"
+        if subtype in self.subtypes:
+            return f"subtype={subtype}"
+        return None
+
+
+# Keep specific/new layouts before broad/older ones. Multiple identities and
+# verified subtypes can intentionally share one rule/profile; this is the only
+# table that needs changing when a newly reported appliance reuses known bytes.
+X9B_PROFILE_RULES: tuple[X9BProfileRule, ...] = (
+    X9BProfileRule(
+        profile=X9BProfile.CAMERA,
+        sn8s=frozenset({"700ZG249"}),
+        models=frozenset({"700ZG249", "S50E5"}),
+    ),
+    X9BProfileRule(
+        profile=X9BProfile.EXTENDED,
+        sn8s=frozenset({"70100277"}),
+        models=frozenset({"70100277"}),
+    ),
+    X9BProfileRule(
+        profile=X9BProfile.LEGACY,
+        sn8s=frozenset({"0BS5053W"}),
+        models=frozenset({"0BS5053W"}),
+    ),
+)
 
 # Build the StrEnum from the decoder's attribute list so the two stay in
 # lock-step, matching the pattern used by the 0x9C device.
@@ -68,14 +126,57 @@ class MideaX9BDevice(MideaDevice):
             **kwargs,
             attributes=dict.fromkeys(ALL_ATTRIBUTES),
         )
+        self._profile, reason = self._select_profile()
+        _LOGGER.debug(
+            "[%s] Selected x9b profile %s (%s)",
+            self.device_id,
+            self._profile,
+            reason,
+        )
 
-    def build_query(self) -> list[MessageQuery]:
-        """Midea 0x9B device build query."""
-        return [MessageQuery(self._message_protocol_version)]
+    @property
+    def profile(self) -> X9BProfile:
+        """Return the selected 0x9B wire-format profile."""
+        return self._profile
+
+    def _select_profile(self) -> tuple[X9BProfile, str]:
+        """Select the first identity rule that matches this appliance."""
+        for rule in X9B_PROFILE_RULES:
+            reason = rule.match(sn8=self.sn8, model=self.model, subtype=self.subtype)
+            if reason is not None:
+                return rule.profile, reason
+        return X9BProfile.UNKNOWN, "no verified identity rule"
+
+    def build_query(self) -> list[MessageQuery | MessageQueryCameraOta]:
+        """Build status queries, including a safe camera-profile probe.
+
+        Known legacy/extended identities only receive their common status
+        query. Camera identities receive the additional read-only 0x65 query.
+        Unknown identities receive both during protocol probing: a valid 0x65
+        response promotes them to the camera profile, while a silent query is
+        recorded as unsupported without preventing the common status query
+        from succeeding. This makes future compatible subtypes discoverable
+        before they are added to :data:`X9B_PROFILE_RULES`.
+        """
+        queries: list[MessageQuery | MessageQueryCameraOta] = [
+            MessageQuery(self._message_protocol_version),
+        ]
+        if self._profile in (X9BProfile.UNKNOWN, X9BProfile.CAMERA):
+            queries.append(MessageQueryCameraOta(self._message_protocol_version))
+        return queries
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea 0x9B device process message."""
-        message = MessageX9BResponse(msg)
+        message = MessageX9BResponse(msg, profile=self._profile)
+        if message.profile != self._profile:
+            old_profile = self._profile
+            self._profile = message.profile
+            _LOGGER.info(
+                "[%s] Promoted x9b profile from %s to %s after distinctive response",
+                self.device_id,
+                old_profile,
+                self._profile,
+            )
         self._message_protocol_version = message.protocol_version
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
@@ -95,6 +196,16 @@ class MideaX9BDevice(MideaDevice):
         Structured start-cooking recipes take multiple coordinated fields and
         are issued through :class:`~midealan.devices.x9b.message.MessageSetCooking`.
         """
+        if self._profile == X9BProfile.CAMERA:
+            # The VALUE_VERSION=4 Lua defines controls, but issue #290 only
+            # contains query/heartbeat traffic. Keep this profile read-only
+            # until hardware feedback verifies command offsets and semantics.
+            _LOGGER.warning(
+                "[%s] Ignoring unverified x9b camera-profile control %s",
+                self.device_id,
+                attr,
+            )
+            return
         message: MessageSetState | MessageSetParam | None = self._build_state_message(
             attr,
             value,
@@ -193,9 +304,12 @@ class MideaX9BDevice(MideaDevice):
 __all__ = [
     "FIRE_POWER_MAP",
     "WORK_STATUS_WRITE",
+    "X9B_PROFILE_RULES",
     "DeviceAttributes",
     "MideaAppliance",
     "MideaX9BDevice",
+    "X9BProfile",
+    "X9BProfileRule",
 ]
 
 

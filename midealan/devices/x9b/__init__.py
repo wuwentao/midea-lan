@@ -48,25 +48,25 @@ ATTR_WORK_STATUS = "work_status"
 ATTR_DOOR = "door"
 ATTR_FIRE_POWER = "fire_power"
 
-# Fields decoded by the V1/V2 layout but not present in VALUE_VERSION=4. Clear
-# them if a response enables the camera protocol after standard data was seen.
-CAMERA_UNSUPPORTED_ATTRIBUTES = (
-    "probe",
-    "turntable",
-    "probe_temperature",
-    "cur_probe_temperature",
-    "high_temperature_lock",
-    "high_temperature",
-    "probe_mode",
-    "ramadan",
-    "hot_wind",
-)
-
 # Build the StrEnum from the decoder's attribute list so the two stay in
 # lock-step, matching the pattern used by the 0x9C device.
 DeviceAttributes = StrEnum(  # type: ignore[misc]
     "DeviceAttributes",
     {name: name for name in ALL_ATTRIBUTES},
+)
+
+# Fields decoded by the V1/V2 layout but not present in VALUE_VERSION=4. Clear
+# them if a response enables the camera protocol after standard data was seen.
+CAMERA_UNSUPPORTED_ATTRIBUTES = (
+    DeviceAttributes("probe"),
+    DeviceAttributes("turntable"),
+    DeviceAttributes("probe_temperature"),
+    DeviceAttributes("cur_probe_temperature"),
+    DeviceAttributes("high_temperature_lock"),
+    DeviceAttributes("high_temperature"),
+    DeviceAttributes("probe_mode"),
+    DeviceAttributes("ramadan"),
+    DeviceAttributes("hot_wind"),
 )
 
 
@@ -137,16 +137,17 @@ class MideaX9BDevice(MideaDevice):
                 message.protocol_evidence[protocol],
             )
         if not camera_was_enabled and self.supports_protocol(X9BProtocol.CAMERA):
-            for name in CAMERA_UNSUPPORTED_ATTRIBUTES:
-                self._attributes[name] = None
-                new_status[name] = None
+            for attribute in CAMERA_UNSUPPORTED_ATTRIBUTES:
+                self._attributes[attribute] = None
+                new_status[attribute] = None
         self._message_protocol_version = message.protocol_version
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         for name, value in message.attributes.items():
             if name not in self._attributes:
                 continue
-            self._attributes[name] = value
-            new_status[name] = value
+            attribute = DeviceAttributes(name)
+            self._attributes[attribute] = value
+            new_status[attribute] = value
         return new_status
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:

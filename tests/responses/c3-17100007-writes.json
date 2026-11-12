@@ -1,0 +1,47 @@
+[
+  {
+    "values": {
+      "eco_mode": true
+    },
+    "frame": "aa18c300000000000002002070ffffffff01ffff0000010196"
+  },
+  {
+    "values": {
+      "eco_mode": false
+    },
+    "frame": "aa18c300000000000002002070ffffffff01ffff0000010097"
+  },
+  {
+    "values": {
+      "disinfect": true
+    },
+    "frame": "aa18c300000000000002002090ffffffff01ffff0000010176"
+  },
+  {
+    "values": {
+      "silent_mode": false
+    },
+    "frame": "aa18c300000000000002002050ffffffff01ffff00000100b7"
+  },
+  {
+    "values": {
+      "silent_mode": true,
+      "silent_level": "level_1"
+    },
+    "frame": "aa1cc300000000000002002050ffffffff01ffff0000010100010100b0"
+  },
+  {
+    "values": {
+      "silent_mode": true,
+      "silent_level": "level_2"
+    },
+    "frame": "aa1cc300000000000002002050ffffffff01ffff0000010100010101af"
+  },
+  {
+    "values": {
+      "silent_mode": true,
+      "silent_level": "level_3"
+    },
+    "frame": "aa1cc300000000000002002050ffffffff01ffff0000010100010102ae"
+  }
+]

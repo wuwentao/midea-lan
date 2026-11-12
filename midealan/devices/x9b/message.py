@@ -14,12 +14,12 @@ wire-format families share this device type:
 The first byte is a sub-command (``0x01`` = full status, ``0x04`` = system
 time, ``0x65`` = camera OTA status). V1/V2 use the extended fixed layout as a
 canonical decoder. Camera-family messages reuse the common prefix and select a
-profile-specific decoder for conflicting meanings and their dynamic tail.
+capability-specific decoder for conflicting meanings and their dynamic tail.
 
 ``VALUE_VERSION`` is a Lua/JSON schema marker and is not transmitted on the
-wire. Callers must therefore pass an :class:`X9BProfile` selected from device
-identity or an unambiguous response; it must never be confused with the outer
-V3 transport protocol or the AA-frame message protocol byte.
+wire. Protocol capabilities are therefore learned from query responses, never
+from model, SN8 or subtype identity. The distinctive ``65 00 02`` response
+enables the camera layout before the common status response is decoded.
 
 Control (set) messages also start with a sub-command byte that selects the
 command group: ``0x01`` start cooking, ``0x02`` state controls, ``0x03`` live
@@ -50,18 +50,16 @@ CAMERA_OTA_TARGET = 0x02
 CAMERA_OTA_PREFIX_LENGTH = 3
 
 
-class X9BProfile(StrEnum):
-    """Known 0x9B wire-format families.
+class X9BProtocol(StrEnum):
+    """Independently detected 0x9B protocol capabilities.
 
-    A profile describes byte semantics, not one product. Multiple models and
-    subtypes that use the same layout belong to the same profile. ``UNKNOWN``
-    deliberately keeps the established V1/V2 decoder behaviour until device
-    identity or a distinctive response proves a more specific family.
+    Capabilities are additive flags, not mutually exclusive device profiles.
+    A camera appliance supports both the common status protocol and the camera
+    extension. Future layouts should add a query/response capability here
+    instead of adding product identity rules.
     """
 
-    UNKNOWN = "unknown"
-    LEGACY = "legacy"
-    EXTENDED = "extended"
+    STATUS = "status"
     CAMERA = "camera"
 
 
@@ -158,6 +156,7 @@ CAMERA_OTA_DOWNLOAD_PROGRESS_OFFSET = 10
 CAMERA_OTA_DOWNLOAD_STATUS_OFFSET = 11
 CAMERA_OTA_INSTALL_STATUS_OFFSET = 12
 CAMERA_OTA_MIN_LEN = CAMERA_OTA_INSTALL_STATUS_OFFSET + 1
+CAMERA_STATUS_FULL_MIN_LEN = 69
 
 # Camera status has a variable error list at body[39...]. One slot is reserved
 # even when the reported count is zero; each additional error shifts every tail
@@ -228,8 +227,8 @@ FIRE_POWER_MAP: dict[int, str] = {
 FIRE_POWER_REVERSE: dict[str, int] = {v: k for k, v in FIRE_POWER_MAP.items()}
 
 # 700ZG249 uses level numbers rather than the legacy low/medium/high labels.
-# The raw values overlap, so this must remain profile-specific rather than being
-# merged into FIRE_POWER_MAP.
+# The raw values overlap, so this remains a camera-capability map rather than
+# being merged into FIRE_POWER_MAP.
 CAMERA_FIRE_POWER_MAP: dict[int, str] = {
     value: f"fire_power_{value}" for value in range(0x0B)
 }
@@ -385,9 +384,9 @@ WORK_MODE_MAP: dict[int, str] = {
 WORK_MODE_REVERSE: dict[str, int] = {v: k for k, v in WORK_MODE_MAP.items()}
 
 # VALUE_VERSION=4 adds modes without changing the names of any established raw
-# value. Keep this as a profile-specific read superset: camera writes remain
-# disabled until verified on hardware, and legacy callers should not be offered
-# modes that their own Lua protocol cannot encode.
+# value. Keep this as a camera-capability read superset: camera writes remain
+# disabled until verified on hardware, and standard callers should not be
+# offered modes that their own Lua protocol cannot encode.
 CAMERA_WORK_MODE_MAP: dict[int, str] = {
     **WORK_MODE_MAP,
     0x0401: "microwave_hot_wind_tube_fan_1",
@@ -968,17 +967,18 @@ X9BAttributeValue = bool | int | str | list[str]
 
 
 class X9BStatusBody:
-    """Decode a 0x9B full-status body using the selected wire profile."""
+    """Decode a 0x9B full-status body using detected capabilities."""
 
     def __init__(
         self,
         body: bytearray,
-        profile: X9BProfile = X9BProfile.UNKNOWN,
+        *,
+        camera_protocol: bool = False,
     ) -> None:
         """Decode the status body."""
         self.attributes: dict[str, X9BAttributeValue] = {}
         self._body = body
-        self._profile = profile
+        self._camera_protocol = camera_protocol
         self._decode()
 
     def _get(self, index: int) -> int | None:
@@ -995,7 +995,7 @@ class X9BStatusBody:
         self._decode_work_time()
         self._decode_current()
         self._decode_flags()
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             self._decode_camera_tail()
             self._normalize_camera_idle()
         else:
@@ -1004,7 +1004,7 @@ class X9BStatusBody:
     def _decode_header(self) -> None:
         attrs = self.attributes
         execute = self._body[1]
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             attrs["execute"] = CAMERA_EXECUTE_MAP.get(execute, "unknown")
         else:
             attrs["execute"] = EXECUTE_MAP.get(execute, "ok")
@@ -1015,14 +1015,10 @@ class X9BStatusBody:
         )
         attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
         attrs["stepnum"] = self._body[5] & NIBBLE_MASK
-        if self._profile != X9BProfile.CAMERA:
+        if not self._camera_protocol:
             attrs["probe"] = _bit(self._body[6], HEADER_PROBE_BIT)
             attrs["turntable"] = bool(_bit(self._body[6], HEADER_TURNTABLE_BIT))
-        work_mode_map = (
-            CAMERA_WORK_MODE_MAP
-            if self._profile == X9BProfile.CAMERA
-            else WORK_MODE_MAP
-        )
+        work_mode_map = CAMERA_WORK_MODE_MAP if self._camera_protocol else WORK_MODE_MAP
         attrs["work_mode"] = work_mode_map.get(
             _u16be(self._body[7], self._body[8]),
             VALUE_FF,
@@ -1034,9 +1030,7 @@ class X9BStatusBody:
         attrs["minute_set"] = self._byte_or_zero(10)
         attrs["second_set"] = self._byte_or_zero(11)
         fire_power_map = (
-            CAMERA_FIRE_POWER_MAP
-            if self._profile == X9BProfile.CAMERA
-            else FIRE_POWER_MAP
+            CAMERA_FIRE_POWER_MAP if self._camera_protocol else FIRE_POWER_MAP
         )
         attrs["fire_power"] = fire_power_map.get(self._body[12], VALUE_FF)
         above = _u16be(self._body[13], self._body[14])
@@ -1044,12 +1038,12 @@ class X9BStatusBody:
         attrs["temperature_above"] = above
         attrs["temperature_underside"] = underside
         attrs["temperature"] = (
-            above if self._profile == X9BProfile.CAMERA or above != 0 else underside
+            above if self._camera_protocol or above != 0 else underside
         )
-        if self._profile != X9BProfile.CAMERA:
+        if not self._camera_protocol:
             attrs["probe_temperature"] = _u16be(self._body[17], self._body[18])
         steam = self._get(19)
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             attrs["steam_quantity"] = (
                 VALUE_FF if steam in (None, UNCHANGED) else steam & CAMERA_STEAM_MASK
             )
@@ -1063,7 +1057,7 @@ class X9BStatusBody:
         else:
             attrs["steam_quantity"] = self._byte_or_ff(19)
         weight = self._get(20)
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             attrs["weight"] = (
                 weight * WEIGHT_SCALE
                 if weight not in (None, UNCHANGED)
@@ -1090,7 +1084,7 @@ class X9BStatusBody:
 
     def _decode_current(self) -> None:
         attrs = self.attributes
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             above = self._u16_or_zero(25)
             underside = self._u16_or_zero(27)
         else:
@@ -1099,14 +1093,12 @@ class X9BStatusBody:
         attrs["cur_temperature_above"] = above
         attrs["cur_temperature_underside"] = underside
         attrs["cur_temperature"] = (
-            above if self._profile == X9BProfile.CAMERA or above != 0 else underside
+            above if self._camera_protocol or above != 0 else underside
         )
-        if self._profile != X9BProfile.CAMERA:
+        if not self._camera_protocol:
             attrs["cur_probe_temperature"] = _u16be(self._body[29], self._body[30])
         status_map = (
-            CAMERA_WORK_STATUS_MAP
-            if self._profile == X9BProfile.CAMERA
-            else WORK_STATUS_MAP
+            CAMERA_WORK_STATUS_MAP if self._camera_protocol else WORK_STATUS_MAP
         )
         status = status_map.get(self._body[31], VALUE_FF)
         attrs["work_status"] = status
@@ -1136,7 +1128,7 @@ class X9BStatusBody:
         attrs["reaction"] = _bit(byte33, FLAG33_REACTION_BIT)
         attrs["furnace_light"] = bool(_bit(byte33, FLAG33_FURNACE_LIGHT_BIT))
         attrs["high_temperature_work"] = _bit(byte33, FLAG33_HIGH_TEMP_WORK_BIT)
-        if self._profile == X9BProfile.CAMERA:
+        if self._camera_protocol:
             attrs["app_control"] = _bit(self._body[34], CAMERA_APP_CONTROL_BIT)
         else:
             # The high-temperature lock reads inverted: bit set means "off".
@@ -1439,13 +1431,16 @@ class MessageX9BResponse(MessageResponse):
     def __init__(
         self,
         message: bytes,
-        profile: X9BProfile = X9BProfile.UNKNOWN,
+        *,
+        camera_protocol: bool = False,
     ) -> None:
         """Initialize X9B message response."""
         super().__init__(bytearray(message))
         body = super().body
-        self.profile = profile
         self.attributes: dict[str, X9BAttributeValue] = {}
+        self.detected_protocols: set[X9BProtocol] = set()
+        self.protocol_evidence: dict[X9BProtocol, str] = {}
+        self.response_protocol: X9BProtocol | None = None
         sub_command = body[0]
         is_camera_ota_response = (
             self.message_type in (MessageType.query, MessageType.notify1)
@@ -1453,24 +1448,50 @@ class MessageX9BResponse(MessageResponse):
             and body[:CAMERA_OTA_PREFIX_LENGTH]
             == bytearray([SUBCMD_CAMERA_OTA, CAMERA_OTA_GROUP, CAMERA_OTA_TARGET])
         )
-        if (
-            is_camera_ota_response
-            and len(body) >= CAMERA_OTA_MIN_LEN
-            and self.profile == X9BProfile.UNKNOWN
-        ):
-            # This prefix is unique to the VALUE_VERSION=4 family and is safe
-            # evidence for promoting an identity that was initially unknown.
-            self.profile = X9BProfile.CAMERA
-        if self.message_type == MessageType.set:
+        is_status_response = (
+            self.message_type
+            in (MessageType.set, MessageType.query, MessageType.notify1)
+            and sub_command == SUBCMD_STATUS
+            and len(body) >= STATUS_MIN_LEN
+        )
+        camera_status_by_length = (
+            is_status_response and len(body) >= CAMERA_STATUS_FULL_MIN_LEN
+        )
+        use_camera_protocol = camera_protocol or camera_status_by_length
+
+        if self.message_type == MessageType.set and is_status_response:
             # A set-echo report carries the full status record.
-            self.attributes = X9BStatusBody(body, self.profile).attributes
+            self.attributes = X9BStatusBody(
+                body,
+                camera_protocol=use_camera_protocol,
+            ).attributes
         elif self.message_type in (MessageType.query, MessageType.notify1):
             if is_camera_ota_response:
                 self.attributes = X9BCameraOtaBody(body).attributes
             elif sub_command == SUBCMD_SYSTIME:
                 self.attributes = X9BSystemTimeBody(body).attributes
-            elif sub_command == SUBCMD_STATUS:
-                self.attributes = X9BStatusBody(body, self.profile).attributes
+            elif is_status_response:
+                self.attributes = X9BStatusBody(
+                    body,
+                    camera_protocol=use_camera_protocol,
+                ).attributes
+        if self.attributes and is_camera_ota_response:
+            self.response_protocol = X9BProtocol.CAMERA
+            self.detected_protocols.add(X9BProtocol.CAMERA)
+            self.protocol_evidence[X9BProtocol.CAMERA] = (
+                "complete 0x65 0x00 0x02 camera OTA response"
+            )
+        elif self.attributes and is_status_response:
+            self.response_protocol = X9BProtocol.STATUS
+            self.detected_protocols.add(X9BProtocol.STATUS)
+            self.protocol_evidence[X9BProtocol.STATUS] = (
+                "complete 0x01 common status response"
+            )
+            if camera_status_by_length:
+                self.detected_protocols.add(X9BProtocol.CAMERA)
+                self.protocol_evidence[X9BProtocol.CAMERA] = (
+                    f"0x01 status body length {len(body)} matches the camera layout"
+                )
         if self.attributes:
             # Lua exposes the AA-frame message type as a two-digit hex string.
             self.attributes["report_type"] = f"{int(self.message_type):02X}"

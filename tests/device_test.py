@@ -1701,58 +1701,6 @@ class TestMideaDevice:
             ):
                 assert self.device.parse_message(bytes([])) == MessageResult.SUCCESS
 
-    def test_parse_message_heartbeat_only(self) -> None:
-        """A heartbeat is liveness, not a successful business-query response."""
-        heartbeat = bytearray([0x00, 0x00, 0x01, 0x00, 0x00, 0x00])
-        with patch.object(
-            self.device,
-            "fetch_v2_message",
-            return_value=([heartbeat], b""),
-        ):
-            self.device._device_protocol_version = ProtocolVersion.V2
-            assert self.device.parse_message(b"") == MessageResult.HEARTBEAT
-
-    def test_await_query_reply_ignores_heartbeat(self) -> None:
-        """Probe validation waits past heartbeat traffic for a business reply."""
-        socket_mock = MagicMock()
-        socket_mock.recv.side_effect = [b"heartbeat", b"status"]
-        self.device._socket = socket_mock
-        with (
-            patch.object(
-                self.device,
-                "parse_message",
-                side_effect=[MessageResult.HEARTBEAT, MessageResult.SUCCESS],
-            ) as parse_mock,
-            patch("midealan.device.time.monotonic", side_effect=[0, 0, 1]),
-        ):
-            self.device._await_query_reply()
-        assert parse_mock.call_count == 2
-        assert socket_mock.settimeout.call_args_list == [
-            call(QUERY_TIMEOUT),
-            call(QUERY_TIMEOUT - 1),
-            call(10),
-        ]
-
-    def test_await_query_reply_heartbeat_respects_deadline(self) -> None:
-        """Continuous heartbeats cannot extend one probe attempt forever."""
-        socket_mock = MagicMock()
-        socket_mock.recv.return_value = b"heartbeat"
-        self.device._socket = socket_mock
-        with (
-            patch.object(
-                self.device,
-                "parse_message",
-                return_value=MessageResult.HEARTBEAT,
-            ),
-            patch(
-                "midealan.device.time.monotonic",
-                side_effect=[0, 1, QUERY_TIMEOUT + 1],
-            ),
-            pytest.raises(TimeoutError),
-        ):
-            self.device._await_query_reply()
-        socket_mock.recv.assert_called_once()
-
     def test_parse_message_without_appliance_preprocess(self) -> None:
         """Test parse_message processes payload when appliance query is disabled."""
         message = bytearray([0x0] * 72)

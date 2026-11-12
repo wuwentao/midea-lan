@@ -45,10 +45,15 @@ PROFILE_V41_SUBTYPE = 0
 # downloads the same T_0000_DB_41.lua; status frames verified against a device.
 PROFILE_V41_WASHER_DRYER_MODEL = "38123703"
 PROFILE_V41_WASHER_DRYER_SUBTYPE = 16695
+# Washer-dryer MD10L7PRO (China, Meiju). Its cloud download returns the same
+# T_0000_DB_41.lua, so it reuses the v41 read-only decode and program maps.
+PROFILE_V41_MD10L7PRO_MODEL = "38131780"
+PROFILE_V41_MD10L7PRO_SUBTYPE = 13914
 V41_PROFILES = frozenset(
     {
         (PROFILE_V41_MODEL, PROFILE_V41_SUBTYPE),
         (PROFILE_V41_WASHER_DRYER_MODEL, PROFILE_V41_WASHER_DRYER_SUBTYPE),
+        (PROFILE_V41_MD10L7PRO_MODEL, PROFILE_V41_MD10L7PRO_SUBTYPE),
     },
 )
 STATUS_IDLE = 0

@@ -34,6 +34,14 @@ V41_CONSUMPTION = (
     "aa33db000000000000040553017902090000ffffffffffffffffffffffffdb37414c"
     "ffffffffffffff0000000000000000000085"
 )
+# Real query response from the MD10L7PRO (SN8 38131780, subtype 13914),
+# captured in midea_ac_lan issue #1140 (fast_wash_30, washing, dryer off).
+# The device's cloud decoder reported the matching values used below.
+V41_MD10L7PRO_STATUS = (
+    "aa47db00000000000003"
+    "0300000017022001030401000100000004010000db5a364c0000000f050000d0"
+    "ffffffffffffffffffffffffffff000101ffffffffff0000ffff08ffff"
+)
 BASE_ARGS: MideaDeviceInitKwargs = {
     "name": "Test laundry appliance",
     "device_id": 1,
@@ -608,6 +616,36 @@ class TestMideaDBDevice:
         }
         assert device.get_attribute(DeviceAttributes.dryer) == 1
         assert device.get_attribute(DeviceAttributes.progress) == "dry"
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38131780", None), ("MD10L7PRO", "38131780")],
+    )
+    def test_v41_md10l7pro_profile_decodes_real_frame(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Decode the MD10L7PRO (#1140) real status frame as the v41 profile.
+
+        Values match the device cloud decoder in the issue debug log.
+        """
+        device = MideaDBDevice(customize="", **device_args(model, 13914, sn8=sn8))
+        assert DeviceAttributes.dryer in device.attributes
+        status = device.process_message(bytes.fromhex(V41_MD10L7PRO_STATUS))
+        assert status[DeviceAttributes.program] == "fast_wash_30"
+        assert status[DeviceAttributes.progress] == "wash"
+        assert status[DeviceAttributes.dryer] == 0
+        assert status[DeviceAttributes.soak_count] == 2
+        assert status[DeviceAttributes.speedy] is False
+        assert status[DeviceAttributes.lock] is False
+        assert status[DeviceAttributes.appointment_time] == 0
+        assert status[DeviceAttributes.error_code] == 0
+        assert status[DeviceAttributes.beforehand_wash] is False
+        assert status[DeviceAttributes.steam_wash] is False
+        assert status[DeviceAttributes.add_rinse] is False
+        assert status[DeviceAttributes.wind_dispel] is False
+        assert status[DeviceAttributes.remote_control_flag] is False
 
     @pytest.mark.parametrize(
         ("model", "subtype"),

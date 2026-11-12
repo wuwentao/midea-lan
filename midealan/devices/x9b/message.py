@@ -152,7 +152,12 @@ SHORT_YEAR_EPOCH = 2000
 # --- Response body length guards --------------------------------------------
 STATUS_MIN_LEN = 36  # last fixed-offset status byte read is body[35]
 SYSTIME_MIN_LEN = 10  # system-time body reads body[1] through body[9]
-CAMERA_OTA_MIN_LEN = 13  # reads camera OTA body[3..5] and body[10..12]
+CAMERA_OTA_VERSION_OFFSET = 3
+CAMERA_OTA_VERSION_LENGTH = 3
+CAMERA_OTA_DOWNLOAD_PROGRESS_OFFSET = 10
+CAMERA_OTA_DOWNLOAD_STATUS_OFFSET = 11
+CAMERA_OTA_INSTALL_STATUS_OFFSET = 12
+CAMERA_OTA_MIN_LEN = CAMERA_OTA_INSTALL_STATUS_OFFSET + 1
 
 # Camera status has a variable error list at body[39...]. One slot is reserved
 # even when the reported count is zero; each additional error shifts every tail
@@ -1398,9 +1403,19 @@ class X9BCameraOtaBody:
             return
         self.attributes = {
             "ota_status_hardware": "camera",
-            "camera_version": f"V{body[3]}.{body[4]}.{body[5]}",
-            "download_progress": body[10],
-            "ota_status": self._ota_status(body[11], body[12]),
+            "camera_version": "V"
+            + ".".join(
+                str(value)
+                for value in body[
+                    CAMERA_OTA_VERSION_OFFSET : CAMERA_OTA_VERSION_OFFSET
+                    + CAMERA_OTA_VERSION_LENGTH
+                ]
+            ),
+            "download_progress": body[CAMERA_OTA_DOWNLOAD_PROGRESS_OFFSET],
+            "ota_status": self._ota_status(
+                body[CAMERA_OTA_DOWNLOAD_STATUS_OFFSET],
+                body[CAMERA_OTA_INSTALL_STATUS_OFFSET],
+            ),
         }
 
     @staticmethod
@@ -1432,10 +1447,17 @@ class MessageX9BResponse(MessageResponse):
         self.profile = profile
         self.attributes: dict[str, X9BAttributeValue] = {}
         sub_command = body[0]
-        is_camera_ota = len(body) >= CAMERA_OTA_PREFIX_LENGTH and body[
-            :CAMERA_OTA_PREFIX_LENGTH
-        ] == bytearray([SUBCMD_CAMERA_OTA, CAMERA_OTA_GROUP, CAMERA_OTA_TARGET])
-        if is_camera_ota:
+        is_camera_ota_response = (
+            self.message_type in (MessageType.query, MessageType.notify1)
+            and len(body) >= CAMERA_OTA_PREFIX_LENGTH
+            and body[:CAMERA_OTA_PREFIX_LENGTH]
+            == bytearray([SUBCMD_CAMERA_OTA, CAMERA_OTA_GROUP, CAMERA_OTA_TARGET])
+        )
+        if (
+            is_camera_ota_response
+            and len(body) >= CAMERA_OTA_MIN_LEN
+            and self.profile == X9BProfile.UNKNOWN
+        ):
             # This prefix is unique to the VALUE_VERSION=4 family and is safe
             # evidence for promoting an identity that was initially unknown.
             self.profile = X9BProfile.CAMERA
@@ -1443,7 +1465,7 @@ class MessageX9BResponse(MessageResponse):
             # A set-echo report carries the full status record.
             self.attributes = X9BStatusBody(body, self.profile).attributes
         elif self.message_type in (MessageType.query, MessageType.notify1):
-            if is_camera_ota:
+            if is_camera_ota_response:
                 self.attributes = X9BCameraOtaBody(body).attributes
             elif sub_command == SUBCMD_SYSTIME:
                 self.attributes = X9BSystemTimeBody(body).attributes

@@ -698,13 +698,28 @@ class TestX9BResponse:
             "report_type": "03",
         }
 
-    def test_short_camera_ota_response_promotes_without_decoding(self) -> None:
-        """A valid 0x65 prefix identifies the profile even if its tail is short."""
+    def test_short_camera_ota_response_does_not_promote(self) -> None:
+        """A prefix without the distinctive response fields is insufficient."""
         response = MessageX9BResponse(
             _frame(MessageType.query, [0x65, 0x00, 0x02]),
         )
-        assert response.profile == X9BProfile.CAMERA
+        assert response.profile == X9BProfile.UNKNOWN
         assert response.attributes == {}
+
+    def test_camera_ota_does_not_override_known_profile(self) -> None:
+        """A known identity cannot be reclassified by one unexpected frame."""
+        body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, 1, 0]
+        response = MessageX9BResponse(
+            _frame(MessageType.query, body),
+            profile=X9BProfile.EXTENDED,
+        )
+        assert response.profile == X9BProfile.EXTENDED
+
+    def test_camera_ota_prefix_in_set_response_does_not_promote(self) -> None:
+        """Only Lua report types 0x03/0x04 identify a camera OTA response."""
+        body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, 1, 0]
+        response = MessageX9BResponse(_frame(MessageType.set, body))
+        assert response.profile == X9BProfile.UNKNOWN
 
     def test_unknown_query_body_is_ignored(self) -> None:
         """An unknown query sub-command does not invent attributes."""

@@ -19,6 +19,7 @@ from typing import Any, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.message import MessageRequest, MessageType
 
 from .message import (
     ALL_ATTRIBUTES,
@@ -47,6 +48,20 @@ ATTR_POWER = "power"
 ATTR_WORK_STATUS = "work_status"
 ATTR_DOOR = "door"
 ATTR_FIRE_POWER = "fire_power"
+
+# Fields decoded by the V1/V2 layout but not present in VALUE_VERSION=4. Clear
+# them if an initially unknown identity is promoted by a camera OTA response.
+CAMERA_UNSUPPORTED_ATTRIBUTES = (
+    "probe",
+    "turntable",
+    "probe_temperature",
+    "cur_probe_temperature",
+    "high_temperature_lock",
+    "high_temperature",
+    "probe_mode",
+    "ramadan",
+    "hot_wind",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +142,10 @@ class MideaX9BDevice(MideaDevice):
             attributes=dict.fromkeys(ALL_ATTRIBUTES),
         )
         self._profile, reason = self._select_profile()
+        self._camera_ota_query_pending = self._profile in (
+            X9BProfile.UNKNOWN,
+            X9BProfile.CAMERA,
+        )
         _LOGGER.debug(
             "[%s] Selected x9b profile %s (%s)",
             self.device_id,
@@ -147,27 +166,35 @@ class MideaX9BDevice(MideaDevice):
                 return rule.profile, reason
         return X9BProfile.UNKNOWN, "no verified identity rule"
 
-    def build_query(self) -> list[MessageQuery | MessageQueryCameraOta]:
-        """Build status queries, including a safe camera-profile probe.
+    def build_init_query(self) -> list[MessageQueryCameraOta]:
+        """Build the optional one-time camera-profile probe.
 
-        Known legacy/extended identities only receive their common status
-        query. Camera identities receive the additional read-only 0x65 query.
-        Unknown identities receive both during protocol probing: a valid 0x65
-        response promotes them to the camera profile, while a silent query is
-        recorded as unsupported without preventing the common status query
-        from succeeding. This makes future compatible subtypes discoverable
-        before they are added to :data:`X9B_PROFILE_RULES`.
+        Running this as an init query keeps it outside the required status-query
+        success count and lets a successful response select the decoder before
+        the first status response is published. A silent optional probe cannot
+        make a failed common status query appear successful.
         """
-        queries: list[MessageQuery | MessageQueryCameraOta] = [
-            MessageQuery(self._message_protocol_version),
-        ]
-        if self._profile in (X9BProfile.UNKNOWN, X9BProfile.CAMERA):
-            queries.append(MessageQueryCameraOta(self._message_protocol_version))
-        return queries
+        if self._camera_ota_query_pending:
+            return [MessageQueryCameraOta(self._message_protocol_version)]
+        return []
+
+    def reset_init_query(self) -> None:
+        """Re-arm the camera probe for a new connection when applicable."""
+        self._camera_ota_query_pending = self._profile in (
+            X9BProfile.UNKNOWN,
+            X9BProfile.CAMERA,
+        )
+
+    def build_query(self) -> list[MessageQuery]:
+        """Build the required common status query."""
+        return [MessageQuery(self._message_protocol_version)]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea 0x9B device process message."""
         message = MessageX9BResponse(msg, profile=self._profile)
+        new_status: dict[str, Any] = {}
+        if "ota_status_hardware" in message.attributes:
+            self._camera_ota_query_pending = False
         if message.profile != self._profile:
             old_profile = self._profile
             self._profile = message.profile
@@ -177,15 +204,28 @@ class MideaX9BDevice(MideaDevice):
                 old_profile,
                 self._profile,
             )
+            for name in CAMERA_UNSUPPORTED_ATTRIBUTES:
+                self._attributes[name] = None
+                new_status[name] = None
         self._message_protocol_version = message.protocol_version
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        new_status: dict[str, Any] = {}
         for name, value in message.attributes.items():
             if name not in self._attributes:
                 continue
             self._attributes[name] = value
             new_status[name] = value
         return new_status
+
+    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+        """Serialize and send, blocking unverified camera-profile controls."""
+        if self._profile == X9BProfile.CAMERA and cmd.message_type == MessageType.set:
+            _LOGGER.warning(
+                "[%s] Ignoring unverified x9b camera-profile command %s",
+                self.device_id,
+                cmd.__class__.__name__,
+            )
+            return
+        super().build_send(cmd, query=query)
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea 0x9B device set attribute.

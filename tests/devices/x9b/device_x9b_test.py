@@ -1,10 +1,11 @@
 """Test x9b Device."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from midealan.const import ProtocolVersion
+from midealan.device import MessageResult, NoSupportedProtocol
 from midealan.devices.x9b import (
     DeviceAttributes,
     MideaAppliance,
@@ -14,11 +15,13 @@ from midealan.devices.x9b import (
 from midealan.devices.x9b.message import (
     MessageQuery,
     MessageQueryCameraOta,
+    MessageSetCooking,
     MessageSetParam,
     MessageSetState,
     X9BProfile,
 )
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.message import MessageType
 
 
 class TestMideaX9BDevice:
@@ -53,11 +56,13 @@ class TestMideaX9BDevice:
         assert DeviceAttributes("work_mode") == "work_mode"
 
     def test_build_query(self) -> None:
-        """An unknown identity adds the safe camera-family probe."""
+        """The required recurring query remains the common status query."""
         queries = self.device.build_query()
-        assert len(queries) == 2
+        assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
-        assert isinstance(queries[1], MessageQueryCameraOta)
+        init_queries = self.device.build_init_query()
+        assert len(init_queries) == 1
+        assert isinstance(init_queries[0], MessageQueryCameraOta)
 
     @pytest.mark.parametrize(
         ("model", "sn8", "expected"),
@@ -96,15 +101,32 @@ class TestMideaX9BDevice:
         queries = device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+        assert device.build_init_query() == []
 
     def test_known_camera_profile_includes_camera_probe(self) -> None:
         """A verified camera identity receives both read-only queries."""
         device = self._make_device(model="S50E5")
-        queries = device.build_query()
-        assert [type(query) for query in queries] == [
-            MessageQuery,
-            MessageQueryCameraOta,
-        ]
+        assert isinstance(device.build_query()[0], MessageQuery)
+        assert isinstance(device.build_init_query()[0], MessageQueryCameraOta)
+        device.reset_init_query()
+        assert isinstance(device.build_init_query()[0], MessageQueryCameraOta)
+
+    def test_optional_camera_probe_cannot_mask_failed_status_query(self) -> None:
+        """OTA data alone does not make a device with no status data available."""
+        device = self._make_device(model="700ZG249")
+        device._appliance_query = False
+        device._socket = MagicMock()
+        device._socket.recv.side_effect = [b"ota response", TimeoutError()]
+        with (
+            patch.object(device, "build_send"),
+            patch.object(
+                device,
+                "parse_message",
+                return_value=MessageResult.SUCCESS,
+            ),
+            pytest.raises(NoSupportedProtocol),
+        ):
+            device.refresh_status(check_protocol=True)
 
     def test_process_message(self) -> None:
         """Known attributes are copied and unknown keys ignored."""
@@ -128,9 +150,13 @@ class TestMideaX9BDevice:
             instance = mock_response.return_value
             instance.protocol_version = ProtocolVersion.V3
             instance.profile = X9BProfile.CAMERA
-            instance.attributes = {"camera_version": "V1.2.3"}
+            instance.attributes = {
+                "ota_status_hardware": "camera",
+                "camera_version": "V1.2.3",
+            }
             self.device.process_message(b"camera response")
         assert self.device.profile == X9BProfile.CAMERA
+        assert self.device.build_init_query() == []
         mock_response.assert_called_once_with(
             b"camera response",
             profile=X9BProfile.UNKNOWN,
@@ -142,6 +168,33 @@ class TestMideaX9BDevice:
         with patch.object(device, "build_send") as mock_send:
             device.set_attribute("power", value=True)
         mock_send.assert_not_called()
+
+    def test_camera_profile_blocks_direct_set_commands(self) -> None:
+        """The outbound path also blocks structured and custom set commands."""
+        device = self._make_device(model="700ZG249")
+        with patch.object(device, "send_message") as mock_send:
+            device.build_send(MessageSetCooking(ProtocolVersion.V3))
+            mock_send.assert_not_called()
+            device.send_command(MessageType.set, bytearray([0x01]))
+            mock_send.assert_not_called()
+            device.build_send(MessageQuery(ProtocolVersion.V3), query=True)
+            mock_send.assert_called_once()
+            assert mock_send.call_args.kwargs == {"query": True}
+
+    def test_profile_promotion_clears_incompatible_attributes(self) -> None:
+        """Values decoded under UNKNOWN do not survive camera promotion."""
+        self.device._attributes["probe"] = 1
+        with patch("midealan.devices.x9b.MessageX9BResponse") as mock_response:
+            instance = mock_response.return_value
+            instance.protocol_version = ProtocolVersion.V3
+            instance.profile = X9BProfile.CAMERA
+            instance.attributes = {
+                "ota_status_hardware": "camera",
+                "camera_version": "V1.2.3",
+            }
+            status = self.device.process_message(b"camera response")
+        assert status["probe"] is None
+        assert self.device.attributes["probe"] is None
 
     def test_set_power(self) -> None:
         """Setting power sends a state message with the power flag."""

@@ -8,14 +8,15 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.device import MideaDeviceInitKwargs
 from midealan.devices.dc import MideaDCDevice
-from midealan.devices.dc.message import ControlAttributes as Attr
 from midealan.devices.dc.message import (
+    MINIMUM_STATUS_LENGTH,
     DCControls,
     MessageDCBase,
     MessagePower,
     MessageQuery,
     MessageStart,
 )
+from midealan.devices.dc.message import ControlAttributes as Attr
 from midealan.exceptions import ValueWrongType
 from midealan.message import ListTypes, MessageType
 
@@ -166,7 +167,9 @@ def test_generic_feature_packets_follow_lua_bitfields(
 ) -> None:
     """Generic feature writes use the Lua two-bit masks."""
     device = MideaDCDevice(customize="", **BASE_ARGS)
-    report = bytearray(DC_BODY)
+    # A real generic device reports the 30-byte status; the longer extended
+    # frame would self-identify and auto-upgrade the profile.
+    report = bytearray(DC_BODY[:MINIMUM_STATUS_LENGTH])
     report[0:3] = bytes([3, 1, 1])
     device.process_message(frame(report))
     with patch.object(device, "build_send") as send:
@@ -440,3 +443,128 @@ def test_unsupported_reservation_flag_is_read_only() -> None:
     device = dryer(report)
     assert device.get_attribute(Attr.appointment) is None
     assert device.get_attribute(Attr.appointment_controls_available) is False
+
+
+@pytest.mark.parametrize(
+    ("program", "offset", "raw", "attribute", "expected", "options"),
+    [
+        # Steam care (24) reports the level in the high nibble of body[26];
+        # raw 0x30 -> code 3 -> level "2" (issue 1156).
+        (24, 26, 0x30, Attr.steam_level_control, "2", ["1", "2", "3"]),
+        # Air wash (39) reports the fabric in body[28]; code 3 -> wool.
+        (
+            39,
+            28,
+            3,
+            Attr.material_control,
+            "wool",
+            [
+                "shirt",
+                "wool",
+                "down",
+                "plush_toy",
+                "odor_removal",
+                "small_suit",
+                "silk_quilt",
+                "latex",
+            ],
+        ),
+        # Hanfu (62) reports the season in body[42]; code 2 -> autumn_winter.
+        (
+            62,
+            42,
+            2,
+            Attr.season_control,
+            "autumn_winter",
+            ["spring_summer", "autumn_winter"],
+        ),
+    ],
+)
+def test_extended_selects_decode_only_inside_their_program(
+    program: int,
+    offset: int,
+    raw: int,
+    attribute: Attr,
+    expected: str,
+    options: list[str],
+) -> None:
+    """Each model-specific select is decoded only in the program that exposes it."""
+    report = bytearray(DC_BODY)
+    report[0:3] = bytes([3, 1, 1])
+    report[4] = program
+    report[offset] = raw
+    device = dryer(report)
+    assert device.get_attribute(attribute) == expected
+    assert device.get_parameter_options(attribute) == options
+    # The other selects belong to different programs and stay hidden.
+    for other in (Attr.steam_level_control, Attr.material_control, Attr.season_control):
+        if other != attribute:
+            assert device.get_attribute(other) is None
+            assert device.get_parameter_options(other) == []
+
+
+@pytest.mark.parametrize(
+    ("program", "report_offset", "current", "attribute", "value", "offset", "raw"),
+    [
+        # Captured TX: set_steam_level(1->2) -> body[20] = 0x3f (packed high nibble).
+        (24, 26, 0x20, Attr.steam_level_control, "2", 20, 0x3F),
+        # Captured TX: set_material(shirt->wool) -> body[21] = 0x03.
+        (39, 28, 1, Attr.material_control, "wool", 21, 3),
+        # Captured TX: set_season(spring_summer->autumn_winter) -> body[29] = 0x02.
+        (62, 42, 1, Attr.season_control, "autumn_winter", 29, 2),
+    ],
+)
+def test_extended_selects_encode_single_field_commands(
+    program: int,
+    report_offset: int,
+    current: int,
+    attribute: Attr,
+    value: str,
+    offset: int,
+    raw: int,
+) -> None:
+    """Writing a model-specific select changes only its one verified byte."""
+    report = bytearray(DC_BODY)
+    report[0:3] = bytes([3, 1, 1])
+    report[4] = program
+    report[report_offset] = current
+    device = dryer(report)
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(attribute, value)
+    # Thirty-byte command, reserved byte cleared, every other field unchanged.
+    expected = bytearray([2] + [255] * 29)
+    expected[28] = 0
+    expected[offset] = raw
+    assert send.call_args_list[0].args[0].body == expected
+
+
+def test_extended_select_rejects_an_unverified_option() -> None:
+    """An option outside the verified map is refused before any frame is sent."""
+    report = bytearray(DC_BODY)
+    report[0:3] = bytes([3, 1, 1])
+    report[4] = 24  # steam_care exposes the steam level select
+    report[26] = 0x20
+    device = dryer(report)
+    with (
+        patch.object(device, "build_send") as send,
+        pytest.raises(ValueError, match="Unsupported dryer option"),
+    ):
+        device.set_attribute(Attr.steam_level_control, "9")
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    [Attr.steam_level_control, Attr.material_control, Attr.season_control],
+)
+def test_extended_select_write_rejected_outside_its_program(attribute: Attr) -> None:
+    """A select cannot be written while the running program does not expose it."""
+    device = dryer()  # default big_dry (43) exposes none of the three selects
+    assert device.get_attribute(attribute) is None
+    assert device.get_parameter_options(attribute) == []
+    with (
+        patch.object(device, "build_send") as send,
+        pytest.raises(ValueError, match="unavailable in the current program"),
+    ):
+        device.set_attribute(attribute, "1")
+    send.assert_not_called()

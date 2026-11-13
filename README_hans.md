@@ -199,6 +199,9 @@ PR 后定期手工发布，并在发布后统一同步依赖版本。
 
 ## 赞助本项目
 
-如果这个项目对你有帮助，欢迎通过 Buy Me a Coffee 赞助本项目。你的支持将帮助我们持续投入项目开发、日常维护和社区支持。
+如果这个项目对你有帮助，欢迎赞助项目的持续开发、日常维护和社区支持。
 
-[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/wuwentao)
+<p>
+  <a href="https://buymeacoffee.com/wuwentao"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="40"></a>
+  <a href="https://www.paypal.me/wuwentao2000"><img src="https://www.paypalobjects.com/webstatic/mktg/Logo/pp-logo-200px.png" alt="PayPal" height="40"></a>
+</p>

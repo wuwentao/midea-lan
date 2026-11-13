@@ -210,6 +210,9 @@ for richer devices:
 
 ## Sponsor this project
 
-If this project helps you, consider supporting it through Buy Me a Coffee. Your support helps sustain ongoing development, maintenance, and community support.
+If this project helps you, consider sponsoring its ongoing development, maintenance, and community support.
 
-[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/wuwentao)
+<p>
+  <a href="https://buymeacoffee.com/wuwentao"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="40"></a>
+  <a href="https://www.paypal.me/wuwentao2000"><img src="https://www.paypalobjects.com/webstatic/mktg/Logo/pp-logo-200px.png" alt="PayPal" height="40"></a>
+</p>

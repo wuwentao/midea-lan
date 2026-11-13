@@ -520,9 +520,13 @@ def test_unconfirmed_reservation_never_sends_start(response: str) -> None:
             assert send.call_args_list[-1].args[0].body == b"\x03"
 
 
-@pytest.mark.parametrize("offset", [4, 9, 12, 13, 17, 36, 42])
+@pytest.mark.parametrize("offset", [4, 9, 12, 13, 17, 26, 28, 36, 42])
 def test_parameter_change_aborts_pending_reservation(offset: int) -> None:
-    """Do not start if another controller changes selected options or duration."""
+    """Do not start if another controller changes selected options or duration.
+
+    Offsets 26 and 28 are the steam and material report bytes; a panel change to
+    either during the confirmation window must abort the pending start too.
+    """
     device = dryer()
     assert device._controls is not None
     with (

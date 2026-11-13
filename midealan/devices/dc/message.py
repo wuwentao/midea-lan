@@ -588,9 +588,14 @@ class DCControls:
             self.body[BASIC_PARAMETER_START:APPOINTMENT_REPORT_OFFSET]
             + bytes([self.body[APPOINTMENT_REPORT_OFFSET] & ~APPOINTMENT_MASK])
             + self.body[STERILIZE_FLAG_OFFSET:APPOINTMENT_TIME_OFFSET]
+            # Fingerprint every profile-only select (temperature, season, steam,
+            # material) so a panel change during the confirmation window aborts
+            # the start, honouring the guard's "unchanged options" guarantee.
             + (
                 self.body[TEMPERATURE_REPORT_OFFSET : TEMPERATURE_REPORT_OFFSET + 1]
                 + self.body[SEASON_REPORT_OFFSET : SEASON_REPORT_OFFSET + 1]
+                + self.body[STEAM_REPORT_OFFSET : STEAM_REPORT_OFFSET + 1]
+                + self.body[MATERIAL_REPORT_OFFSET : MATERIAL_REPORT_OFFSET + 1]
                 if self.profile
                 else b""
             )

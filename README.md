@@ -6,6 +6,13 @@
 
 > [中文版 / Chinese README](./README_hans.md)
 
+## Menu
+
+- [Getting started](#getting-started)
+- [Development](#development)
+- [Contributing guide](#contributing-guide)
+- [Sponsor this project](#sponsor-this-project)
+
 Control your Midea M-Smart appliances via local area network.
 
 This library is part of https://github.com/wuwentao/midea_ac_lan code.
@@ -200,3 +207,12 @@ for richer devices:
 
 - [Adding a New Device Type](docs/adding-a-new-device.md)
 - [新增设备类型支持指南（中文）](docs/adding-a-new-device.zh-Hans.md)
+
+## Sponsor this project
+
+If this project helps you, consider sponsoring its ongoing development, maintenance, and community support.
+
+<p>
+  <a href="https://buymeacoffee.com/wuwentao"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me a Coffee" height="40"></a>
+  <a href="https://www.paypal.me/wuwentao2000"><img src="https://www.paypalobjects.com/webstatic/mktg/Logo/pp-logo-200px.png" alt="PayPal" height="40"></a>
+</p>

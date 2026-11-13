@@ -1655,6 +1655,52 @@ class TestC3CompressorOnDerivation:
         assert response.compressor_on is True
 
 
+class TestC3UnitParaSignedTemperatures:
+    """Test signed-byte temperatures against the 171H120F Lua protocol."""
+
+    HEADER = bytearray(
+        [0xAA, 0x00, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, MessageType.query],
+    )
+
+    @pytest.mark.parametrize(
+        ("message_type", "body_type", "offsets"),
+        [
+            (MessageType.query, ListTypes.X10, (7, 8, 47, 52)),
+            (MessageType.notify1, ListTypes.X05, (3, 4, 21, 23)),
+        ],
+        ids=["x10-query", "x05-notify"],
+    )
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [(0x00, 0), (0x7F, 127), (0x80, -128), (0xFD, -3), (0xFF, -1)],
+    )
+    def test_protocol_signed_fields_and_unsigned_tf(
+        self,
+        message_type: MessageType,
+        body_type: ListTypes,
+        offsets: tuple[int, int, int, int],
+        raw: int,
+        expected: int,
+    ) -> None:
+        """Decode T3/T4/TH as signed while preserving unsigned TF."""
+        header = bytearray(self.HEADER)
+        header[-1] = message_type
+        body = bytearray(96)
+        body[0] = body_type
+        temp_t3, temp_t4, temp_th, temp_tf = offsets
+        body[temp_t3] = raw
+        body[temp_t4] = raw
+        body[temp_th] = raw
+        body[temp_tf] = raw
+
+        response = MessageC3Response(bytes(header + body))
+
+        assert response.temp_t3 == expected
+        assert response.temp_t4 == expected
+        assert response.temp_th == expected
+        assert response.temp_tf == raw
+
+
 class TestC3ProbeSentinels:
     """Test uninstalled-probe sentinel handling.
 

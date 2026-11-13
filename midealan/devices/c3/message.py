@@ -733,6 +733,13 @@ def _temp_or_none(raw: int) -> int | None:
     return None if raw == TEMP_PROBE_DISCONNECTED else raw
 
 
+def _signed_temperature(raw: int) -> int:
+    """Decode a signed 8-bit C3 X10/X05 sensor temperature in degC."""
+    # 171H120F Lua isStrSignedByteType() uses two's-complement conversion for
+    # selected sensors only; tempTf is intentionally not in that signed list.
+    return raw - 256 if raw > TEMP_NEG_VALUE else raw
+
+
 def _setpoint_or_none(raw: int) -> int | None:
     """Map the curve-inactive sentinel (0xFF) to None."""
     return None if raw == CURVE_SETPOINT_INACTIVE else raw
@@ -1772,8 +1779,8 @@ class C3UnitParaBody(MessageBody):
         self.fan_speed = body[data_offset + 2] * FAN_SPEED_FACTOR
         # lua _bodyBytes[5]; data_offset + 5 is the disabled `tempset` byte.
         self.fg_capacity_need = body[data_offset + 4]
-        self.temp_t3 = body[data_offset + 6]
-        self.temp_t4 = body[data_offset + 7]
+        self.temp_t3 = _signed_temperature(body[data_offset + 6])
+        self.temp_t4 = _signed_temperature(body[data_offset + 7])
         self.temp_tp = body[data_offset + 8]
         self.temp_tw_in = body[data_offset + 9]
         self.temp_tw_out = body[data_offset + 10]
@@ -1843,7 +1850,7 @@ class C3UnitParaBody(MessageBody):
         self.hydrobox_capacity = body[data_offset + 41]
         self.pressure_high = body[data_offset + 42] * 256 + body[data_offset + 43]
         self.pressure_low = body[data_offset + 44] * 256 + body[data_offset + 45]
-        self.temp_th = body[data_offset + 46]
+        self.temp_th = _signed_temperature(body[data_offset + 46])
         self.machine_type = body[data_offset + 47]
         self.odu_target_fre = body[data_offset + 48]
         self.dc_current = body[data_offset + 49]
@@ -1964,8 +1971,8 @@ class C3UnitParaUpBody(MessageBody):
         self.comp_run_freq = body[data_offset]
         self.compressor_on = self.comp_run_freq > 0
         self.fan_speed = body[data_offset + 1] * FAN_SPEED_FACTOR
-        self.temp_t3 = body[data_offset + 2]
-        self.temp_t4 = body[data_offset + 3]
+        self.temp_t3 = _signed_temperature(body[data_offset + 2])
+        self.temp_t4 = _signed_temperature(body[data_offset + 3])
         self.temp_tp = body[data_offset + 4]
         self.temp_tw_in = body[data_offset + 5]
         self.temp_tw_out = body[data_offset + 6]
@@ -1979,7 +1986,7 @@ class C3UnitParaUpBody(MessageBody):
         self.temp_ta = _temp_or_none(body[data_offset + 15])
         self.pressure_high = body[data_offset + 16] * 256 + body[data_offset + 17]
         self.pressure_low = body[data_offset + 18] * 256 + body[data_offset + 19]
-        self.temp_th = body[data_offset + 20]
+        self.temp_th = _signed_temperature(body[data_offset + 20])
         self.odu_target_fre = body[data_offset + 21]
         self.temp_tf = body[data_offset + 22]
         self.idu_t1s1 = _setpoint_or_none(body[data_offset + 23])

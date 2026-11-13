@@ -39,6 +39,10 @@ type ControlValue = bool | int | str | None
 # T_0000_DB_41.lua.
 PROFILE_MODEL = "38131140"
 PROFILE_SUBTYPE = 13145
+# Verified v33 write-control identities, as a frozenset of (model/sn8, subtype)
+# pairs mirroring V41_PROFILES. Add future verified v33 models here rather than
+# widening the gate; an identity here enables writes, so never auto-detect it.
+V33_PROFILES = frozenset({(PROFILE_MODEL, PROFILE_SUBTYPE)})
 PROFILE_V41_MODEL = "38132386"
 PROFILE_V41_SUBTYPE = 0
 # Front-load washer-dryer MF200D80WB/T-A1 (South America). Its cloud plugin
@@ -134,6 +138,14 @@ V41_POWER_CONSUMPTION_OFFSET = 3
 # 0xDB reads it from the same 0405 report (bit offset 120, 16 bits).
 V41_WASH_COUNT_OFFSET = 5
 V41_WASH_COUNT_END = 7
+
+
+class DBProfile(StrEnum):
+    """Tag identifying which protocol profile a washer was recognized as."""
+
+    legacy = "legacy"
+    v33_write = "v33-write"
+    v41_readonly = "v41-readonly"
 
 
 class ControlAttributes(StrEnum):

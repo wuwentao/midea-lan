@@ -1,5 +1,6 @@
 """Test DB Device."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -470,6 +471,32 @@ class TestMideaDBDevice:
                 )
                 == 30
             )
+
+    @pytest.mark.parametrize(
+        ("model", "subtype", "sn8", "manufacturer_code", "tag"),
+        [
+            ("38131140", 13145, None, None, "v33-write"),
+            ("38132386", 0, None, None, "v41-readonly"),
+            ("unknown", 99, None, None, "legacy"),
+            ("toshiba", 0, None, "0008", "legacy"),
+        ],
+    )
+    def test_profile_tag_is_logged_for_each_identity(
+        self,
+        model: str,
+        subtype: int,
+        sn8: str | None,
+        manufacturer_code: str | None,
+        tag: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Log the recognized profile (v33-write/v41-readonly/legacy) at init."""
+        args = device_args(model, subtype, sn8=sn8)
+        if manufacturer_code is not None:
+            args["manufacturer_code"] = manufacturer_code
+        with caplog.at_level(logging.DEBUG, logger="midealan.devices.db"):
+            MideaDBDevice(customize="", **args)
+        assert f"DB profile tag={tag}" in caplog.text
 
     @pytest.mark.parametrize(
         ("model", "sn8"),

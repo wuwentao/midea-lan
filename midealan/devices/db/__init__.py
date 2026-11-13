@@ -14,14 +14,14 @@ from midealan.exceptions import ValueWrongType
 from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
-    PROFILE_MODEL,
-    PROFILE_SUBTYPE,
     PROGRAMS,
     TOSHIBA_PROGRAMS,
+    V33_PROFILES,
     V41_PROFILES,
     V41_PROGRAMS,
     V41_TEMPERATURES,
     DBControls,
+    DBProfile,
     MessageDBResponse,
     MessagePower,
     MessageQuery,
@@ -315,15 +315,32 @@ class MideaDBDevice(MideaDevice):
         self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
         if is_v41:
             self._attributes.update(dict.fromkeys(V41Attributes))
-        self._controls = (
-            DBControls()
-            if not self.toshiba_protocol
-            and self.subtype == PROFILE_SUBTYPE
-            and PROFILE_MODEL in (self.model, self.sn8)
-            else None
+        # Verified v33 write identities live in V33_PROFILES (same (model/sn8,
+        # subtype) shape as V41_PROFILES). Both profiles are matched by explicit
+        # identity only: v33 enables writes and the v41 frame is indistinguishable
+        # from legacy, so neither is ever auto-detected from a response.
+        is_v33_write = not self.toshiba_protocol and any(
+            self.subtype == subtype and model in (self.model, self.sn8)
+            for model, subtype in V33_PROFILES
         )
+        self._controls = DBControls() if is_v33_write else None
         if self._controls is not None:
             self._attributes.update(self._controls.attributes)
+        if is_v41:
+            profile = DBProfile.v41_readonly
+        elif is_v33_write:
+            profile = DBProfile.v33_write
+        else:
+            profile = DBProfile.legacy
+        _LOGGER.debug(
+            "[%s] DB profile tag=%s (model=%s, sn8=%s, subtype=%s, toshiba=%s)",
+            self.device_id,
+            profile,
+            self.model,
+            self.sn8,
+            self.subtype,
+            self.toshiba_protocol,
+        )
 
     def get_parameter_options(self, attr: str) -> list[str]:
         """Return verified model options, including actual-minute time choices."""

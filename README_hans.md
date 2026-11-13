@@ -6,6 +6,13 @@
 
 > [English README](./README.md)
 
+## 导航
+
+- [快速开始](#快速开始)
+- [开发环境](#开发环境)
+- [贡献指南](#贡献指南)
+- [赞助本项目](#赞助本项目)
+
 通过局域网控制你的美的 M-Smart 智能家电。
 
 本lib库是 https://github.com/wuwentao/midea_ac_lan 项目的一部分。
@@ -189,3 +196,9 @@ PR 后定期手工发布，并在发布后统一同步依赖版本。
 
 - [新增设备类型支持指南（中文）](docs/adding-a-new-device.zh-Hans.md)
 - [Adding a New Device Type（English）](docs/adding-a-new-device.md)
+
+## 赞助本项目
+
+如果这个项目对你有帮助，欢迎通过 Buy Me a Coffee 赞助本项目。你的支持将帮助我们持续投入项目开发、日常维护和社区支持。
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/wuwentao)

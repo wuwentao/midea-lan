@@ -470,6 +470,17 @@ class MideaDBDevice(MideaDevice):
             message.power = value
             self.build_send(message)
         elif attr == DeviceAttributes.start:
+            if self._controls is not None:
+                # Verified v33 profile: preserve the confirmed parameters
+                # instead of replaying a stale start snapshot.
+                self.build_send(
+                    self._controls.start_message(
+                        start=value,
+                        protocol_version=self._message_protocol_version,
+                    ),
+                )
+                self.build_send(MessageQuery(self._message_protocol_version))
+                return
             message = MessageStart(self._message_protocol_version)
             message.start = value
             message.washing_data = self._attributes[DeviceAttributes.washing_data]

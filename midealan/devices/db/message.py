@@ -100,6 +100,12 @@ APPOINTMENT_REPORT_MASK = 0x02
 APPOINTMENT_CONTROL_OFFSET = 35
 APPOINTMENT_OFF = 0xF3
 APPOINTMENT_ON = 0xF7
+# Start/pause control byte. The verified v33 washer reports its packed function
+# flags (e.g. the quick/speedy bit) at this offset; a start command must carry
+# the current flags back unchanged, so the appliance keeps the confirmed
+# spin/time parameters instead of restoring a stale start snapshot.
+FUNCTION_FLAGS_OFFSET = 13
+RUNNING_STATUSES = (2, 6)
 
 # DB v41 read-only status fields, named after T_0000_DB_41.lua
 # (updateGlobalPropertyValueByByte / assembleJsonByGlobalProperty).
@@ -591,7 +597,7 @@ class DBGeneralMessageBody(MessageBody):
         """Initialize DB message general body."""
         super().__init__(body)
         self.power = body[1] > 0
-        self.start = body[2] in [2, 6]
+        self.start = body[STATUS_OFFSET] in RUNNING_STATUSES
         self.washing_data = body[3:16]
         self.status = body[2]
         self.mode = body[3]
@@ -850,6 +856,23 @@ class DBControls:
             protocol_version,
             self.encode(key, value),
         )
+
+    def start_message(self, *, start: bool, protocol_version: int) -> MessageParameters:
+        """Start or pause without overwriting the confirmed spin/time parameters.
+
+        The legacy start command replayed a 13-byte status snapshot
+        (MessageStart.washing_data), which on this washer restored the
+        program-default spin speed and minutes instead of the parameters the
+        user had just confirmed. Send a no-change parameter body that only
+        sets the start/pause status and carries the current function flags
+        (byte 13) back unchanged, so the appliance keeps its current state.
+        """
+        if not self.body:
+            raise ValueError("Keep the appliance powered on before start")
+        body = parameter_body()
+        body[STATUS_OFFSET] = START_COMMAND if start else PAUSE_COMMAND
+        body[FUNCTION_FLAGS_OFFSET] = self.body[FUNCTION_FLAGS_OFFSET]
+        return MessageParameters(protocol_version, body)
 
     def _encode(self, attr: ControlAttributes, value: bool | float | str) -> bytearray:
         """Encode a verified select option, preserving all other fields."""

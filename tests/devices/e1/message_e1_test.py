@@ -36,16 +36,16 @@ def test_work_message_body() -> None:
     ("work_status", "delay_minutes", "door_auto_open", "expected"),
     [
         (0x03, 0, True, "0803040000000000000000000001"),
-        (0x01, 0, False, "080104"),
+        (0x01, 0, None, "080104"),
         (0x02, 60, True, "0802040000000001000000000001"),
-        (0x02, 3 * 60 + 34, False, "0802040000000003220000000000"),
-        (0x04, 0, False, "080404"),
+        (0x02, 3 * 60 + 34, None, "0802040000000003220000000000"),
+        (0x04, 0, None, "080404"),
     ],
 )
 def test_work_message_verified_bodies(
     work_status: int,
     delay_minutes: int,
-    door_auto_open: bool,
+    door_auto_open: bool | None,
     expected: str,
 ) -> None:
     """Test work message bodies for cancel, delayed start and door auto-open."""
@@ -55,6 +55,20 @@ def test_work_message_verified_bodies(
     message.delay_minutes = delay_minutes
     message.door_auto_open = door_auto_open
     assert message.body == _hex_body(expected)
+
+
+@pytest.mark.parametrize(
+    ("door_auto_open", "encoded"),
+    [(None, 0x00), (True, 0x01), (False, 0x02)],
+)
+def test_work_message_door_auto_open_tristate(
+    door_auto_open: bool | None,
+    encoded: int,
+) -> None:
+    """Test unchanged, enable and disable door auto-open wire values."""
+    message = MessageWork(ProtocolVersion.V1)
+    message.door_auto_open = door_auto_open
+    assert message.body[13] == encoded
 
 
 def test_work_message_ignores_delay_unless_ordering() -> None:

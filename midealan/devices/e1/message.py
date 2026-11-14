@@ -34,6 +34,9 @@ WORK_DELAY_MINUTES_INDEX = 7
 WORK_WATER_LEVEL_INDEX = 10
 WORK_WATER_STRONG_LEVEL_INDEX = 11
 WORK_DOOR_AUTO_OPEN_INDEX = 12
+DOOR_AUTO_OPEN_UNCHANGED = 0x00
+DOOR_AUTO_OPEN_ENABLED = 0x01
+DOOR_AUTO_OPEN_DISABLED = 0x02
 
 # Status reply offsets and flags
 DOOR_AUTO_OPEN_FLAG = 0x40
@@ -125,7 +128,7 @@ class MessageWork(MessageE1Base):
         self.water_level = 0
         self.water_strong_level = 0
         self.delay_minutes = 0
-        self.door_auto_open = False
+        self.door_auto_open: bool | None = None
 
     @property
     def _body(self) -> bytearray:
@@ -141,7 +144,13 @@ class MessageWork(MessageE1Base):
                 body[WORK_DELAY_HOURS_INDEX],
                 body[WORK_DELAY_MINUTES_INDEX],
             ) = divmod(self.delay_minutes, 60)
-        body[WORK_DOOR_AUTO_OPEN_INDEX] = 0x01 if self.door_auto_open else 0x00
+        if self.door_auto_open is None:
+            door_auto_open = DOOR_AUTO_OPEN_UNCHANGED
+        elif self.door_auto_open:
+            door_auto_open = DOOR_AUTO_OPEN_ENABLED
+        else:
+            door_auto_open = DOOR_AUTO_OPEN_DISABLED
+        body[WORK_DOOR_AUTO_OPEN_INDEX] = door_auto_open
         return body
 
 

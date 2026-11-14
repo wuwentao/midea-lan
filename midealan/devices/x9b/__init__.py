@@ -18,6 +18,7 @@ from typing import Any, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.message import MessageRequest, MessageType
 
 from .message import (
     ALL_ATTRIBUTES,
@@ -32,9 +33,11 @@ from .message import (
     U16_MIN,
     WORK_STATUS_WRITE,
     MessageQuery,
+    MessageQueryCameraOta,
     MessageSetParam,
     MessageSetState,
     MessageX9BResponse,
+    X9BProtocol,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +53,20 @@ ATTR_FIRE_POWER = "fire_power"
 DeviceAttributes = StrEnum(  # type: ignore[misc]
     "DeviceAttributes",
     {name: name for name in ALL_ATTRIBUTES},
+)
+
+# Fields decoded by the V1/V2 layout but not present in VALUE_VERSION=4. Clear
+# them if a response enables the camera protocol after standard data was seen.
+CAMERA_UNSUPPORTED_ATTRIBUTES = (
+    DeviceAttributes("probe"),
+    DeviceAttributes("turntable"),
+    DeviceAttributes("probe_temperature"),
+    DeviceAttributes("cur_probe_temperature"),
+    DeviceAttributes("high_temperature_lock"),
+    DeviceAttributes("high_temperature"),
+    DeviceAttributes("probe_mode"),
+    DeviceAttributes("ramadan"),
+    DeviceAttributes("hot_wind"),
 )
 
 
@@ -68,23 +85,111 @@ class MideaX9BDevice(MideaDevice):
             **kwargs,
             attributes=dict.fromkeys(ALL_ATTRIBUTES),
         )
+        self._protocol_flags = dict.fromkeys(X9BProtocol, False)
+        self._last_response_protocol: X9BProtocol | None = None
 
-    def build_query(self) -> list[MessageQuery]:
-        """Midea 0x9B device build query."""
-        return [MessageQuery(self._message_protocol_version)]
+    @property
+    def protocol_flags(self) -> dict[X9BProtocol, bool]:
+        """Return a copy of the response-detected protocol capabilities."""
+        return self._protocol_flags.copy()
+
+    def supports_protocol(self, protocol: X9BProtocol) -> bool:
+        """Return whether a response has enabled ``protocol``."""
+        return self._protocol_flags[protocol]
+
+    def build_query(self) -> list[MessageQuery | MessageQueryCameraOta]:
+        """Build probes from response-detected capabilities.
+
+        An unidentified device receives every known query family. The camera
+        probe is deliberately first because its ``65 00 02`` response selects
+        the conflicting VALUE_VERSION=4 status layout before the common
+        ``01`` status reply is decoded. A standard-only response disables the
+        camera probe on later refreshes; a camera response keeps both queries.
+
+        To add another 0x9B wire protocol, add its query here, recognize its
+        response in :class:`MessageX9BResponse`, and add one independent
+        :class:`X9BProtocol` flag. No model, SN8 or subtype table is involved.
+        """
+        queries: list[MessageQuery | MessageQueryCameraOta] = []
+        unidentified = not any(self._protocol_flags.values())
+        if unidentified or self.supports_protocol(X9BProtocol.CAMERA):
+            queries.append(MessageQueryCameraOta(self._message_protocol_version))
+        queries.append(MessageQuery(self._message_protocol_version))
+        return queries
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea 0x9B device process message."""
-        message = MessageX9BResponse(msg)
+        message = MessageX9BResponse(
+            msg,
+            camera_protocol=self.supports_protocol(X9BProtocol.CAMERA),
+        )
+        new_status: dict[str, Any] = {}
+        self._last_response_protocol = message.response_protocol
+        camera_was_enabled = self.supports_protocol(X9BProtocol.CAMERA)
+        for protocol in message.detected_protocols:
+            if self.supports_protocol(protocol):
+                continue
+            self._protocol_flags[protocol] = True
+            _LOGGER.debug(
+                "[%s] Enabled x9b protocol flag %s from response: %s",
+                self.device_id,
+                protocol,
+                message.protocol_evidence[protocol],
+            )
+        if not camera_was_enabled and self.supports_protocol(X9BProtocol.CAMERA):
+            for attribute in CAMERA_UNSUPPORTED_ATTRIBUTES:
+                self._attributes[attribute] = None
+                new_status[attribute] = None
         self._message_protocol_version = message.protocol_version
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        new_status: dict[str, Any] = {}
         for name, value in message.attributes.items():
             if name not in self._attributes:
                 continue
-            self._attributes[name] = value
-            new_status[name] = value
+            attribute = DeviceAttributes(name)
+            self._attributes[attribute] = value
+            new_status[attribute] = value
         return new_status
+
+    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+        """Track probe replies and block unverified camera controls."""
+        if (
+            self.supports_protocol(X9BProtocol.CAMERA)
+            and cmd.message_type == MessageType.set
+        ):
+            _LOGGER.warning(
+                "[%s] Ignoring unverified x9b camera-protocol command %s",
+                self.device_id,
+                cmd.__class__.__name__,
+            )
+            return
+        if query:
+            self._last_response_protocol = None
+            _LOGGER.debug(
+                "[%s] Sending x9b protocol probe %s, AA frame: %s",
+                self.device_id,
+                cmd.__class__.__name__,
+                cmd.serialize().hex(),
+            )
+        super().build_send(cmd, query=query)
+
+    def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
+        """Require a matching x9b business response, not only a heartbeat."""
+        expected: X9BProtocol | None = None
+        if isinstance(cmd, MessageQueryCameraOta):
+            expected = X9BProtocol.CAMERA
+        elif isinstance(cmd, MessageQuery):
+            expected = X9BProtocol.STATUS
+        if expected is None:
+            return super()._is_query_response_valid(cmd)
+        valid = self._last_response_protocol == expected
+        if not valid:
+            _LOGGER.debug(
+                "[%s] x9b probe %s had no matching %s business response",
+                self.device_id,
+                cmd.__class__.__name__,
+                expected,
+            )
+        return valid
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea 0x9B device set attribute.
@@ -95,6 +200,16 @@ class MideaX9BDevice(MideaDevice):
         Structured start-cooking recipes take multiple coordinated fields and
         are issued through :class:`~midealan.devices.x9b.message.MessageSetCooking`.
         """
+        if self.supports_protocol(X9BProtocol.CAMERA):
+            # The VALUE_VERSION=4 Lua defines controls, but issue #290 only
+            # contains query/heartbeat traffic. Keep this protocol read-only
+            # until hardware feedback verifies command offsets and semantics.
+            _LOGGER.warning(
+                "[%s] Ignoring unverified x9b camera-protocol control %s",
+                self.device_id,
+                attr,
+            )
+            return
         message: MessageSetState | MessageSetParam | None = self._build_state_message(
             attr,
             value,
@@ -196,6 +311,7 @@ __all__ = [
     "DeviceAttributes",
     "MideaAppliance",
     "MideaX9BDevice",
+    "X9BProtocol",
 ]
 
 

@@ -87,6 +87,43 @@ class TestMideaE1Device:
         assert isinstance(message, MessageWork)
         assert message.door_auto_open is True
 
+    def test_start_work_leaves_door_auto_open_unchanged_by_default(self) -> None:
+        """Test an unset door auto-open setting uses the no-change wire value."""
+        assert (
+            self.device.get_attribute(DeviceAttributes.door_auto_open_setting) is None
+        )
+        self.device._attributes[DeviceAttributes.mode] = "eco_wash"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.start_work()
+
+        message = mock_build_send.call_args.args[0]
+        assert isinstance(message, MessageWork)
+        assert message.door_auto_open is None
+        assert message.body[13] == 0x00
+
+    def test_start_work_none_overrides_stored_door_auto_open(self) -> None:
+        """Test None explicitly leaves auto-open unchanged after staging a value."""
+        self.device.set_attribute(DeviceAttributes.door_auto_open.value, True)
+        self.device._attributes[DeviceAttributes.mode] = "eco_wash"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.start_work(door_auto_open=None)
+
+        message = mock_build_send.call_args.args[0]
+        assert isinstance(message, MessageWork)
+        assert message.door_auto_open is None
+        assert message.body[13] == 0x00
+
+    def test_start_work_explicitly_disables_door_auto_open(self) -> None:
+        """Test an explicit false setting emits the disable wire value."""
+        self.device._attributes[DeviceAttributes.mode] = "eco_wash"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.start_work(door_auto_open=False)
+
+        message = mock_build_send.call_args.args[0]
+        assert isinstance(message, MessageWork)
+        assert message.door_auto_open is False
+        assert message.body[13] == 0x02
+
     def test_cancel_work(self) -> None:
         """Test cancelling the running program keeps the current mode."""
         self.device._attributes[DeviceAttributes.mode] = "eco_wash"
@@ -106,6 +143,17 @@ class TestMideaE1Device:
         assert isinstance(message, MessageWork)
         assert message.body == bytearray.fromhex(
             "0802040000000001000000000001".ljust(76, "0"),
+        )
+
+    def test_set_delayed_start_explicitly_disables_door_auto_open(self) -> None:
+        """Test delayed start sends the explicit auto-open disable value."""
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_delayed_start(0x04, 60, door_auto_open=False)
+
+        message = mock_build_send.call_args.args[0]
+        assert isinstance(message, MessageWork)
+        assert message.body == bytearray.fromhex(
+            "0802040000000001000000000002".ljust(76, "0"),
         )
 
     @pytest.mark.parametrize("minutes", [0, -1, 24 * 60 + 1])
@@ -423,6 +471,7 @@ class TestMideaE1Device:
         assert attributes[DeviceAttributes.door_auto_open_setting.value] is True
         assert attributes[DeviceAttributes.additional_setting.value] == 2
 
+    @pytest.mark.parametrize("door_auto_open", [False, True])
     @pytest.mark.parametrize(
         ("status", "reported", "expected"),
         [("cancel", "running", "080104"), ("cancel", "delay", "080404")],
@@ -432,11 +481,15 @@ class TestMideaE1Device:
         status: str,
         reported: str,
         expected: str,
+        door_auto_open: bool,
     ) -> None:
         """Test cancels carry only status and mode, not the next-start settings."""
         self.device._attributes[DeviceAttributes.mode] = "eco_wash"
         self.device._attributes[DeviceAttributes.status] = reported
-        self.device.set_attribute(DeviceAttributes.door_auto_open_setting.value, True)
+        self.device.set_attribute(
+            DeviceAttributes.door_auto_open_setting.value,
+            door_auto_open,
+        )
         self.device.set_attribute(DeviceAttributes.additional_setting.value, 2)
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.status.value, status)
@@ -493,6 +546,18 @@ class TestMideaE1Device:
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.door_auto_open.value, True)
         mock_build_send.assert_not_called()
+
+    def test_stored_false_door_auto_open_is_sent_as_disable(self) -> None:
+        """Test explicitly turning the setting off is applied on the next start."""
+        self.device._attributes[DeviceAttributes.mode] = "eco_wash"
+        self.device.set_attribute(DeviceAttributes.door_auto_open.value, False)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(DeviceAttributes.status.value, "work")
+
+        message = mock_build_send.call_args.args[0]
+        assert isinstance(message, MessageWork)
+        assert message.door_auto_open is False
+        assert message.body[13] == 0x02
 
     def test_door_auto_open_setting_survives_status_reply(self) -> None:
         """Test a status reply does not clear the stored door auto-open."""

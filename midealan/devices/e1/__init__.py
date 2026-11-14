@@ -155,7 +155,7 @@ class MideaE1Device(MideaDevice):
                 DeviceAttributes.delay_remaining: 0,
                 DeviceAttributes.delay_minutes: 0,
                 DeviceAttributes.program: None,
-                DeviceAttributes.door_auto_open_setting: False,
+                DeviceAttributes.door_auto_open_setting: None,
                 DeviceAttributes.additional_setting: 0,
                 DeviceAttributes.wash_region_setting: 0,
                 DeviceAttributes.water_level_setting: 0,
@@ -225,7 +225,7 @@ class MideaE1Device(MideaDevice):
         }
         # Door auto-open to send with the next work/order command. Kept apart
         # from the door_auto_open attribute, which status replies overwrite.
-        self._door_auto_open_setting = False
+        self._door_auto_open_setting: bool | None = None
         # Wash parameters to send with the next work/order command. Kept apart
         # from their reported attributes, which status replies overwrite.
         self._wash_param_settings: dict[DeviceAttributes, int] = dict.fromkeys(
@@ -303,11 +303,12 @@ class MideaE1Device(MideaDevice):
     ) -> MessageWork:
         """Build the E1 work command from the current state.
 
-        Explicit callers may override ``mode``, ``delay_minutes`` and
-        ``door_auto_open``; anything left as ``None`` falls back to the stored
-        attribute, so a plain ``set_attribute`` write reuses the device state.
-        The wash parameters (additional, wash_region, water_level,
-        water_strong_level) always ride along from their stored values.
+        Explicit callers may override ``mode`` and ``delay_minutes``; values
+        left as ``None`` fall back to the stored attribute. ``door_auto_open``
+        is tri-state: None leaves the device setting unchanged, while True and
+        False explicitly enable or disable it. The wash parameters (additional,
+        wash_region, water_level, water_strong_level) always ride along from
+        their stored values.
         """
         message = MessageWork(self._message_protocol_version)
         message.work_status = work_status
@@ -315,9 +316,7 @@ class MideaE1Device(MideaDevice):
         message.delay_minutes = (
             self._stored_delay_minutes() if delay_minutes is None else delay_minutes
         )
-        message.door_auto_open = (
-            self._stored_door_auto_open() if door_auto_open is None else door_auto_open
-        )
+        message.door_auto_open = door_auto_open
         message.additional = self._wash_param_settings[DeviceAttributes.additional]
         message.wash_region = self._wash_param_settings[DeviceAttributes.wash_region]
         message.water_level = self._wash_param_settings[DeviceAttributes.water_level]
@@ -326,7 +325,12 @@ class MideaE1Device(MideaDevice):
         ]
         return message
 
-    def set_work_mode(self, mode: int | str, *, door_auto_open: bool = False) -> None:
+    def set_work_mode(
+        self,
+        mode: int | str,
+        *,
+        door_auto_open: bool | None = None,
+    ) -> None:
         """Set the dishwasher work mode and start the selected program.
 
         ``mode`` may be a numeric code or a mode name.
@@ -349,7 +353,7 @@ class MideaE1Device(MideaDevice):
             ),
         )
 
-    def start_work(self, *, door_auto_open: bool = False) -> None:
+    def start_work(self, *, door_auto_open: bool | None = None) -> None:
         """Start the dishwasher using its currently selected work mode.
 
         Raises
@@ -399,7 +403,7 @@ class MideaE1Device(MideaDevice):
         mode: int,
         minutes: int,
         *,
-        door_auto_open: bool = False,
+        door_auto_open: bool | None = None,
     ) -> None:
         """Start the given work mode after a delay in minutes.
 
@@ -478,8 +482,8 @@ class MideaE1Device(MideaDevice):
         """Return the stored delay in minutes, 0 if unset."""
         return self._stored_int(DeviceAttributes.delay_minutes)
 
-    def _stored_door_auto_open(self) -> bool:
-        """Return the door auto-open setting for the next command."""
+    def _stored_door_auto_open(self) -> bool | None:
+        """Return the door auto-open setting, or None to leave it unchanged."""
         return self._door_auto_open_setting
 
     def _selected_mode(self) -> int:

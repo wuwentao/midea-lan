@@ -1,6 +1,6 @@
 """Test E1 device."""
 
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -47,6 +47,295 @@ class TestMideaE1Device:
         modes[0x04] = "Changed"
         assert self.device.modes[0x04] == "eco_wash"
 
+    @pytest.mark.parametrize(
+        ("model", "mode_codes"),
+        [
+            ("7600024L", [0x0D, 0x04, 0x08, 0x06, 0x02, 0x0B, 0x0A]),
+            (
+                "76000228",
+                [0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x0D, 0x0F, 0x10],
+            ),
+            (
+                "760001EC",
+                [0x04, 0x01, 0x02, 0x06, 0x07, 0x0D, 0x05, 0x0F, 0x10, 0x15],
+            ),
+        ],
+    )
+    def test_supported_modes_by_model(self, model: str, mode_codes: list[int]) -> None:
+        """Test model-specific work modes retain the Midea app order."""
+        self.device._model = model
+        assert list(self.device.supported_modes) == mode_codes
+        assert self.device.modes == self.device._modes
+        assert self.device.get_attribute_options(DeviceAttributes.program) == list(
+            self.device.supported_modes.values(),
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "mode_names"),
+        [
+            (
+                "76000228",
+                {
+                    0x03: "universal_wash",
+                    0x06: "90min",
+                    0x0D: "whisper_wash",
+                    0x10: "self_clean",
+                },
+            ),
+            (
+                "760001EC",
+                {
+                    0x06: "90min",
+                    0x0D: "whisper_wash",
+                    0x10: "self_clean",
+                    0x15: "anion1",
+                },
+            ),
+        ],
+    )
+    def test_model_specific_mode_names(
+        self,
+        model: str,
+        mode_names: dict[int, str],
+    ) -> None:
+        """Test model semantics use shared, unambiguous state values."""
+        self.device._model = model
+        for code, name in mode_names.items():
+            assert self.device.supported_modes[code] == name
+            body = bytearray(40)
+            body[1] = 0x03
+            body[2] = code
+            self.device.process_message(self._message(MessageType.query, body))
+            assert self.device.get_attribute(DeviceAttributes.mode) == name
+            self.device.set_attribute(DeviceAttributes.program, name)
+            assert self.device.get_attribute(DeviceAttributes.program) == name
+            with patch.object(self.device, "build_send") as send:
+                self.device.start_work()
+            assert send.call_args.args[0].mode == code
+
+    def test_unknown_model_supports_all_non_neutral_modes(self) -> None:
+        """Test an unknown model keeps the legacy unfiltered mode list."""
+        assert 0 not in self.device.supported_modes
+        assert self.device.supported_modes == {
+            code: name for code, name in self.device.modes.items() if code != 0
+        }
+
+    @pytest.mark.parametrize(
+        ("mode_code", "mode_name"),
+        [
+            (0x01, "auto_wash"),
+            (0x02, "strong_wash"),
+            (0x03, "universal_wash"),
+            (0x04, "eco_wash"),
+            (0x05, "glass_wash"),
+            (0x06, "90min"),
+            (0x07, "fast_wash"),
+            (0x08, "soak_wash"),
+            (0x09, "hour_wash"),
+            (0x0A, "3in1"),
+            (0x0B, "auto_heavy"),
+            (0x0C, "party"),
+            (0x0D, "whisper_wash"),
+            (0x0E, "auto_daily"),
+            (0x0F, "kill_germ"),
+            (0x10, "self_clean"),
+            (0x11, "auto_glass"),
+            (0x12, "baby_care"),
+            (0x13, "fruit_wash"),
+            (0x14, "45min"),
+            (0x15, "anion1"),
+            (0x16, "anion2"),
+            (0x17, "anion3"),
+            (0x19, "low_degree"),
+            (0x1A, "dry_only"),
+            (0x1B, "dry_only_2h"),
+            (0x1C, "dry_only_3h"),
+            (0x1D, "dry_only_4h"),
+            (0x1E, "hot_air_1"),
+            (0x1F, "hot_air_2"),
+            (0x20, "hot_air_3"),
+        ],
+    )
+    def test_european_profile_decode_start_round_trip(
+        self,
+        mode_code: int,
+        mode_name: str,
+    ) -> None:
+        """Preserve every program code defined by the exact European Lua."""
+        self.device._model = "760001EC"
+        body = bytearray(40)
+        body[1] = 0x03
+        body[2] = mode_code
+        self.device.process_message(self._message(MessageType.query, body))
+        assert self.device.get_attribute(DeviceAttributes.mode) == mode_name
+        with patch.object(self.device, "build_send") as send:
+            self.device.start_work()
+        assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize("mode_code", [0x09, 0x0A, 0x11, 0x17, 0x1A, 0x20])
+    def test_european_numeric_program_round_trip(self, mode_code: int) -> None:
+        """Preserve raw European codes selected outside the advertised list."""
+        self.device._model = "760001EC"
+        self.device.set_attribute(DeviceAttributes.program, mode_code)
+        with patch.object(self.device, "build_send") as send:
+            self.device.set_attribute(DeviceAttributes.status, "work")
+        assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize(
+        ("mode_code", "mode_name"),
+        [
+            (0x06, "hour_wash"),
+            (0x09, "90min"),
+            (0x0A, "self_clean"),
+            (0x0B, "fruit_wash"),
+        ],
+    )
+    def test_european_model_preserves_legacy_modes_string_api(
+        self,
+        mode_code: int,
+        mode_name: str,
+    ) -> None:
+        """Keep the public legacy modes-name-to-code round trip compatible."""
+        self.device._model = "760001EC"
+        assert self.device.modes[mode_code] == mode_name
+        with patch.object(self.device, "build_send") as send:
+            self.device.set_work_mode(mode_name)
+        assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize("model", ["76000228", "760001EC"])
+    def test_supported_modes_use_profile_aware_attribute_setter(
+        self,
+        model: str,
+    ) -> None:
+        """Send every advertised state through the model-aware public API."""
+        self.device._model = model
+        for mode_code, mode_name in self.device.supported_modes.items():
+            with patch.object(self.device, "build_send") as send:
+                self.device.set_attribute(DeviceAttributes.mode, mode_name)
+            assert send.call_args.args[0].mode == mode_code
+
+    @pytest.mark.parametrize(
+        ("model", "options"),
+        [
+            ("76000228", ["0", "2"]),
+            ("760001EC", ["0", "1", "2", "3"]),
+            ("unknown", []),
+        ],
+    )
+    def test_additional_options_by_model(
+        self,
+        model: str,
+        options: list[str],
+    ) -> None:
+        """Test model-specific Load options."""
+        self.device._model = model
+        assert (
+            self.device.get_attribute_options(DeviceAttributes.additional_setting)
+            == options
+        )
+
+    @pytest.mark.parametrize(
+        ("model", "energy", "water"),
+        [
+            (
+                "7600024L",
+                {
+                    0x0D: 0.765,
+                    0x04: 0.99,
+                    0x02: 1.28,
+                    0x06: 0.91,
+                    0x08: 0.02,
+                    0x0A: 1.524,
+                    0x0B: 1.625,
+                },
+                {
+                    0x0D: 9.9,
+                    0x04: 10.4,
+                    0x02: 13.9,
+                    0x06: 10.4,
+                    0x08: 3.4,
+                    0x0A: 10.3,
+                    0x0B: 13.3,
+                },
+            ),
+            (
+                "76000228",
+                {
+                    0x02: 1.615,
+                    0x03: 1.23,
+                    0x04: 0.746,
+                    0x05: 0.995,
+                    0x06: 1.18,
+                    0x07: 0.82,
+                    0x08: 0.018,
+                    0x0D: 0.771,
+                    0x0F: 1.815,
+                    0x10: 1.405,
+                },
+                {
+                    0x02: 18.6,
+                    0x03: 14.8,
+                    0x04: 10.2,
+                    0x05: 14.8,
+                    0x06: 11.9,
+                    0x07: 11.3,
+                    0x08: 4.1,
+                    0x0D: 10.2,
+                    0x0F: 14.9,
+                    0x10: 15.1,
+                },
+            ),
+            (
+                "760001EC",
+                {
+                    0x04: 0.660,
+                    0x01: 1.51,
+                    0x02: 1.352,
+                    0x06: 1.120,
+                    0x07: 0.810,
+                    0x0D: 1.202,
+                    0x05: 0.910,
+                    0x0F: 1.281,
+                    0x10: 1.106,
+                    0x15: 0.030,
+                },
+                {
+                    0x04: 8.0,
+                    0x01: 13.1,
+                    0x02: 13.5,
+                    0x06: 9.6,
+                    0x07: 9.9,
+                    0x0D: 11.4,
+                    0x05: 11.2,
+                    0x0F: 12.6,
+                    0x10: 9.7,
+                },
+            ),
+        ],
+    )
+    def test_estimated_consumption_by_model(
+        self,
+        model: str,
+        energy: dict[int, float],
+        water: dict[int, float],
+    ) -> None:
+        """Test complete fixed-estimate tables migrated from the integration."""
+        self.device._model = model
+        assert self.device.get_estimated_consumption("energy") == energy
+        assert self.device.get_estimated_consumption("water") == water
+
+    def test_estimated_consumption_unknown_model(self) -> None:
+        """Test an unknown model has no fixed consumption estimates."""
+        assert self.device.get_attribute_options("unknown") == []
+        assert self.device.get_estimated_consumption("energy") == {}
+        assert self.device.get_estimated_consumption("water") == {}
+
+    def test_estimated_consumption_rejects_unknown_kind(self) -> None:
+        """Test an unsupported estimate kind is rejected."""
+        self.device._model = "760001EC"
+        with pytest.raises(ValueError, match="steam"):
+            self.device.get_estimated_consumption(cast("Any", "steam"))
+
     def test_build_query(self) -> None:
         """Test build query."""
         queries = self.device.build_query()
@@ -66,6 +355,12 @@ class TestMideaE1Device:
         """Test setting an unknown work mode."""
         with pytest.raises(ValueWrongType, match="Unsupported work mode"):
             self.device.set_work_mode(0x11)
+
+    @pytest.mark.parametrize("mode", [True, 1.5])
+    def test_set_work_mode_rejects_wrong_type(self, mode: object) -> None:
+        """Test the legacy mode resolver rejects non-integer values."""
+        with pytest.raises(ValueWrongType, match="Unsupported work mode"):
+            self.device.set_work_mode(cast("Any", mode))
 
     def test_start_work(self) -> None:
         """Test starting the currently selected work mode."""
@@ -225,6 +520,28 @@ class TestMideaE1Device:
         self.device.process_message(self._message(MessageType.query, body))
         assert self.device.attributes[DeviceAttributes.mode] == mode_name
 
+    @pytest.mark.parametrize(
+        ("mode_byte", "mode_name"),
+        [
+            (0x03, "universal_wash"),
+            (0x06, "90min"),
+            (0x0D, "whisper_wash"),
+            (0x10, "self_clean"),
+        ],
+    )
+    def test_process_message_uses_model_specific_mode_name(
+        self,
+        mode_byte: int,
+        mode_name: str,
+    ) -> None:
+        """Test model-specific semantics are reported as shared state values."""
+        self.device._model = "76000228"
+        body = bytearray(40)
+        body[1] = 0x03
+        body[2] = mode_byte
+        self.device.process_message(self._message(MessageType.query, body))
+        assert self.device.attributes[DeviceAttributes.mode] == mode_name
+
     def test_process_message_unknown_status_mode_and_progress(self) -> None:
         """Test process message returns None for unmapped lookup values."""
         body = bytearray(40)
@@ -353,11 +670,14 @@ class TestMideaE1Device:
             self.device.set_attribute(DeviceAttributes.status.value, "spin")
 
     def test_set_attribute_delay_minutes_stores_value(self) -> None:
-        """Test delay_minutes is stored and reused by a later order."""
+        """Test delay_minutes is stored and published without sending a command."""
+        updates: list[dict[str, Any]] = []
+        self.device.register_update(updates.append)
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.delay_minutes.value, 90)
         mock_build_send.assert_not_called()
         assert self.device.attributes[DeviceAttributes.delay_minutes.value] == 90
+        assert updates == [{DeviceAttributes.delay_minutes.value: 90}]
 
     def test_set_attribute_delay_minutes_rejects_out_of_range(self) -> None:
         """Test delay_minutes rejects out of range values."""

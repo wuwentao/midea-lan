@@ -17,9 +17,10 @@ canonical decoder. Camera-family messages reuse the common prefix and select a
 capability-specific decoder for conflicting meanings and their dynamic tail.
 
 ``VALUE_VERSION`` is a Lua/JSON schema marker and is not transmitted on the
-wire. Protocol capabilities are therefore learned from query responses, never
-from model, SN8 or subtype identity. The distinctive ``65 00 02`` response
-enables the camera layout before the common status response is decoded.
+wire. Protocol capabilities are therefore learned from response contents,
+never from model, SN8 or subtype identity. A complete VALUE_VERSION=4 status
+tail selects its status layout, while a distinctive ``65 00 02`` response
+independently enables recurring camera OTA queries.
 
 Control (set) messages also start with a sub-command byte that selects the
 command group: ``0x01`` start cooking, ``0x02`` state controls, ``0x03`` live
@@ -54,13 +55,15 @@ class X9BProtocol(StrEnum):
     """Independently detected 0x9B protocol capabilities.
 
     Capabilities are additive flags, not mutually exclusive device profiles.
-    A camera appliance supports both the common status protocol and the camera
-    extension. Future layouts should add a query/response capability here
-    instead of adding product identity rules.
+    VALUE_VERSION=4 status and camera OTA are separate capabilities: real
+    hardware may report the former while never answering the latter. Future
+    layouts should add a response-evidenced capability here instead of adding
+    product identity rules.
     """
 
     STATUS = "status"
-    CAMERA = "camera"
+    STATUS_V4 = "status_v4"
+    CAMERA_OTA = "camera_ota"
 
 
 # --- Generic framing constants ----------------------------------------------
@@ -156,7 +159,7 @@ CAMERA_OTA_DOWNLOAD_PROGRESS_OFFSET = 10
 CAMERA_OTA_DOWNLOAD_STATUS_OFFSET = 11
 CAMERA_OTA_INSTALL_STATUS_OFFSET = 12
 CAMERA_OTA_MIN_LEN = CAMERA_OTA_INSTALL_STATUS_OFFSET + 1
-CAMERA_STATUS_FULL_MIN_LEN = 69
+STATUS_V4_FULL_MIN_LEN = 69
 
 # Camera status has a variable error list at body[39...]. One slot is reserved
 # even when the reported count is zero; each additional error shifts every tail
@@ -973,12 +976,12 @@ class X9BStatusBody:
         self,
         body: bytearray,
         *,
-        camera_protocol: bool = False,
+        status_v4_protocol: bool = False,
     ) -> None:
         """Decode the status body."""
         self.attributes: dict[str, X9BAttributeValue] = {}
         self._body = body
-        self._camera_protocol = camera_protocol
+        self._status_v4_protocol = status_v4_protocol
         self._decode()
 
     def _get(self, index: int) -> int | None:
@@ -995,7 +998,7 @@ class X9BStatusBody:
         self._decode_work_time()
         self._decode_current()
         self._decode_flags()
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             self._decode_camera_tail()
             self._normalize_camera_idle()
         else:
@@ -1004,7 +1007,7 @@ class X9BStatusBody:
     def _decode_header(self) -> None:
         attrs = self.attributes
         execute = self._body[1]
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             attrs["execute"] = CAMERA_EXECUTE_MAP.get(execute, "unknown")
         else:
             attrs["execute"] = EXECUTE_MAP.get(execute, "ok")
@@ -1015,10 +1018,12 @@ class X9BStatusBody:
         )
         attrs["totalstep"] = self._body[5] >> NIBBLE_SHIFT
         attrs["stepnum"] = self._body[5] & NIBBLE_MASK
-        if not self._camera_protocol:
+        if not self._status_v4_protocol:
             attrs["probe"] = _bit(self._body[6], HEADER_PROBE_BIT)
             attrs["turntable"] = bool(_bit(self._body[6], HEADER_TURNTABLE_BIT))
-        work_mode_map = CAMERA_WORK_MODE_MAP if self._camera_protocol else WORK_MODE_MAP
+        work_mode_map = (
+            CAMERA_WORK_MODE_MAP if self._status_v4_protocol else WORK_MODE_MAP
+        )
         attrs["work_mode"] = work_mode_map.get(
             _u16be(self._body[7], self._body[8]),
             VALUE_FF,
@@ -1030,7 +1035,7 @@ class X9BStatusBody:
         attrs["minute_set"] = self._byte_or_zero(10)
         attrs["second_set"] = self._byte_or_zero(11)
         fire_power_map = (
-            CAMERA_FIRE_POWER_MAP if self._camera_protocol else FIRE_POWER_MAP
+            CAMERA_FIRE_POWER_MAP if self._status_v4_protocol else FIRE_POWER_MAP
         )
         attrs["fire_power"] = fire_power_map.get(self._body[12], VALUE_FF)
         above = _u16be(self._body[13], self._body[14])
@@ -1038,12 +1043,12 @@ class X9BStatusBody:
         attrs["temperature_above"] = above
         attrs["temperature_underside"] = underside
         attrs["temperature"] = (
-            above if self._camera_protocol or above != 0 else underside
+            above if self._status_v4_protocol or above != 0 else underside
         )
-        if not self._camera_protocol:
+        if not self._status_v4_protocol:
             attrs["probe_temperature"] = _u16be(self._body[17], self._body[18])
         steam = self._get(19)
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             attrs["steam_quantity"] = (
                 VALUE_FF if steam in (None, UNCHANGED) else steam & CAMERA_STEAM_MASK
             )
@@ -1057,7 +1062,7 @@ class X9BStatusBody:
         else:
             attrs["steam_quantity"] = self._byte_or_ff(19)
         weight = self._get(20)
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             attrs["weight"] = (
                 weight * WEIGHT_SCALE
                 if weight not in (None, UNCHANGED)
@@ -1084,7 +1089,7 @@ class X9BStatusBody:
 
     def _decode_current(self) -> None:
         attrs = self.attributes
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             above = self._u16_or_zero(25)
             underside = self._u16_or_zero(27)
         else:
@@ -1093,12 +1098,12 @@ class X9BStatusBody:
         attrs["cur_temperature_above"] = above
         attrs["cur_temperature_underside"] = underside
         attrs["cur_temperature"] = (
-            above if self._camera_protocol or above != 0 else underside
+            above if self._status_v4_protocol or above != 0 else underside
         )
-        if not self._camera_protocol:
+        if not self._status_v4_protocol:
             attrs["cur_probe_temperature"] = _u16be(self._body[29], self._body[30])
         status_map = (
-            CAMERA_WORK_STATUS_MAP if self._camera_protocol else WORK_STATUS_MAP
+            CAMERA_WORK_STATUS_MAP if self._status_v4_protocol else WORK_STATUS_MAP
         )
         status = status_map.get(self._body[31], VALUE_FF)
         attrs["work_status"] = status
@@ -1128,7 +1133,7 @@ class X9BStatusBody:
         attrs["reaction"] = _bit(byte33, FLAG33_REACTION_BIT)
         attrs["furnace_light"] = bool(_bit(byte33, FLAG33_FURNACE_LIGHT_BIT))
         attrs["high_temperature_work"] = _bit(byte33, FLAG33_HIGH_TEMP_WORK_BIT)
-        if self._camera_protocol:
+        if self._status_v4_protocol:
             attrs["app_control"] = _bit(self._body[34], CAMERA_APP_CONTROL_BIT)
         else:
             # The high-temperature lock reads inverted: bit set means "off".
@@ -1425,6 +1430,24 @@ class X9BCameraOtaBody:
         return install_states.get(install, download_states.get(download, VALUE_FF))
 
 
+def _status_v4_shape(body: bytearray) -> tuple[bool, int, int]:
+    """Return whether ``body`` contains the complete VALUE_VERSION=4 tail.
+
+    Lua stores the error count at body[39], reserves one two-byte slot when the
+    count is zero or unavailable, and shifts every following field by two bytes
+    for each additional error. Checking the resulting required length prevents
+    a truncated dynamic tail from selecting the V4 decoder. Extra trailing
+    bytes remain valid for forward-compatible vendor extensions.
+    """
+    if len(body) <= CAMERA_ERROR_COUNT_OFFSET:
+        return False, 0, STATUS_V4_FULL_MIN_LEN
+    raw_error_count = body[CAMERA_ERROR_COUNT_OFFSET]
+    error_count = 0 if raw_error_count in (0, UNCHANGED) else raw_error_count
+    shift = CAMERA_ERROR_WIDTH * (max(error_count, 1) - 1)
+    required_length = STATUS_V4_FULL_MIN_LEN + shift
+    return len(body) >= required_length, error_count, required_length
+
+
 class MessageX9BResponse(MessageResponse):
     """X9B message response."""
 
@@ -1432,7 +1455,7 @@ class MessageX9BResponse(MessageResponse):
         self,
         message: bytes,
         *,
-        camera_protocol: bool = False,
+        status_v4_protocol: bool = False,
     ) -> None:
         """Initialize X9B message response."""
         super().__init__(bytearray(message))
@@ -1454,16 +1477,22 @@ class MessageX9BResponse(MessageResponse):
             and sub_command == SUBCMD_STATUS
             and len(body) >= STATUS_MIN_LEN
         )
-        camera_status_by_length = (
-            is_status_response and len(body) >= CAMERA_STATUS_FULL_MIN_LEN
-        )
-        use_camera_protocol = camera_protocol or camera_status_by_length
+        status_v4_by_response = False
+        status_v4_error_count = 0
+        status_v4_required_length = STATUS_V4_FULL_MIN_LEN
+        if is_status_response:
+            (
+                status_v4_by_response,
+                status_v4_error_count,
+                status_v4_required_length,
+            ) = _status_v4_shape(body)
+        use_status_v4_protocol = status_v4_protocol or status_v4_by_response
 
         if self.message_type == MessageType.set and is_status_response:
             # A set-echo report carries the full status record.
             self.attributes = X9BStatusBody(
                 body,
-                camera_protocol=use_camera_protocol,
+                status_v4_protocol=use_status_v4_protocol,
             ).attributes
         elif self.message_type in (MessageType.query, MessageType.notify1):
             if is_camera_ota_response:
@@ -1473,12 +1502,12 @@ class MessageX9BResponse(MessageResponse):
             elif is_status_response:
                 self.attributes = X9BStatusBody(
                     body,
-                    camera_protocol=use_camera_protocol,
+                    status_v4_protocol=use_status_v4_protocol,
                 ).attributes
         if self.attributes and is_camera_ota_response:
-            self.response_protocol = X9BProtocol.CAMERA
-            self.detected_protocols.add(X9BProtocol.CAMERA)
-            self.protocol_evidence[X9BProtocol.CAMERA] = (
+            self.response_protocol = X9BProtocol.CAMERA_OTA
+            self.detected_protocols.add(X9BProtocol.CAMERA_OTA)
+            self.protocol_evidence[X9BProtocol.CAMERA_OTA] = (
                 "complete 0x65 0x00 0x02 camera OTA response"
             )
         elif self.attributes and is_status_response:
@@ -1487,10 +1516,13 @@ class MessageX9BResponse(MessageResponse):
             self.protocol_evidence[X9BProtocol.STATUS] = (
                 "complete 0x01 common status response"
             )
-            if camera_status_by_length:
-                self.detected_protocols.add(X9BProtocol.CAMERA)
-                self.protocol_evidence[X9BProtocol.CAMERA] = (
-                    f"0x01 status body length {len(body)} matches the camera layout"
+            if status_v4_by_response:
+                self.detected_protocols.add(X9BProtocol.STATUS_V4)
+                self.protocol_evidence[X9BProtocol.STATUS_V4] = (
+                    "complete 0x01 VALUE_VERSION=4 status tail: "
+                    f"body length {len(body)}, error count "
+                    f"{status_v4_error_count}, required length "
+                    f"{status_v4_required_length}"
                 )
         if self.attributes:
             # Lua exposes the AA-frame message type as a two-digit hex string.

@@ -489,6 +489,13 @@ class TestX9BResponse:
         """The decoder itself safely ignores a short body."""
         assert X9BStatusBody(bytearray([0x01, 0x00])).attributes == {}
 
+    def test_minimum_fixed_status_does_not_select_v4(self) -> None:
+        """The fixed-layout minimum has no V4 error-count field or tail."""
+        body = [0x00] * 36
+        body[0] = 0x01
+        response = MessageX9BResponse(_frame(MessageType.query, body))
+        assert response.detected_protocols == {X9BProtocol.STATUS}
+
     def test_system_time_body_too_short_skips_decode(self) -> None:
         """A truncated system-time body decodes to nothing rather than raising."""
         response = MessageX9BResponse(_frame(MessageType.query, [0x04, 0x01, 30]))
@@ -521,6 +528,7 @@ class TestX9BResponse:
         """A notify-type report is decoded as a full status record."""
         response = MessageX9BResponse(_frame(MessageType.notify1, _status_body()))
         assert response.attributes["work_status"] == "work"
+        assert response.detected_protocols == {X9BProtocol.STATUS}
 
     def test_unhandled_message_type(self) -> None:
         """An unrelated message type yields no attributes."""
@@ -543,10 +551,10 @@ class TestX9BResponse:
         """Camera status follows its conflicting fields and shifted error tail."""
         response = MessageX9BResponse(
             _frame(MessageType.query, _camera_status_body(error_count)),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         attrs = response.attributes
-        assert X9BProtocol.CAMERA in response.detected_protocols
+        assert X9BProtocol.STATUS_V4 in response.detected_protocols
         assert attrs["report_type"] == "03"
         assert attrs["fire_power"] == "fire_power_5"
         assert attrs["temperature"] == 200
@@ -582,7 +590,7 @@ class TestX9BResponse:
         body[31] = 0x02
         response = MessageX9BResponse(
             _frame(MessageType.notify1, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         attrs = response.attributes
         assert attrs["work_status"] == "standby"
@@ -601,7 +609,7 @@ class TestX9BResponse:
         body[25:29] = [0xFF, 150, 0, 0xFF]
         response = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         attrs = response.attributes
         assert attrs["steam_quantity"] == "ff"
@@ -619,29 +627,71 @@ class TestX9BResponse:
         body[7:9] = [0xA5, 0x03]
         camera = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         legacy = MessageX9BResponse(_frame(MessageType.query, body[:60]))
         assert camera.attributes["work_mode"] == "air_blast_humidity_control"
         assert legacy.attributes["work_mode"] == "ff"
 
-    def test_full_camera_status_enables_camera_capability(self) -> None:
-        """A full variable-tail status response is self-identifying."""
-        response = MessageX9BResponse(
-            _frame(MessageType.query, _camera_status_body()),
-        )
+    @pytest.mark.parametrize(
+        ("error_count", "expected_length"),
+        [(0, 69), (1, 69), (3, 73), (7, 81)],
+    )
+    def test_complete_v4_status_enables_layout_capability(
+        self,
+        error_count: int,
+        expected_length: int,
+    ) -> None:
+        """A complete dynamic status tail identifies only the V4 layout."""
+        body = _camera_status_body(error_count)
+        assert len(body) == expected_length
+        response = MessageX9BResponse(_frame(MessageType.query, body))
         assert X9BProtocol.STATUS in response.detected_protocols
-        assert X9BProtocol.CAMERA in response.detected_protocols
+        assert X9BProtocol.STATUS_V4 in response.detected_protocols
+        assert X9BProtocol.CAMERA_OTA not in response.detected_protocols
+        assert response.response_protocol == X9BProtocol.STATUS
+        evidence = response.protocol_evidence[X9BProtocol.STATUS_V4]
+        assert f"body length {expected_length}" in evidence
+        assert f"error count {error_count}" in evidence
+        assert f"required length {expected_length}" in evidence
         assert response.attributes["fire_power"] == "fire_power_5"
+
+    @pytest.mark.parametrize(
+        ("body_length", "error_count"),
+        [(69, 2), (81, 8)],
+    )
+    def test_truncated_v4_tail_does_not_select_layout(
+        self,
+        body_length: int,
+        error_count: int,
+    ) -> None:
+        """A body shorter than its declared dynamic tail is not V4 evidence."""
+        body = _camera_status_body(error_count)[:body_length]
+        response = MessageX9BResponse(_frame(MessageType.query, body))
+        assert response.detected_protocols == {X9BProtocol.STATUS}
+        assert X9BProtocol.STATUS_V4 not in response.protocol_evidence
+
+    def test_v4_unknown_error_count_and_appended_bytes_are_complete(self) -> None:
+        """Lua's 0xFF count and future appended bytes keep one reserved slot."""
+        body = _camera_status_body(0)
+        body[39] = 0xFF
+        body.extend([0xAA, 0x55])
+        response = MessageX9BResponse(_frame(MessageType.notify1, body))
+        assert X9BProtocol.STATUS_V4 in response.detected_protocols
+        evidence = response.protocol_evidence[X9BProtocol.STATUS_V4]
+        assert "body length 71" in evidence
+        assert "error count 0" in evidence
+        assert "required length 69" in evidence
 
     def test_camera_status_truncated_error_and_missing_tail(self) -> None:
         """A truncated error list and absent optional tail decode safely."""
         body = _camera_status_body(error_count=2)[:41]
         response = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         attrs = response.attributes
+        assert response.detected_protocols == {X9BProtocol.STATUS}
         assert attrs["error_values"] == []
         assert attrs["clean_scale"] == 0
         assert attrs["ota"] == 0
@@ -662,7 +712,7 @@ class TestX9BResponse:
         body[42] = prompt
         response = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         assert response.attributes[attribute] == 1
 
@@ -674,7 +724,7 @@ class TestX9BResponse:
         body[63:69] = [0, 0, 0, 0, 0, 0]
         response = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=True,
+            status_v4_protocol=True,
         )
         attrs = response.attributes
         assert attrs["mouthfeel"] == "fresh"
@@ -703,7 +753,9 @@ class TestX9BResponse:
         """The distinctive camera OTA response promotes and decodes its state."""
         body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, download, install]
         response = MessageX9BResponse(_frame(MessageType.query, body))
-        assert X9BProtocol.CAMERA in response.detected_protocols
+        assert response.detected_protocols == {X9BProtocol.CAMERA_OTA}
+        assert response.response_protocol == X9BProtocol.CAMERA_OTA
+        assert X9BProtocol.STATUS_V4 not in response.detected_protocols
         assert response.attributes == {
             "ota_status_hardware": "camera",
             "camera_version": "V1.2.3",
@@ -717,7 +769,7 @@ class TestX9BResponse:
         response = MessageX9BResponse(
             _frame(MessageType.query, [0x65, 0x00, 0x02]),
         )
-        assert X9BProtocol.CAMERA not in response.detected_protocols
+        assert X9BProtocol.CAMERA_OTA not in response.detected_protocols
         assert response.attributes == {}
 
     def test_camera_ota_enables_camera_for_every_identity(self) -> None:
@@ -725,15 +777,15 @@ class TestX9BResponse:
         body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, 1, 0]
         response = MessageX9BResponse(
             _frame(MessageType.query, body),
-            camera_protocol=False,
+            status_v4_protocol=False,
         )
-        assert X9BProtocol.CAMERA in response.detected_protocols
+        assert response.detected_protocols == {X9BProtocol.CAMERA_OTA}
 
     def test_camera_ota_prefix_in_set_response_does_not_promote(self) -> None:
         """Only Lua report types 0x03/0x04 identify a camera OTA response."""
         body = [0x65, 0x00, 0x02, 1, 2, 3, 0, 0, 0, 0, 88, 1, 0]
         response = MessageX9BResponse(_frame(MessageType.set, body))
-        assert X9BProtocol.CAMERA not in response.detected_protocols
+        assert X9BProtocol.CAMERA_OTA not in response.detected_protocols
 
     def test_unknown_query_body_is_ignored(self) -> None:
         """An unknown query sub-command does not invent attributes."""

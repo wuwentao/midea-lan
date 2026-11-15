@@ -57,12 +57,13 @@ class TestMideaX9BDevice:
         """An unidentified device receives every known protocol probe."""
         queries = self.device.build_query()
         assert [type(query) for query in queries] == [
-            MessageQueryCameraOta,
             MessageQuery,
+            MessageQueryCameraOta,
         ]
         assert self.device.protocol_flags == {
             X9BProtocol.STATUS: False,
-            X9BProtocol.CAMERA: False,
+            X9BProtocol.STATUS_V4: False,
+            X9BProtocol.CAMERA_OTA: False,
         }
 
     @pytest.mark.parametrize(
@@ -85,11 +86,12 @@ class TestMideaX9BDevice:
         device = self._make_device(model=model, sn8=sn8, subtype=subtype)
         assert device.protocol_flags == {
             X9BProtocol.STATUS: False,
-            X9BProtocol.CAMERA: False,
+            X9BProtocol.STATUS_V4: False,
+            X9BProtocol.CAMERA_OTA: False,
         }
         assert [type(query) for query in device.build_query()] == [
-            MessageQueryCameraOta,
             MessageQuery,
+            MessageQueryCameraOta,
         ]
 
     def test_status_capability_stops_unknown_camera_probe(self) -> None:
@@ -97,12 +99,12 @@ class TestMideaX9BDevice:
         self.device._protocol_flags[X9BProtocol.STATUS] = True
         assert [type(query) for query in self.device.build_query()] == [MessageQuery]
 
-    def test_camera_capability_keeps_both_queries(self) -> None:
-        """A camera response keeps its extension query and common status query."""
-        self.device._protocol_flags[X9BProtocol.CAMERA] = True
+    def test_camera_ota_capability_keeps_both_queries(self) -> None:
+        """A camera OTA response keeps its extension and common status queries."""
+        self.device._protocol_flags[X9BProtocol.CAMERA_OTA] = True
         assert [type(query) for query in self.device.build_query()] == [
-            MessageQueryCameraOta,
             MessageQuery,
+            MessageQueryCameraOta,
         ]
 
     def test_process_message(self) -> None:
@@ -126,41 +128,44 @@ class TestMideaX9BDevice:
         assert self.device.supports_protocol(X9BProtocol.STATUS)
         assert self.device._last_response_protocol == X9BProtocol.STATUS
 
-    def test_distinctive_response_enables_camera_flag(self) -> None:
-        """A camera OTA response enables the camera capability for any identity."""
+    def test_distinctive_response_enables_camera_ota_flag(self) -> None:
+        """A camera OTA response enables only its independent query capability."""
         with patch("midealan.devices.x9b.MessageX9BResponse") as mock_response:
             instance = mock_response.return_value
             instance.protocol_version = ProtocolVersion.V3
-            instance.response_protocol = X9BProtocol.CAMERA
-            instance.detected_protocols = {X9BProtocol.CAMERA}
-            instance.protocol_evidence = {X9BProtocol.CAMERA: "camera OTA frame"}
+            instance.response_protocol = X9BProtocol.CAMERA_OTA
+            instance.detected_protocols = {X9BProtocol.CAMERA_OTA}
+            instance.protocol_evidence = {
+                X9BProtocol.CAMERA_OTA: "camera OTA frame",
+            }
             instance.attributes = {
                 "ota_status_hardware": "camera",
                 "camera_version": "V1.2.3",
             }
             self.device.process_message(b"camera response")
-        assert self.device.supports_protocol(X9BProtocol.CAMERA)
+        assert self.device.supports_protocol(X9BProtocol.CAMERA_OTA)
+        assert not self.device.supports_protocol(X9BProtocol.STATUS_V4)
         assert [type(query) for query in self.device.build_query()] == [
-            MessageQueryCameraOta,
             MessageQuery,
+            MessageQueryCameraOta,
         ]
         mock_response.assert_called_once_with(
             b"camera response",
-            camera_protocol=False,
+            status_v4_protocol=False,
         )
 
-    def test_camera_protocol_controls_are_read_only(self) -> None:
-        """Unverified camera-family controls are ignored until device testing."""
+    def test_status_v4_controls_are_read_only(self) -> None:
+        """Unverified VALUE_VERSION=4 controls are ignored until device testing."""
         device = self._make_device(model="unlisted")
-        device._protocol_flags[X9BProtocol.CAMERA] = True
+        device._protocol_flags[X9BProtocol.STATUS_V4] = True
         with patch.object(device, "build_send") as mock_send:
             device.set_attribute("power", value=True)
         mock_send.assert_not_called()
 
-    def test_camera_protocol_blocks_direct_set_commands(self) -> None:
-        """The outbound path also blocks structured and custom set commands."""
+    def test_status_v4_blocks_direct_set_commands(self) -> None:
+        """The outbound path also blocks V4 structured and custom set commands."""
         device = self._make_device(model="unlisted")
-        device._protocol_flags[X9BProtocol.CAMERA] = True
+        device._protocol_flags[X9BProtocol.STATUS_V4] = True
         with patch.object(device, "send_message") as mock_send:
             device.build_send(MessageSetCooking(ProtocolVersion.V3))
             mock_send.assert_not_called()
@@ -170,22 +175,50 @@ class TestMideaX9BDevice:
             mock_send.assert_called_once()
             assert mock_send.call_args.kwargs == {"query": True}
 
-    def test_camera_detection_clears_standard_only_attributes(self) -> None:
-        """Values decoded before camera detection do not survive the switch."""
+    def test_camera_ota_alone_does_not_block_standard_set(self) -> None:
+        """An OTA extension response alone does not select the V4 write layout."""
+        self.device._protocol_flags[X9BProtocol.CAMERA_OTA] = True
+        with patch.object(self.device, "send_message") as mock_send:
+            self.device.build_send(MessageSetState(ProtocolVersion.V3))
+        mock_send.assert_called_once()
+
+    def test_status_v4_detection_clears_standard_only_attributes(self) -> None:
+        """Values decoded before V4 layout detection do not survive the switch."""
         self.device._attributes["probe"] = 1
         with patch("midealan.devices.x9b.MessageX9BResponse") as mock_response:
             instance = mock_response.return_value
             instance.protocol_version = ProtocolVersion.V3
-            instance.response_protocol = X9BProtocol.CAMERA
-            instance.detected_protocols = {X9BProtocol.CAMERA}
-            instance.protocol_evidence = {X9BProtocol.CAMERA: "camera OTA frame"}
+            instance.response_protocol = X9BProtocol.STATUS
+            instance.detected_protocols = {
+                X9BProtocol.STATUS,
+                X9BProtocol.STATUS_V4,
+            }
+            instance.protocol_evidence = {
+                X9BProtocol.STATUS: "status frame",
+                X9BProtocol.STATUS_V4: "complete V4 status tail",
+            }
             instance.attributes = {
                 "ota_status_hardware": "camera",
                 "camera_version": "V1.2.3",
             }
-            status = self.device.process_message(b"camera response")
+            status = self.device.process_message(b"V4 status response")
         assert status["probe"] is None
         assert self.device.attributes["probe"] is None
+        assert [type(query) for query in self.device.build_query()] == [MessageQuery]
+
+    def test_tcp_reconnect_preserves_detected_status_layout(self) -> None:
+        """Socket recovery keeps positive flags and does not repeat silent probes."""
+        self.device._protocol_flags[X9BProtocol.STATUS] = True
+        self.device._protocol_flags[X9BProtocol.STATUS_V4] = True
+        self.device._unsupported_protocol = ["MessageQueryCameraOta"]
+        self.device.close_socket()
+        assert self.device.protocol_flags == {
+            X9BProtocol.STATUS: True,
+            X9BProtocol.STATUS_V4: True,
+            X9BProtocol.CAMERA_OTA: False,
+        }
+        assert self.device._unsupported_protocol == []
+        assert [type(query) for query in self.device.build_query()] == [MessageQuery]
 
     def test_query_response_validation_uses_capability_response(self) -> None:
         """Heartbeats do not validate an x9b query without a matching flag."""
@@ -210,6 +243,10 @@ class TestMideaX9BDevice:
                 MessageQueryCameraOta(ProtocolVersion.V3),
             )
             is False
+        )
+        self.device._last_response_protocol = X9BProtocol.CAMERA_OTA
+        assert self.device._is_query_response_valid(
+            MessageQueryCameraOta(ProtocolVersion.V3),
         )
         assert self.device._is_query_response_valid(
             MessageSetState(ProtocolVersion.V3),

@@ -12,12 +12,20 @@ what the protocol actually reports.
 """
 
 import logging
+import time
 from enum import StrEnum
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDevice, MideaDeviceInitKwargs
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.device import (
+    QUERY_TIMEOUT,
+    SOCKET_TIMEOUT,
+    MessageResult,
+    MideaDevice,
+    MideaDeviceInitKwargs,
+    ResponseException,
+)
+from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageRequest, MessageType
 
 from .message import (
@@ -87,6 +95,8 @@ class MideaX9BDevice(MideaDevice):
         )
         self._protocol_flags = dict.fromkeys(X9BProtocol, False)
         self._last_response_protocol: X9BProtocol | None = None
+        self._active_probe_protocol: X9BProtocol | None = None
+        self._probe_response_protocols: set[X9BProtocol] = set()
 
     @property
     def protocol_flags(self) -> dict[X9BProtocol, bool]:
@@ -127,6 +137,7 @@ class MideaX9BDevice(MideaDevice):
         )
         new_status: dict[str, Any] = {}
         self._last_response_protocol = message.response_protocol
+        self._probe_response_protocols.update(message.detected_protocols)
         status_v4_was_enabled = self.supports_protocol(X9BProtocol.STATUS_V4)
         for protocol in message.detected_protocols:
             if self.supports_protocol(protocol):
@@ -168,6 +179,13 @@ class MideaX9BDevice(MideaDevice):
             return
         if query:
             self._last_response_protocol = None
+            self._probe_response_protocols.clear()
+            if isinstance(cmd, MessageQueryCameraOta):
+                self._active_probe_protocol = X9BProtocol.CAMERA_OTA
+            elif isinstance(cmd, MessageQuery):
+                self._active_probe_protocol = X9BProtocol.STATUS
+            else:
+                self._active_probe_protocol = None
             _LOGGER.debug(
                 "[%s] Sending x9b protocol probe %s, AA frame: %s",
                 self.device_id,
@@ -175,6 +193,32 @@ class MideaX9BDevice(MideaDevice):
                 cmd.serialize().hex(),
             )
         super().build_send(cmd, query=query)
+
+    def _await_query_reply(self) -> None:
+        """Keep reading a checked probe until its matching business reply arrives."""
+        expected = self._active_probe_protocol
+        if expected is None:
+            super()._await_query_reply()
+            return
+        deadline = time.monotonic() + QUERY_TIMEOUT
+        while True:
+            if not self._socket:
+                _LOGGER.debug("[%s] device socket is none", self.device_id)
+                raise SocketException
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            self._socket.settimeout(min(remaining, QUERY_TIMEOUT))
+            msg = self._socket.recv(512)
+            if len(msg) == 0:
+                raise ConnectionResetError("Connection closed by peer.")
+            result = self.parse_message(msg)
+            if expected in self._probe_response_protocols:
+                break
+            if result in (MessageResult.PADDING, MessageResult.SUCCESS):
+                continue
+            raise ResponseException
+        self._socket.settimeout(SOCKET_TIMEOUT)
 
     def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
         """Require a matching x9b business response, not only a heartbeat."""
@@ -185,7 +229,7 @@ class MideaX9BDevice(MideaDevice):
             expected = X9BProtocol.STATUS
         if expected is None:
             return super()._is_query_response_valid(cmd)
-        valid = self._last_response_protocol == expected
+        valid = expected in self._probe_response_protocols
         if not valid:
             _LOGGER.debug(
                 "[%s] x9b probe %s had no matching %s business response",

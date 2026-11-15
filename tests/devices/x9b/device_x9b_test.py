@@ -1,10 +1,11 @@
 """Test x9b Device."""
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from midealan.const import ProtocolVersion
+from midealan.device import MessageResult, MideaDevice, ResponseException
 from midealan.devices.x9b import (
     DeviceAttributes,
     MideaAppliance,
@@ -18,7 +19,7 @@ from midealan.devices.x9b.message import (
     MessageSetState,
     X9BProtocol,
 )
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
 
 
@@ -233,7 +234,7 @@ class TestMideaX9BDevice:
             )
             is False
         )
-        self.device._last_response_protocol = X9BProtocol.STATUS
+        self.device._probe_response_protocols.add(X9BProtocol.STATUS)
         assert (
             self.device._is_query_response_valid(MessageQuery(ProtocolVersion.V3))
             is True
@@ -244,13 +245,108 @@ class TestMideaX9BDevice:
             )
             is False
         )
-        self.device._last_response_protocol = X9BProtocol.CAMERA_OTA
+        self.device._probe_response_protocols = {X9BProtocol.CAMERA_OTA}
         assert self.device._is_query_response_valid(
             MessageQueryCameraOta(ProtocolVersion.V3),
         )
         assert self.device._is_query_response_valid(
             MessageSetState(ProtocolVersion.V3),
         )
+
+    def test_probe_wait_ignores_heartbeat_until_matching_status_response(self) -> None:
+        """A heartbeat does not finish a probe before its status frame arrives."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        self.device._probe_response_protocols.clear()
+        self.device._socket = Mock()
+        self.device._socket.recv.side_effect = [b"heartbeat", b"status"]
+
+        def parse_message(message: bytes) -> MessageResult:
+            if message == b"status":
+                self.device._probe_response_protocols.add(X9BProtocol.STATUS)
+            return MessageResult.SUCCESS
+
+        with patch.object(self.device, "parse_message", side_effect=parse_message):
+            self.device._await_query_reply()
+
+        assert self.device._socket.recv.call_count == 2
+        self.device._socket.settimeout.assert_called_with(10)
+        assert self.device._is_query_response_valid(
+            MessageQuery(ProtocolVersion.V3),
+        )
+
+    def test_probe_wait_deadline_is_not_extended_by_heartbeat(self) -> None:
+        """Repeated unrelated frames cannot extend a checked query indefinitely."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        self.device._probe_response_protocols.clear()
+        self.device._socket = Mock()
+        self.device._socket.recv.return_value = b"heartbeat"
+        with (
+            patch.object(
+                self.device,
+                "parse_message",
+                return_value=MessageResult.SUCCESS,
+            ),
+            patch(
+                "midealan.devices.x9b.time.monotonic",
+                side_effect=[0.0, 0.0, 6.0],
+            ),
+            pytest.raises(TimeoutError),
+        ):
+            self.device._await_query_reply()
+        self.device._socket.recv.assert_called_once_with(512)
+
+    def test_probe_wait_propagates_parse_error_without_matching_response(self) -> None:
+        """Malformed replies retain common transport error handling."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        self.device._probe_response_protocols.clear()
+        self.device._socket = Mock()
+        self.device._socket.recv.return_value = b"invalid"
+        with (
+            patch.object(
+                self.device,
+                "parse_message",
+                return_value=MessageResult.ERROR,
+            ),
+            pytest.raises(ResponseException),
+        ):
+            self.device._await_query_reply()
+
+    def test_probe_wait_uses_common_behavior_without_x9b_probe(self) -> None:
+        """Non-X9B probes continue to use the common waiter."""
+        with patch.object(MideaDevice, "_await_query_reply") as await_reply:
+            self.device._active_probe_protocol = None
+            self.device._await_query_reply()
+        await_reply.assert_called_once_with()
+
+    def test_build_send_non_probe_query_clears_active_probe(self) -> None:
+        """A non-protocol query does not inherit a preceding x9b probe family."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        with patch.object(self.device, "send_message"):
+            self.device.build_send(MessageQuery(ProtocolVersion.V3), query=True)
+            self.device.build_send(
+                MessageQueryCameraOta(ProtocolVersion.V3),
+                query=True,
+            )
+            self.device.build_send(
+                MessageQuery(ProtocolVersion.V3),
+                query=True,
+            )
+            self.device.build_send(
+                MessageSetState(ProtocolVersion.V3),
+                query=True,
+            )
+        assert self.device._active_probe_protocol is None
+
+    def test_probe_wait_raises_if_socket_is_missing_or_closed(self) -> None:
+        """Socket failure remains visible to the common reconnect loop."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        self.device._socket = None
+        with pytest.raises(SocketException):
+            self.device._await_query_reply()
+        self.device._socket = Mock()
+        self.device._socket.recv.return_value = b""
+        with pytest.raises(ConnectionResetError):
+            self.device._await_query_reply()
 
     def test_build_send_non_query_uses_common_transport(self) -> None:
         """Standard SET traffic still uses the inherited transport path."""

@@ -761,7 +761,9 @@ class MideaE1Device(MideaDevice):
             if mode == 0:
                 msg = "[e1] No work mode selected"
                 raise ValueWrongType(msg)
-            self._attributes[DeviceAttributes.program] = self._active_modes[mode]
+            program = self._active_modes[mode]
+            self._attributes[DeviceAttributes.program] = program
+            self.update_all({str(DeviceAttributes.program): program})
             return
         if attr in _SETTING_TO_WASH_PARAM:
             attr = _SETTING_TO_WASH_PARAM[DeviceAttributes(attr)]

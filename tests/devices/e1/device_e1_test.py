@@ -685,11 +685,15 @@ class TestMideaE1Device:
             self.device.set_attribute(DeviceAttributes.delay_minutes.value, 0)
 
     def test_set_attribute_program_selects_without_starting(self) -> None:
-        """Test writing program stores the choice without sending anything."""
+        """Test writing program stores and publishes without sending a command."""
+        updates: list[dict[str, Any]] = []
+        self.device.register_update(updates.append)
+        assert self.device.get_attribute(DeviceAttributes.program) is None
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device.set_attribute(DeviceAttributes.program.value, "glass_wash")
         mock_build_send.assert_not_called()
         assert self.device.attributes[DeviceAttributes.program.value] == "glass_wash"
+        assert updates == [{DeviceAttributes.program.value: "glass_wash"}]
 
     @pytest.mark.parametrize("program", [0x00, "neutral_gear", "spin", 0x11])
     def test_set_attribute_program_rejects_invalid(self, program: int | str) -> None:

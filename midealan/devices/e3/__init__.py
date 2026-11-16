@@ -56,7 +56,22 @@ class MideaE3Device(MideaDevice):
                 DeviceAttributes.target_temperature: 40.0,
             },
         )
-        self._old_subtypes = [32, 33, 34, 35, 36, 37, 40, 43, 48, 49, 80]
+        # Lua isNewAgreement() routes these subtypes through the legacy X04 frame.
+        self._old_subtypes = [
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            43,
+            48,
+            49,
+            80,
+        ]
         self._precision_halves: bool | None = None
         self._default_precision_halves = False
         # target_temperature step

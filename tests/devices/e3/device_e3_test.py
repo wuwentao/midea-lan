@@ -36,7 +36,7 @@ class TestMideaE3Device:
             customize="",
         )
 
-    def _old_subtype_device(self) -> MideaE3Device:
+    def _old_subtype_device(self, subtype: int = 32) -> MideaE3Device:
         """Midea E3 Device with an old protocol subtype."""
         return MideaE3Device(
             name="Test Device",
@@ -47,7 +47,7 @@ class TestMideaE3Device:
             key="BB",
             device_protocol=ProtocolVersion.V1,
             model="test_model",
-            subtype=32,
+            subtype=subtype,
             customize="",
         )
 
@@ -205,6 +205,7 @@ class TestMideaE3Device:
             assert isinstance(message, NewProtocolSet)
             assert message.value == 80.0
 
+    @pytest.mark.parametrize("subtype", [32, 38, 39])
     @pytest.mark.parametrize(
         ("attr", "value"),
         [
@@ -214,11 +215,12 @@ class TestMideaE3Device:
     )
     def test_set_attribute_old_subtype(
         self,
+        subtype: int,
         attr: DeviceAttributes,
         value: bool | float,
     ) -> None:
         """Test set attribute with an old protocol subtype."""
-        device = self._old_subtype_device()
+        device = self._old_subtype_device(subtype)
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(attr.value, value)
             mock_build_send.assert_called_once()

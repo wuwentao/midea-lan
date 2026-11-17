@@ -838,6 +838,40 @@ class MideaDevice(threading.Thread):
             self._appliance_query = False
             _LOGGER.debug("[%s] Appliance query Received: %s", self._device_id, message)
             self._message_protocol_version = message.protocol_version
+            # The 0xA0 reply restates the device type + subtype inside the body;
+            # the rest of the body is per-device encrypted Lua. Both values are
+            # already known from discovery/cloud and the full body is dumped by
+            # the "Appliance query Received" line above, so there is nothing new
+            # to log when they agree -- the known value stays authoritative and
+            # is reused as is. Only surface a divergence, and only at debug. The
+            # body carries the appliance's self-reported identity, which can
+            # legitimately differ from the Wi-Fi module / discovery values (a
+            # 0xb0 module may report appliance type 0xb2, and a subtype the
+            # broadcast did not), so a difference is expected, not an error, and
+            # the known value is never overridden. A short body leaves the parsed
+            # value None, which is not a divergence.
+            if (
+                message.info_device_type is not None
+                and message.info_device_type != self._device_type
+            ):
+                _LOGGER.debug(
+                    "[%s] 0xA0 body device type 0x%02x differs from known 0x%02x "
+                    "(may be expected; debug reference only, not an error)",
+                    self._device_id,
+                    message.info_device_type,
+                    self._device_type,
+                )
+            if (
+                message.info_device_subtype is not None
+                and message.info_device_subtype != self._subtype
+            ):
+                _LOGGER.debug(
+                    "[%s] 0xA0 body subtype %s differs from known %s "
+                    "(may be expected; debug reference only, not an error)",
+                    self._device_id,
+                    message.info_device_subtype,
+                    self._subtype,
+                )
             _LOGGER.debug(
                 "[%s] device model %s subtype %s sn8 %s manufacturer_code %s "
                 "cloud_name %s, device protocol %s, msg protocol %s",

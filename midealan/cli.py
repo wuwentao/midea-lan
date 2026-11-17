@@ -476,6 +476,44 @@ class MideaCLI:
                 appliance["manufacturer_code"],
             )
 
+    async def info(self) -> None:
+        """Print the cloud account appliances and their basic information.
+
+        Logs in to the cloud account, lists every appliance, and prints the
+        fields that identify and locate each device: name, device type, model,
+        sn8, Wi-Fi module version, and online state. The Wi-Fi version is only
+        returned by the Meiju cloud's per-device info endpoint; other clouds
+        fall back to the list entry, which does not carry it.
+        """
+        cloud = await self._get_cloud()
+        _LOGGER.debug("Try to authenticate to the cloud.")
+        if not await cloud.login():
+            _LOGGER.error("Failed to authenticate to the cloud.")
+            return
+
+        appliances = await cloud.list_appliances(home_id=None) or {}
+        if not appliances:
+            _LOGGER.error("No devices found in the cloud account.")
+            return
+
+        _LOGGER.info("Found %d device(s) in the cloud account.", len(appliances))
+        for device_id, appliance in appliances.items():
+            # get_device_info returns a richer per-device record (including the
+            # Wi-Fi module version on Meiju); fall back to the list entry when
+            # the cloud has no dedicated info endpoint or the lookup fails.
+            device_info = await cloud.get_device_info(device_id) or appliance
+            _LOGGER.info(
+                "Device %s: name %s, type 0x%02X, model %s, sn8 %s, "
+                "wifi_version %s, online %s",
+                device_id,
+                device_info.get("name"),
+                device_info.get("type", 0),
+                device_info.get("model"),
+                device_info.get("sn8"),
+                device_info.get("wifi_version"),
+                device_info.get("online"),
+            )
+
     async def set_attribute(self) -> None:
         """Set attribute for device."""
         device_list = await self.discover()
@@ -659,6 +697,13 @@ def main() -> NoReturn:
         help="IP Address of the device.",
     )
     download_parser.set_defaults(func=cli.download)
+
+    info_parser = subparsers.add_parser(
+        "info",
+        description="List cloud account appliances and their basic info.",
+        parents=[common_parser],
+    )
+    info_parser.set_defaults(func=cli.info)
 
     attribute_parser = subparsers.add_parser(
         "setattr",

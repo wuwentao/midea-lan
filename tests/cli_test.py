@@ -674,6 +674,67 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         assert "Failed to download lua file for 0000AC000FIRST" in logs.output[0]
         assert "Failed to download plugin file for 0000B000SECOND" in logs.output[1]
 
+    async def test_info(self) -> None:
+        """Test the info command lists cloud appliances and their basic info."""
+        appliances = {
+            1: {
+                "name": "Living Room AC",
+                "type": 0xAC,
+                "sn8": "22270043",
+                "model": "KFR-72L",
+                "online": True,
+            },
+            2: {
+                "name": "Washer",
+                "type": 0xDB,
+                "sn8": "38127874",
+                "model": "MD100",
+                "online": False,
+            },
+        }
+        # Device 1 has a richer per-device record (Meiju-style, carrying the
+        # Wi-Fi version); device 2 has none, so info() falls back to the list
+        # entry, which has no wifi_version key.
+        device_1_info = {**appliances[1], "wifi_version": "059009012205"}
+        mock_cloud_instance = AsyncMock()
+        mock_cloud_instance.list_appliances.return_value = appliances
+        mock_cloud_instance.get_device_info.side_effect = [device_1_info, None]
+        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance):
+            # cloud login failed: nothing is listed
+            mock_cloud_instance.login.return_value = False
+            with self.assertLogs("cli", level="ERROR") as logs:
+                await self.cli.info()
+            mock_cloud_instance.login.assert_called_once()
+            mock_cloud_instance.list_appliances.assert_not_called()
+            assert any("Failed to authenticate" in line for line in logs.output)
+            mock_cloud_instance.login.reset_mock()
+
+            mock_cloud_instance.login.return_value = True
+
+            # no appliances in the account
+            mock_cloud_instance.list_appliances.return_value = {}
+            with self.assertLogs("cli", level="ERROR") as logs:
+                await self.cli.info()
+            assert any("No devices found" in line for line in logs.output)
+
+            # appliances present: each device is printed, with the Wi-Fi
+            # version taken from the per-device record where available.
+            mock_cloud_instance.list_appliances.return_value = appliances
+            with self.assertLogs("cli", level="INFO") as logs:
+                await self.cli.info()
+
+        assert mock_cloud_instance.get_device_info.await_count == 2
+        output = "\n".join(logs.output)
+        assert "Found 2 device(s)" in output
+        assert "name Living Room AC" in output
+        assert "type 0xAC" in output
+        assert "wifi_version 059009012205" in output
+        assert "name Washer" in output
+        assert "type 0xDB" in output
+        # Device 2 fell back to the list entry: no Wi-Fi version is available.
+        assert "sn8 38127874" in output
+        assert "wifi_version None" in output
+
     async def test_set_attribute(self) -> None:
         """Test set attribute."""
         mock_device_instance = MagicMock()

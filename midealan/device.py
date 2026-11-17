@@ -838,6 +838,18 @@ class MideaDevice(threading.Thread):
             self._appliance_query = False
             _LOGGER.debug("[%s] Appliance query Received: %s", self._device_id, message)
             self._message_protocol_version = message.protocol_version
+            # Log every field the 0xA0 body carries for future reference. The app
+            # (GetA0InfoResult) only decodes the device type + subtype; the rest of
+            # the body is per-device encrypted Lua, so dump it raw as hex so it can
+            # be decoded later without re-capturing the frame.
+            _LOGGER.debug(
+                "[%s] appliance info (0xA0): info_device_type %s device_subtype %s "
+                "body %s",
+                self._device_id,
+                message.info_device_type,
+                message.device_subtype,
+                message.body.hex(),
+            )
             _LOGGER.debug(
                 "[%s] device model %s subtype %s sn8 %s manufacturer_code %s "
                 "cloud_name %s, device protocol %s, msg protocol %s",

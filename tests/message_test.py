@@ -622,6 +622,64 @@ class TestMessageResponse:
         assert response.message_type == MessageType.query_appliance
         assert response.device_type == DeviceType.AC
         assert response.protocol_version == 3
+        # Body is 1 byte, below APPLIANCE_INFO_MIN_BODY_LENGTH -> fields stay None.
+        assert response.info_device_type is None
+        assert response.device_subtype is None
+
+    def test_appliance_response_info_full_subtype(self) -> None:
+        """Test 0xA0 body with a 4-byte body carrying a little-endian subtype."""
+        # body = [0xC0, 0xAC, 0x34, 0x12]: body[1] device type, body[2:4] subtype.
+        message = bytearray(
+            [
+                0xAA,
+                0x0F,
+                0xAC,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                0xA0,
+                0xC0,
+                0xAC,
+                0x34,
+                0x12,
+                0x00,
+            ],
+        )
+        response = MessageApplianceResponse(message)
+        assert response.body == bytearray([0xC0, 0xAC, 0x34, 0x12])
+        assert response.info_device_type == 0xAC
+        # Little-endian: (high 0x12 << 8) | low 0x34 == 0x1234.
+        assert response.device_subtype == 0x1234
+
+    def test_appliance_response_info_missing_high_byte(self) -> None:
+        """Test 0xA0 body with a 3-byte body (subtype high byte absent -> 0)."""
+        # body = [0xC0, 0xAC, 0x34]: only the subtype low byte is present.
+        message = bytearray(
+            [
+                0xAA,
+                0x0E,
+                0xAC,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x03,
+                0xA0,
+                0xC0,
+                0xAC,
+                0x34,
+                0x00,
+            ],
+        )
+        response = MessageApplianceResponse(message)
+        assert response.body == bytearray([0xC0, 0xAC, 0x34])
+        assert response.info_device_type == 0xAC
+        # High byte defaults to 0 when the body stops at the low byte.
+        assert response.device_subtype == 0x34
 
     def test_set_body_and_set_attr(self) -> None:
         """Test set_body replaces the body and set_attr copies its attrs."""

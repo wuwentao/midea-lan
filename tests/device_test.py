@@ -130,6 +130,62 @@ def test_parse_message_short_appliance_query_message_skips_process_message() -> 
     assert device._appliance_query is True
 
 
+def test_pre_process_message_appliance_query_logs_info_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test a valid 0xA0 appliance query parses and logs its info fields."""
+    device = MideaDevice(
+        name="Test Device",
+        device_id=1,
+        device_type=DeviceType.AC,
+        ip_address="192.168.1.100",
+        port=6444,
+        token=DEFAULT_KEYS[99]["token"],
+        key=DEFAULT_KEYS[99]["key"],
+        device_protocol=ProtocolVersion.V3,
+        model="test_model",
+        subtype=1,
+        attributes={},
+        mac="1234567890ab",
+    )
+    # 0xA0 reply: msg[9] is the message type, body = frame[10:-1] =
+    # [0xC0, 0xAC, 0x34, 0x12] -> device type 0xAC, little-endian subtype 0x1234.
+    frame = bytearray(
+        [
+            0xAA,
+            0x0F,
+            0xAC,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x03,
+            0xA0,
+            0xC0,
+            0xAC,
+            0x34,
+            0x12,
+            0x00,
+        ],
+    )
+    with caplog.at_level(logging.DEBUG, logger="midealan.device"):
+        assert device.pre_process_message(frame) is False
+
+    assert device._appliance_query is False
+    assert device._message_protocol_version == 3
+    info_logs = [
+        record.message
+        for record in caplog.records
+        if "appliance info (0xA0)" in record.message
+    ]
+    assert len(info_logs) == 1
+    # Logged with %s: device type 0xAC -> 172, subtype 0x1234 -> 4660, raw hex.
+    assert "info_device_type 172" in info_logs[0]
+    assert "device_subtype 4660" in info_logs[0]
+    assert "body c0ac3412" in info_logs[0]
+
+
 class TestMideaDevice:
     """Midea device test case."""
 

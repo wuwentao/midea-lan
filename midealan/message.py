@@ -1132,9 +1132,47 @@ class MessageResponse(MessageBase):
                 setattr(self, key, value)
 
 
+# 0xA0 "型号及基本信息查询" (model + basic-info query) response body layout.
+# Verified against the official app's GetA0InfoResult.parseDataBytes (byte-for-byte
+# identical in 美的美居 10.3.16.2 and IoLIFE 2.8.2): the parsed byte array is the
+# inner UART frame body, i.e. exactly MessageResponse's `self.body`
+# (frame[HEADER_LENGTH:-1]). Only two fields are statically documented; body[0] is a
+# body-type marker the app ignores, and every byte after the subtype is per-device
+# encrypted Lua, so it is logged as raw hex for future decoding rather than parsed.
+APPLIANCE_INFO_MIN_BODY_LENGTH = 3
+APPLIANCE_INFO_DEVICE_TYPE_OFFSET = 1
+APPLIANCE_INFO_SUBTYPE_LOW_OFFSET = 2
+APPLIANCE_INFO_SUBTYPE_HIGH_OFFSET = 3
+
+
 class MessageApplianceResponse(MessageResponse):
-    """Message appliance response."""
+    """Message appliance response (0xA0 model + basic-info query).
+
+    Parses the two fields the official app decodes from the body -- the
+    appliance's self-reported device type and little-endian device subtype --
+    and keeps the raw body so callers can log the undocumented tail for future
+    reference.
+    """
 
     def __init__(self, message: bytearray) -> None:
         """Initialize message appliance response."""
         super().__init__(message)
+        # Device type echoed inside the 0xA0 body (body[1]); distinct from the
+        # frame-header device_type (MessageResponse.device_type) used for
+        # routing, though a well-formed reply repeats the same value here.
+        self.info_device_type: int | None = None
+        # Device subtype, little-endian over body[2] (low) and body[3] (high).
+        # The high byte is absent (treated as 0) on a 3-byte body, matching the
+        # app's GetA0InfoResult.
+        self.device_subtype: int | None = None
+        body = self.body
+        if len(body) >= APPLIANCE_INFO_MIN_BODY_LENGTH:
+            self.info_device_type = body[APPLIANCE_INFO_DEVICE_TYPE_OFFSET]
+            subtype_high = (
+                body[APPLIANCE_INFO_SUBTYPE_HIGH_OFFSET]
+                if len(body) > APPLIANCE_INFO_SUBTYPE_HIGH_OFFSET
+                else 0
+            )
+            self.device_subtype = (subtype_high << 8) | body[
+                APPLIANCE_INFO_SUBTYPE_LOW_OFFSET
+            ]

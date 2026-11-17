@@ -95,8 +95,89 @@ midealan --help
 uv run python -m midealan.cli -h
 ```
 
-可用子命令为 `discover`、`decode`、`save`、`download` 和 `setattr`。使用
-`midealan <子命令> --help`（或对应的 `uv run` 命令）查看各子命令参数。
+可用子命令为 `discover`、`info`、`decode`、`save`、`download` 和 `setattr`。使用
+`midealan <子命令> --help`（或对应的 `uv run` 命令）查看各子命令参数。在本仓库开发环境中，
+请将以下示例中的 `midealan` 替换为 `uv run python -m midealan.cli`。
+
+#### 云账号凭据
+
+`discover`（针对 V3 设备）、`info` 和 `download` 需要登录美的云账号，以获取设备的
+token/key 或云端信息。它们共用以下参数：
+
+- `--username` / `-u`、`--password` / `-p` 和 `--cloud-name` / `-cn`。
+- `--debug` / `-d` 开启调试日志（所有子命令均可用）。
+
+`--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
+`Ariston Clima`。
+
+`save` 会把凭据写入 `midea-lan.json` 配置文件，之后的命令便可省略这些参数。不加 `--user`
+时写入当前目录的 `midea-lan.json`；加 `--user` 时写入用户配置目录。任何命令都会自动读取该
+文件，并仅补全你在命令行中未提供的用户名、密码和云名称。
+
+```bash
+# 将凭据保存到当前目录（./midea-lan.json）
+midealan save --cloud-name "美的美居" --username "user@example.com" --password "secret"
+
+# 改为保存到用户配置目录
+midealan save --user --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+#### 在局域网发现设备
+
+`discover` 会扫描局域网，对每台受支持的设备完成鉴权，并打印读取到的属性。无法识别的设备会
+连同跳过原因一并列出。V3 设备需要云账号凭据，命令才能获取其 token/key。
+
+```bash
+# 扫描整个局域网
+midealan discover --cloud-name "美的美居" --username "user@example.com" --password "secret"
+
+# 仅查询单台设备
+midealan discover --host 192.0.2.121 \
+  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+`--get_sn` 只读取设备序列号，而不读取完整属性。2024 年后的 TLS 设备在局域网上的序列号是加密
+的，无法通过这种方式读取；请改用 `info` 显示的云端序列号。
+
+#### 列出云账号下的设备
+
+`info` 会登录云账号，并按设备所属的家庭（分组）分别列出每台设备。因此当账号下有多个家庭时，
+各家庭的设备会显示在各自的标题下，而不是混在一个列表里。对每台设备会打印名称、设备类型、
+型号、sn8、Wi-Fi 模组版本和在线状态。Wi-Fi 版本仅 `美的美居` 云会返回，其他云留空。
+
+```bash
+midealan info --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+```text
+Home 63535541 (Home A): 2 device(s)
+  Device 1: name Living Room AC, type 0xAC, model KFR-72L, sn8 22270043, wifi_version 059009012205, online True
+  Device 2: name Washer, type 0xDB, model MD100, sn8 38127874, wifi_version None, online False
+Home 107400725 (Home B): 1 device(s)
+  Device 3: name Kitchen Hood, type 0xEA, model CXW-200, sn8 12345678, wifi_version None, online True
+Found 3 device(s) across 2 home(s) in the cloud account.
+```
+
+#### 解码抓取到的报文
+
+`decode` 可离线解析原始十六进制报文，无需联网或云账号。设备类型取自报文的第三个字节。
+
+```bash
+midealan decode aa20ac00000000000003418100ff03ff000200000000000000000000000003cd9d
+```
+
+#### 设置设备属性
+
+`setattr` 会发现 `host` 处的设备，将某个 `attribute` 设置为 `value`，等待设置生效后打印刷新
+后的状态。`--attr-type` 控制 `value` 的解析方式：`int`（默认）、`bool` 或 `str`。V3 设备的
+发现步骤需要云账号凭据。
+
+```bash
+midealan setattr 192.0.2.121 power true --attr-type bool \
+  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+`download` 子命令的详细说明见下一节。
 
 ### 下载云端 Lua 与插件文件
 
@@ -112,9 +193,6 @@ uv run python -m midealan.cli -h
 midealan download [--debug] --username USERNAME --password PASSWORD \
   --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
 ```
-
-在本仓库开发环境中，请将以下示例中的 `midealan` 替换为
-`uv run python -m midealan.cli`。
 
 `--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
 `Ariston Clima`。

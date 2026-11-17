@@ -124,6 +124,21 @@ class MideaCLI:
                     )
             return device_list
         for device in devices.values():
+            # Surface the identity fields discover() already parsed (type,
+            # subtype, model, manufacturer code, protocol) so they are in the
+            # log/output for direct later use -- e.g. feeding subtype/model to
+            # download or setattr -- without a second scan or a cloud round-trip.
+            _LOGGER.info(
+                "Discovered device %s at %s: type 0x%02x, subtype %s, model %s, "
+                "manufacturer_code %s, protocol %s",
+                device["device_id"],
+                device.get("ip_address"),
+                device.get("type", 0),
+                device.get("device_subtype"),
+                device.get("model"),
+                device.get("manufacturer_code"),
+                device.get("protocol"),
+            )
             # discover() now surfaces devices midealan has no package for so the
             # user can see them (and the reason) in the scan. Those can't be
             # instantiated, so report the reason and move on instead of trying
@@ -153,7 +168,10 @@ class MideaCLI:
                     key=key["key"],
                     device_protocol=device["protocol"],
                     model=device["model"],
-                    subtype=0,
+                    # Reuse the subtype discover() already decoded instead of 0,
+                    # so the instantiated device matches the real appliance (and
+                    # its 0xA0 reply no longer looks like a subtype mismatch).
+                    subtype=device.get("device_subtype", 0),
                     customize="",
                     mac=device["mac"],
                     serial_number=device["sn"],

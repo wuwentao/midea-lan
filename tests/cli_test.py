@@ -133,10 +133,12 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         mock_device = {
             "device_id": 1,
             "protocol": ProtocolVersion.V3,
-            "type": "AC",
+            "type": 0xAC,
             "ip_address": "192.168.0.2",
             "port": 6444,
             "model": "AC123000",
+            "device_subtype": 44204,
+            "manufacturer_code": 0,
             "sn": "0000AC12300000001234567890ABCDEF",
             "mac": "1234567890AB",
         }
@@ -155,7 +157,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             patch(
                 "midealan.cli.device_selector",
                 return_value=mock_device_instance,
-            ),
+            ) as mock_device_selector,
             patch.object(
                 mock_device_instance,
                 "refresh_status",
@@ -189,8 +191,17 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             # test V3 device: connect() already authenticated, discover only
             # calls refresh_status (once per candidate key).
             refresh_status_mock.side_effect = None
-            await self.cli.discover()  # V3 device
+            mock_device_selector.reset_mock()
+            with self.assertLogs("cli", level="INFO") as logs:
+                await self.cli.discover()  # V3 device
             refresh_status_mock.assert_called_with(True)
+            # The discovered subtype is reused (not 0) and the identity line is
+            # surfaced for later use.
+            assert mock_device_selector.call_args.kwargs["subtype"] == 44204
+            assert any(
+                "Discovered device" in line and "subtype 44204" in line
+                for line in logs.output
+            )
             refresh_status_mock.reset_mock()
 
             # V3 device where refresh_status raises: each failure is caught and

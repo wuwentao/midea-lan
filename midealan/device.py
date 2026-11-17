@@ -844,9 +844,14 @@ class MideaDevice(threading.Thread):
             # discovery/cloud and the full body is dumped by the "Appliance query
             # Received" line above, so there is nothing new to log when they
             # agree -- the known value stays authoritative and is reused as is.
-            # Only surface a divergence, which points at stale cloud data or a
-            # misrouted reply. A short body leaves the parsed value None, which is
-            # not a mismatch.
+            # Only surface a divergence, and only at debug: it is NOT necessarily
+            # an error. The body carries the MCU's self-reported identity, which
+            # can legitimately differ from the Wi-Fi module / discovery values.
+            # Confirmed on real hardware: a 0xb0 module reports appliance type
+            # 0xb2, and a 0xac reports a subtype the broadcast did not. The line
+            # is a diagnostic aid (it can also catch a genuinely stale cloud
+            # record or a misrouted reply) -- the known value is not overridden.
+            # A short body leaves the parsed value None, which is not a mismatch.
             if (
                 message.info_device_type is not None
                 and message.info_device_type != self._device_type

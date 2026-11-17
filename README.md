@@ -95,8 +95,97 @@ installed inside `.venv`, so use `uv run` when the virtual environment is not ac
 uv run python -m midealan.cli -h
 ```
 
-Available commands are `discover`, `decode`, `save`, `download`, and `setattr`. Run
-`midealan <command> --help` (or the `uv run` equivalent) for command-specific options.
+Available commands are `discover`, `info`, `decode`, `save`, `download`, and `setattr`. Run
+`midealan <command> --help` (or the `uv run` equivalent) for command-specific options. When
+working from a checkout, replace `midealan` in the examples below with
+`uv run python -m midealan.cli`.
+
+#### Cloud credentials
+
+`discover` (for V3 devices), `info`, and `download` sign in to a Midea cloud account to
+retrieve each device's token/key or cloud-side details. They share these options:
+
+- `--username` / `-u`, `--password` / `-p`, and `--cloud-name` / `-cn`.
+- `--debug` / `-d` turns on debug logging (available on every command).
+
+Supported `--cloud-name` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
+and `Ariston Clima`.
+
+`save` writes the credentials to a `midea-lan.json` config file so later commands can omit
+them. Without `--user` it writes `midea-lan.json` in the current directory; with `--user` it
+writes to the per-user config folder. Any command auto-loads this file and fills in only the
+username, password, and cloud name you did not pass on the command line.
+
+```bash
+# store credentials in the current directory (./midea-lan.json)
+midealan save --cloud-name "美的美居" --username "user@example.com" --password "secret"
+
+# store them in the per-user config folder instead
+midealan save --user --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+#### Discovering devices on the LAN
+
+`discover` scans the local network, authenticates every supported device, and prints the
+attributes it reads back. Unsupported devices are listed with the reason they were skipped.
+V3 devices need cloud credentials so the command can fetch their token/key.
+
+```bash
+# scan the whole LAN
+midealan discover --cloud-name "美的美居" --username "user@example.com" --password "secret"
+
+# query a single device
+midealan discover --host 192.0.2.121 \
+  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+`--get_sn` reads only the device serial number instead of the full attribute set. On 2024+
+TLS devices the LAN serial is encrypted and cannot be read this way; use the cloud serial
+shown by `info` instead.
+
+#### Listing cloud account appliances
+
+`info` signs in to the cloud account and lists every appliance grouped by the home (group)
+it belongs to, so an account with several homes shows each home's devices under its own
+header instead of merged into one list. For each device it prints the name, device type,
+model, sn8, Wi-Fi module version, and online state. The Wi-Fi version is only returned by
+the `美的美居` cloud; other clouds leave it blank.
+
+```bash
+midealan info --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+```text
+Home 63535541 (Home A): 2 device(s)
+  Device 1: name Living Room AC, type 0xAC, model KFR-72L, sn8 22270043, wifi_version 059009012205, online True
+  Device 2: name Washer, type 0xDB, model MD100, sn8 38127874, wifi_version None, online False
+Home 107400725 (Home B): 1 device(s)
+  Device 3: name Kitchen Hood, type 0xEA, model CXW-200, sn8 12345678, wifi_version None, online True
+Found 3 device(s) across 2 home(s) in the cloud account.
+```
+
+#### Decoding a captured message
+
+`decode` parses a raw hex frame offline; no network connection or cloud account is needed.
+The device type is taken from the third byte of the frame.
+
+```bash
+midealan decode aa20ac00000000000003418100ff03ff000200000000000000000000000003cd9d
+```
+
+#### Setting a device attribute
+
+`setattr` discovers the device at `host`, sets one `attribute` to `value`, waits for the
+change to apply, then prints the refreshed status. `--attr-type` controls how `value` is
+parsed: `int` (the default), `bool`, or `str`. V3 devices need cloud credentials for the
+discovery step.
+
+```bash
+midealan setattr 192.0.2.121 power true --attr-type bool \
+  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+```
+
+The `download` command has its own section below.
 
 ### Downloading cloud Lua and plugin files
 
@@ -116,12 +205,6 @@ link that pull request from the `midea-lan` pull request.
 midealan download [--debug] --username USERNAME --password PASSWORD \
   --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
 ```
-
-When working from a checkout, replace `midealan` in the examples below with
-`uv run python -m midealan.cli`.
-
-Supported `--cloud-name` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
-and `Ariston Clima`.
 
 Download for a device discovered at a LAN address:
 

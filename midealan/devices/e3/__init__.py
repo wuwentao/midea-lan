@@ -56,7 +56,22 @@ class MideaE3Device(MideaDevice):
                 DeviceAttributes.target_temperature: 40.0,
             },
         )
-        self._old_subtypes = [32, 33, 34, 35, 36, 37, 40, 43, 48, 49, 80]
+        # Lua isNewAgreement() routes these subtypes through the legacy X04 frame.
+        self._old_subtypes = [
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            43,
+            48,
+            49,
+            80,
+        ]
         self._precision_halves: bool | None = None
         self._default_precision_halves = False
         # target_temperature step
@@ -103,14 +118,16 @@ class MideaE3Device(MideaDevice):
         message.protection = self._attributes[DeviceAttributes.protection]
         message.zero_cold_pulse = self._attributes[DeviceAttributes.zero_cold_pulse]
         message.smart_volume = self._attributes[DeviceAttributes.smart_volume]
-        message.target_temperature = self._attributes[
-            DeviceAttributes.target_temperature
-        ]
+        target_temperature = self._attributes[DeviceAttributes.target_temperature]
+        message.target_temperature = (
+            target_temperature * 2 if self._precision_halves else target_temperature
+        )
         return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea E3 device set attribute."""
         message: MessagePower | MessageSet | NewProtocolSet | None = None
+        requested_value = value
         if attr not in [
             DeviceAttributes.burning_state,
             DeviceAttributes.current_temperature,
@@ -129,6 +146,8 @@ class MideaE3Device(MideaDevice):
                 message.key = str(attr)
                 message.value = value
             self.build_send(message)
+            if isinstance(message, MessageSet):
+                self._attributes[DeviceAttributes(attr)] = requested_value
 
     def set_customize(self, customize: str) -> None:
         """Midea E3 device set customize."""

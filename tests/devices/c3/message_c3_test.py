@@ -1186,6 +1186,58 @@ class TestMessageC3Response:
         assert hasattr(response, "eco_timer_state")
         assert response.eco_timer_state is False
 
+    def test_message_eco_reply_tagged_as_x05(self) -> None:
+        """A short query 0x05 reply is an ECO frame some firmware mistags.
+
+        171H120F answers the 0x07 ECO query with a 6-byte body tagged as body
+        type 0x05. It must decode as ECO, never as silence, otherwise
+        silent_mode/silent_level flip on every poll (issue #300).
+        """
+        self.header[-1] = MessageType.query
+        # 6-byte body (ECO frame from the issue log: state on, timer off,
+        # window 08:00-19:00), i.e. no optional eco_curve_type byte.
+        body = bytearray(
+            [
+                ListTypes.X05,  # BYTE 0: body type (mistagged by firmware)
+                0x01,  # BYTE 1: eco_function_state on, eco_timer_state off
+                0x08,  # BYTE 2: eco_timer_starthour
+                0x00,  # BYTE 3: eco_timer_startmin
+                0x13,  # BYTE 4: eco_timer_endhour
+                0x00,  # BYTE 5: eco_timer_endmin
+                0x00,  # CRC
+            ],
+        )
+        response = MessageC3Response(bytes(self.header + body))
+        assert response.body_type == ListTypes.X05
+        assert hasattr(response, "eco_function_state")
+        assert response.eco_function_state is True
+        assert hasattr(response, "eco_timer_state")
+        assert response.eco_timer_state is False
+        # The silence attributes must not be touched by the ECO frame.
+        assert not hasattr(response, "silent_mode")
+        assert not hasattr(response, "silent_level")
+
+        # 7-byte variant: same frame plus the optional eco_curve_type byte,
+        # with both ECO flags set. Still shorter than a silence reply.
+        body = bytearray(
+            [
+                ListTypes.X05,
+                0x03,  # eco_function_state and eco_timer_state both on
+                0x08,
+                0x00,
+                0x13,
+                0x00,
+                0x03,  # BYTE 6: eco_curve_type
+                0x00,  # CRC
+            ],
+        )
+        response = MessageC3Response(bytes(self.header + body))
+        assert hasattr(response, "eco_function_state")
+        assert response.eco_function_state is True
+        assert hasattr(response, "eco_timer_state")
+        assert response.eco_timer_state is True
+        assert not hasattr(response, "silent_mode")
+
     def test_message_disinfect_response(self) -> None:
         """Test message disinfect response."""
         self.header[-1] = MessageType.query

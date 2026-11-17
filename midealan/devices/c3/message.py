@@ -1705,6 +1705,16 @@ class C3EnergyBody(MessageBody):
         self.tas = body[data_offset + 13]
 
 
+# A query silence (0x05) reply is a fixed 10-byte body: the body-type byte
+# plus the silence flags and two 4-byte timer blocks (lua binToModel reads
+# _bodyBytes[1..9] unconditionally for both the 171H120F and 152832116442666
+# protocols). Some units (e.g. 171H120F) answer the 0x07 ECO query with a
+# frame mistakenly tagged as body type 0x05; that ECO reply is only 6 bytes
+# (7 with the optional eco_curve_type byte). The length is therefore the only
+# way to tell the two query+0x05 replies apart. See issue #300.
+C3_SILENCE_BODY_LENGTH = 10
+
+
 class C3SilenceBody(MessageBody):
     """C3 Silence message body."""
 
@@ -2162,7 +2172,14 @@ class MessageC3Response(MessageResponse):
         ):
             self.set_body(C3EnergyBody(body, data_offset=1))
         elif self.message_type == MessageType.query and self.body_type == ListTypes.X05:
-            self.set_body(C3SilenceBody(body, data_offset=1))
+            # The silence reply is a fixed 10-byte body. A shorter query+0x05
+            # frame is an ECO (0x07) reply that some firmware mistags as 0x05;
+            # decoding it as silence flips silent_mode/silent_level every poll
+            # (issue #300). Route by length so both replies parse correctly.
+            if len(body) >= C3_SILENCE_BODY_LENGTH:
+                self.set_body(C3SilenceBody(body, data_offset=1))
+            else:
+                self.set_body(C3ECOBody(body, data_offset=1))
         elif (
             self.message_type == MessageType.notify1 and self.body_type == ListTypes.X05
         ):

@@ -4,6 +4,7 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.a1.message import (
+    GroupOneQuery,
     MessageA1Base,
     MessageA1Response,
     MessageQuery,
@@ -82,6 +83,15 @@ class TestMessageQuery:
             ],
         )
         assert query.body[:-2] == expected_body
+
+
+class TestGroupOneQuery:
+    """Test the A1 compressor and evaporator group query."""
+
+    def test_query_body(self) -> None:
+        """Test the exact group-one request body."""
+        query = GroupOneQuery(protocol_version=ProtocolVersion.V1)
+        assert query.body[:-2] == bytearray([0x41, 0x21, 0x01, 0x41, 0x00, 0x01])
 
 
 class TestNewProtocolQuery:
@@ -229,6 +239,56 @@ class TestMessageA1Response:
         assert hasattr(response, "current_temperature")
         assert response.current_temperature == 25
         assert hasattr(response, "swing")
+
+    @pytest.mark.parametrize(
+        ("message_hex", "compressor", "evaporator_temperature"),
+        [
+            (
+                "aa1fa100000000000803c82101c13200000000004e340000000000000036b3ed",
+                True,
+                1.0,
+            ),
+            (
+                "aa1fa100000000000803c82101c10000000000004c4400000000000000415960",
+                False,
+                9.0,
+            ),
+        ],
+    )
+    def test_a1_group_one_response(
+        self,
+        message_hex: str,
+        compressor: bool,
+        evaporator_temperature: float,
+    ) -> None:
+        """Test captured running and idle group-one replies."""
+        response = MessageA1Response(bytearray.fromhex(message_hex))
+        assert response.compressor is compressor
+        assert response.evaporator_temperature == evaporator_temperature
+        assert not hasattr(response, "power")
+
+    def test_a1_short_group_one_response_is_ignored(self) -> None:
+        """Test a truncated group reply does not enter the general C8 decoder."""
+        header = bytearray([0xAA, 0, 0xA1, 0, 0, 0, 0, 0, 1, 3])
+        response = MessageA1Response(
+            header + bytearray([0xC8, 0x21, 0x01, 0xC1, 0]),
+        )
+        assert not hasattr(response, "compressor")
+        assert not hasattr(response, "power")
+
+    def test_a1_general_c8_response_uses_standard_decoder(self) -> None:
+        """Test an ordinary C8 status is not mistaken for group telemetry."""
+        message = bytearray.fromhex(
+            "aa23a100000000000803c80101507f7f005500000000000000003d60000000000040eafd",
+        )
+        response = MessageA1Response(message)
+        assert hasattr(response, "power")
+        assert hasattr(response, "mode")
+        assert hasattr(response, "target_humidity")
+        assert response.power is True
+        assert response.mode == 1
+        assert response.target_humidity == 85
+        assert not hasattr(response, "compressor")
 
     def test_a1_new_protocol_message_query(self) -> None:
         """Test A1 new protocol message query."""

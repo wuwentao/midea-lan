@@ -8,11 +8,13 @@ from typing import Any, ClassVar, Unpack
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
 
-from .message import MessageA1Response, MessageQuery, MessageSet
+from .message import GroupOneQuery, MessageA1Response, MessageQuery, MessageSet
 
 _LOGGER = logging.getLogger(__name__)
 
 INITIAL_FAN_SPEED = 60
+GROUP_ONE_PROFILE_MODEL = "00000Q1A"
+GROUP_ONE_PROFILE_SUBTYPE = 41377
 
 
 class DeviceAttributes(StrEnum):
@@ -33,6 +35,8 @@ class DeviceAttributes(StrEnum):
     current_humidity = "current_humidity"
     current_temperature = "current_temperature"
     filter_cleaning_reminder = "filter_cleaning_reminder"
+    compressor = "compressor"
+    evaporator_temperature = "evaporator_temperature"
 
 
 class MideaA1Device(MideaDevice):
@@ -54,6 +58,10 @@ class MideaA1Device(MideaDevice):
         127: "off",
     }
     _water_level_sets: ClassVar[list[str]] = ["25", "50", "75", "100"]
+    _group_one_attributes: ClassVar[tuple[DeviceAttributes, ...]] = (
+        DeviceAttributes.compressor,
+        DeviceAttributes.evaporator_temperature,
+    )
 
     def __init__(
         self,
@@ -62,26 +70,41 @@ class MideaA1Device(MideaDevice):
         **kwargs: Unpack[MideaDeviceInitKwargs],
     ) -> None:
         """Initialize Midea A1 device."""
+        sn8 = kwargs.get("sn8")
+        normalized_sn8 = (sn8.strip("\x00").strip() or None) if sn8 else None
+        profile_identifiers = (kwargs["model"], normalized_sn8)
+        self._supports_group_one = (
+            kwargs["subtype"] == GROUP_ONE_PROFILE_SUBTYPE
+            and GROUP_ONE_PROFILE_MODEL in profile_identifiers
+        )
+        attributes = {
+            DeviceAttributes.power: False,
+            DeviceAttributes.prompt_tone: True,
+            DeviceAttributes.child_lock: False,
+            DeviceAttributes.mode: None,
+            DeviceAttributes.fan_speed: "medium",
+            DeviceAttributes.swing: False,
+            DeviceAttributes.target_humidity: 35,
+            DeviceAttributes.anion: False,
+            DeviceAttributes.pump: False,
+            DeviceAttributes.tank: 0,
+            DeviceAttributes.water_level_set: 50,
+            DeviceAttributes.tank_full: None,
+            DeviceAttributes.current_humidity: None,
+            DeviceAttributes.current_temperature: None,
+            DeviceAttributes.filter_cleaning_reminder: False,
+        }
+        if self._supports_group_one:
+            attributes.update(
+                {
+                    DeviceAttributes.compressor: None,
+                    DeviceAttributes.evaporator_temperature: None,
+                },
+            )
         super().__init__(
             device_type=DeviceType.A1,
             **kwargs,
-            attributes={
-                DeviceAttributes.power: False,
-                DeviceAttributes.prompt_tone: True,
-                DeviceAttributes.child_lock: False,
-                DeviceAttributes.mode: None,
-                DeviceAttributes.fan_speed: "medium",
-                DeviceAttributes.swing: False,
-                DeviceAttributes.target_humidity: 35,
-                DeviceAttributes.anion: False,
-                DeviceAttributes.pump: False,
-                DeviceAttributes.tank: 0,
-                DeviceAttributes.water_level_set: 50,
-                DeviceAttributes.tank_full: None,
-                DeviceAttributes.current_humidity: None,
-                DeviceAttributes.current_temperature: None,
-                DeviceAttributes.filter_cleaning_reminder: False,
-            },
+            attributes=attributes,
         )
         self._pump_enable = False
         self._speeds = self._default_speeds
@@ -103,9 +126,14 @@ class MideaA1Device(MideaDevice):
         """Midea A1 device water level options."""
         return MideaA1Device._water_level_sets
 
-    def build_query(self) -> list[MessageQuery]:
+    def build_query(self) -> list[MessageQuery | GroupOneQuery]:
         """Midea A1 device build query."""
-        return [MessageQuery(self._message_protocol_version)]
+        queries: list[MessageQuery | GroupOneQuery] = [
+            MessageQuery(self._message_protocol_version),
+        ]
+        if self._supports_group_one:
+            queries.append(GroupOneQuery(self._message_protocol_version))
+        return queries
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea A1 device process message."""
@@ -115,6 +143,16 @@ class MideaA1Device(MideaDevice):
         if hasattr(message, "pump_enable"):
             self._pump_enable = message.pump_enable
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        if self._supports_group_one and hasattr(
+            message,
+            DeviceAttributes.compressor,
+        ):
+            group_status = {}
+            for status in self._group_one_attributes:
+                value = getattr(message, status)
+                self._attributes[status] = value
+                group_status[status.value] = value
+            return group_status
         new_status = {}
         for status in self._attributes:
             if hasattr(message, str(status)):
@@ -186,6 +224,8 @@ class MideaA1Device(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea A1 device set attribute."""
+        if attr in self._group_one_attributes:
+            return
         if attr == DeviceAttributes.prompt_tone:
             self._attributes[DeviceAttributes.prompt_tone] = value
             self.update_all({DeviceAttributes.prompt_tone.value: value})

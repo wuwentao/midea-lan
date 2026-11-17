@@ -838,18 +838,35 @@ class MideaDevice(threading.Thread):
             self._appliance_query = False
             _LOGGER.debug("[%s] Appliance query Received: %s", self._device_id, message)
             self._message_protocol_version = message.protocol_version
-            # Log every field the 0xA0 body carries for future reference. The app
-            # (GetA0InfoResult) only decodes the device type + subtype; the rest of
-            # the body is per-device encrypted Lua, so dump it raw as hex so it can
-            # be decoded later without re-capturing the frame.
-            _LOGGER.debug(
-                "[%s] appliance info (0xA0): info_device_type %s device_subtype %s "
-                "body %s",
-                self._device_id,
-                message.info_device_type,
-                message.device_subtype,
-                message.body.hex(),
-            )
+            # The 0xA0 reply restates the device type + subtype (the app's
+            # GetA0InfoResult decodes only those; the rest of the body is
+            # per-device encrypted Lua). Both values are already known from
+            # discovery/cloud and the full body is dumped by the "Appliance query
+            # Received" line above, so there is nothing new to log when they
+            # agree -- the known value stays authoritative and is reused as is.
+            # Only surface a divergence, which points at stale cloud data or a
+            # misrouted reply. A short body leaves the parsed value None, which is
+            # not a mismatch.
+            if (
+                message.info_device_type is not None
+                and message.info_device_type != self._device_type
+            ):
+                _LOGGER.debug(
+                    "[%s] 0xA0 device type mismatch: known 0x%02x reported 0x%02x",
+                    self._device_id,
+                    self._device_type,
+                    message.info_device_type,
+                )
+            if (
+                message.device_subtype is not None
+                and message.device_subtype != self._subtype
+            ):
+                _LOGGER.debug(
+                    "[%s] 0xA0 subtype mismatch: known %s reported %s",
+                    self._device_id,
+                    self._subtype,
+                    message.device_subtype,
+                )
             _LOGGER.debug(
                 "[%s] device model %s subtype %s sn8 %s manufacturer_code %s "
                 "cloud_name %s, device protocol %s, msg protocol %s",

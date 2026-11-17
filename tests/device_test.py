@@ -130,60 +130,89 @@ def test_parse_message_short_appliance_query_message_skips_process_message() -> 
     assert device._appliance_query is True
 
 
-def test_pre_process_message_appliance_query_logs_info_fields(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Test a valid 0xA0 appliance query parses and logs its info fields."""
-    device = MideaDevice(
+def _make_appliance_device(
+    device_type: DeviceType,
+    subtype: int,
+) -> MideaDevice:
+    """Build a device for the 0xA0 appliance-query log tests."""
+    return MideaDevice(
         name="Test Device",
         device_id=1,
-        device_type=DeviceType.AC,
+        device_type=device_type,
         ip_address="192.168.1.100",
         port=6444,
         token=DEFAULT_KEYS[99]["token"],
         key=DEFAULT_KEYS[99]["key"],
         device_protocol=ProtocolVersion.V3,
         model="test_model",
-        subtype=1,
+        subtype=subtype,
         attributes={},
         mac="1234567890ab",
     )
-    # 0xA0 reply: msg[9] is the message type, body = frame[10:-1] =
-    # [0xC0, 0xAC, 0x34, 0x12] -> device type 0xAC, little-endian subtype 0x1234.
-    frame = bytearray(
-        [
-            0xAA,
-            0x0F,
-            0xAC,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            0x03,
-            0xA0,
-            0xC0,
-            0xAC,
-            0x34,
-            0x12,
-            0x00,
-        ],
-    )
+
+
+def _appliance_frame(body: list[int]) -> bytearray:
+    """Wrap a 0xA0 body in a frame: msg[9] is the type, body = frame[10:-1].
+
+    The 10-byte header carries the 0xA0 message type at index 9; the trailing
+    0x00 stands in for the CRC byte that ``body = frame[10:-1]`` strips off.
+    """
+    header = bytearray([0xAA, 0x0F, 0xAC, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xA0])
+    return header + bytearray(body) + bytearray([0x00])
+
+
+def test_pre_process_message_appliance_query_consistent_no_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 0xA0 reply whose type/subtype match the known values logs no mismatch."""
+    # Known subtype 4660 == body subtype 0x1234, known type 0xAC == body 0xAC.
+    device = _make_appliance_device(DeviceType.AC, 4660)
+    frame = _appliance_frame([0xC0, 0xAC, 0x34, 0x12])
     with caplog.at_level(logging.DEBUG, logger="midealan.device"):
         assert device.pre_process_message(frame) is False
 
     assert device._appliance_query is False
     assert device._message_protocol_version == 3
-    info_logs = [
-        record.message
-        for record in caplog.records
-        if "appliance info (0xA0)" in record.message
-    ]
-    assert len(info_logs) == 1
-    # Logged with %s: device type 0xAC -> 172, subtype 0x1234 -> 4660, raw hex.
-    assert "info_device_type 172" in info_logs[0]
-    assert "device_subtype 4660" in info_logs[0]
-    assert "body c0ac3412" in info_logs[0]
+    # No divergence, so no mismatch line is emitted.
+    assert not [r.message for r in caplog.records if "mismatch" in r.message]
+    # The parsed values and raw body are still visible in the query dump above.
+    received = next(
+        r.message for r in caplog.records if "Appliance query Received" in r.message
+    )
+    assert "info_device_type': 172" in received
+    assert "device_subtype': 4660" in received
+    assert "'body': 'c0ac3412'" in received
+
+
+def test_pre_process_message_appliance_query_logs_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A 0xA0 reply that disagrees logs the type and subtype diff only."""
+    # Known type 0xAC / subtype 1; body reports type 0xB0 / subtype 0x1234=4660.
+    device = _make_appliance_device(DeviceType.AC, 1)
+    frame = _appliance_frame([0xC0, 0xB0, 0x34, 0x12])
+    with caplog.at_level(logging.DEBUG, logger="midealan.device"):
+        assert device.pre_process_message(frame) is False
+
+    messages = [r.message for r in caplog.records]
+    assert any(
+        "0xA0 device type mismatch: known 0xac reported 0xb0" in m for m in messages
+    )
+    assert any("0xA0 subtype mismatch: known 1 reported 4660" in m for m in messages)
+
+
+def test_pre_process_message_appliance_query_short_body_no_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A too-short 0xA0 body parses to None and logs no mismatch (no crash)."""
+    device = _make_appliance_device(DeviceType.AC, 1)
+    # Body [0xC0] is shorter than the 3 bytes needed to decode type/subtype.
+    frame = _appliance_frame([]) + bytearray([0xC0, 0x00])
+    with caplog.at_level(logging.DEBUG, logger="midealan.device"):
+        assert device.pre_process_message(frame) is False
+
+    assert device._appliance_query is False
+    assert not [r.message for r in caplog.records if "mismatch" in r.message]
 
 
 class TestMideaDevice:

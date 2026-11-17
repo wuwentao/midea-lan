@@ -17,6 +17,19 @@ MAX_MSG_SERIAL_NUM = 100
 MIN_TARGET_HUMIDITY = 35
 MIN_FAN_SPEED = 5
 
+# This undocumented group is absent from the vendor Lua, but the device log in
+# https://github.com/wuwentao/midea_ac_lan/issues/1230 confirms the query and
+# response signature on model 00000Q1A. The response uses C8, so the complete
+# prefix must be checked before falling back to the ordinary A1 C8 decoder.
+GROUP_ONE_QUERY_BODY = (0x21, 0x01, 0x41, 0x00, 0x01)
+GROUP_ONE_RESPONSE_PREFIX = bytes((0xC8, 0x21, 0x01, 0xC1))
+GROUP_ONE_COMPRESSOR_INDEX = 4
+GROUP_ONE_COMPRESSOR_RUNNING = 0x32
+GROUP_ONE_EVAPORATOR_TEMPERATURE_INDEX = 11
+GROUP_ONE_TEMPERATURE_OFFSET = 50
+GROUP_ONE_TEMPERATURE_DIVISOR = 2
+GROUP_ONE_MIN_LENGTH = GROUP_ONE_EVAPORATOR_TEMPERATURE_INDEX + 1
+
 
 class NewProtocolTags(IntEnum):
     """New protocol tags."""
@@ -95,6 +108,22 @@ class MessageQuery(MessageA1Base):
                 0x00,
             ],
         )
+
+
+class GroupOneQuery(MessageA1Base):
+    """Query the verified A1 compressor and evaporator group."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize the A1 group-one query."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.query,
+            body_type=ListTypes.X41,
+        )
+
+    @property
+    def _body(self) -> bytearray:
+        return bytearray(GROUP_ONE_QUERY_BODY)
 
 
 class NewProtocolQuery(MessageA1Base):
@@ -240,6 +269,20 @@ class A1GeneralMessageBody(MessageBody):
         self.filter_cleaning_reminder = (body[9] & 0x80) > 0
 
 
+class A1GroupOneMessageBody(MessageBody):
+    """A1 compressor and evaporator group response body."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Decode fields verified against the issue debug capture."""
+        super().__init__(body)
+        self.compressor = (
+            body[GROUP_ONE_COMPRESSOR_INDEX] == GROUP_ONE_COMPRESSOR_RUNNING
+        )
+        self.evaporator_temperature = (
+            body[GROUP_ONE_EVAPORATOR_TEMPERATURE_INDEX] - GROUP_ONE_TEMPERATURE_OFFSET
+        ) / GROUP_ONE_TEMPERATURE_DIVISOR
+
+
 class A1NewProtocolMessageBody(NewProtocolMessageBody):
     """A1 new protocol message body."""
 
@@ -254,20 +297,31 @@ class A1NewProtocolMessageBody(NewProtocolMessageBody):
 class MessageA1Response(MessageResponse):
     """A1 message response."""
 
+    # Populated dynamically by MessageResponse.set_attr().
+    compressor: bool
+    evaporator_temperature: float
+
     def __init__(self, message: bytearray) -> None:
         """Initialize A1 message response."""
         super().__init__(message)
+        body = super().body
         if self.message_type in [
             MessageType.query,
             MessageType.set,
             MessageType.notify1,
         ]:
-            if self.body_type in [ListTypes.B0, ListTypes.B1, ListTypes.B5]:
-                self.set_body(A1NewProtocolMessageBody(super().body))
+            if (
+                self.message_type == MessageType.query
+                and body[: len(GROUP_ONE_RESPONSE_PREFIX)] == GROUP_ONE_RESPONSE_PREFIX
+            ):
+                if len(body) >= GROUP_ONE_MIN_LENGTH:
+                    self.set_body(A1GroupOneMessageBody(body))
+            elif self.body_type in [ListTypes.B0, ListTypes.B1, ListTypes.B5]:
+                self.set_body(A1NewProtocolMessageBody(body))
             else:
-                self.set_body(A1GeneralMessageBody(super().body))
+                self.set_body(A1GeneralMessageBody(body))
         elif (
             self.message_type == MessageType.notify2 and self.body_type == ListTypes.A0
         ):
-            self.set_body(A1GeneralMessageBody(super().body))
+            self.set_body(A1GeneralMessageBody(body))
         self.set_attr()

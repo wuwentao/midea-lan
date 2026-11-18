@@ -50,8 +50,11 @@ def device_selector(
             sn8=sn8,
             manufacturer_code=manufacturer_code,
             cloud_name=cloud_name,
-            cert_bundle=cert_bundle,
         )
+        # Provision the udp_version>=4 TLS certificate bundle after
+        # construction; device subclasses forward MideaDeviceInitKwargs and do
+        # not accept cert_bundle as a constructor argument.
+        device.apply_cert_bundle(cert_bundle)
     except ModuleNotFoundError:
         device = None
     return cast("MideaDevice", device)

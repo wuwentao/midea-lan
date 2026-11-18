@@ -126,11 +126,6 @@ class MideaDeviceInitKwargs(TypedDict):
     sn8: NotRequired[str | None]
     manufacturer_code: NotRequired[str | None]
     cloud_name: NotRequired[str | None]
-    # udp_version>=4 "TLS" appliances are controlled over an app certificate +
-    # ECDH session instead of the token/key 8370 handshake. The caller
-    # provisions the bundle from the cloud (see ``cloud.apply_cert``) and passes
-    # it here; its presence selects the TLS transport.
-    cert_bundle: NotRequired[CertBundle | None]
 
 
 class MideaDevice(threading.Thread):
@@ -210,13 +205,29 @@ class MideaDevice(threading.Thread):
         )
         self._last_response_toshiba: bool | None = False
         self._selected_toshiba_wire_type: DeviceType | int | None = None
-        # udp_version>=4 "TLS" transport: when a provisioned certificate bundle
-        # is supplied the device runs the 0x75 cert/ECDH handshake instead of
-        # the 8370 token handshake, and all control frames are AES-128-CCM
-        # MSWifiDatagrams keyed by the negotiated session key.
-        self._cert_bundle: CertBundle | None = kwargs.get("cert_bundle")
-        self._tls_enabled = self._cert_bundle is not None
+        # udp_version>=4 "TLS" transport: ``device_selector`` provisions the
+        # certificate bundle after construction via ``apply_cert_bundle``
+        # (device subclasses forward ``MideaDeviceInitKwargs`` and do not take
+        # ``cert_bundle`` themselves). A provisioned bundle selects the 0x75
+        # cert/ECDH handshake instead of the 8370 token handshake, and all
+        # control frames become AES-128-CCM MSWifiDatagrams keyed by the
+        # negotiated session key.
+        self._cert_bundle: CertBundle | None = None
+        self._tls_enabled = False
         self._tls_codec: MSDatagram | None = None
+
+    def apply_cert_bundle(self, cert_bundle: CertBundle | None) -> None:
+        """Provision the udp_version>=4 "TLS" certificate bundle.
+
+        ``device_selector`` calls this right after construction. Keeping it off
+        the constructor lets device subclasses forward ``MideaDeviceInitKwargs``
+        (a ``dict[str, str | None]``) without the bundle widening every caller's
+        kwargs type. A non-None bundle selects the TLS transport: the device
+        runs the 0x75 cert/ECDH handshake instead of the 8370 token handshake
+        and control frames become AES-128-CCM MSWifiDatagrams.
+        """
+        self._cert_bundle = cert_bundle
+        self._tls_enabled = cert_bundle is not None
 
     _fahrenheit_default: ClassVar[bool] = False
 

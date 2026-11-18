@@ -2451,7 +2451,7 @@ class TestMideaDeviceTLS:
     @staticmethod
     def _tls_device(bundle: CertBundle) -> _TLSTestDevice:
         """Build a TLS-enabled device carrying a provisioned cert bundle."""
-        return _TLSTestDevice(
+        device = _TLSTestDevice(
             name="TLS Device",
             device_id=_DEVICE_ID,
             device_type=DeviceType.AC,
@@ -2464,8 +2464,10 @@ class TestMideaDeviceTLS:
             subtype=1,
             attributes={},
             mac="1234567890ab",
-            cert_bundle=bundle,
         )
+        # Provision the bundle through the same call device_selector uses.
+        device.apply_cert_bundle(bundle)
+        return device
 
     def _install_codec(
         self,

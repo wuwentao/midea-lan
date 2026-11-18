@@ -417,6 +417,15 @@ class MSDatagram:
                 raw_body[CCM_NONCE_LENGTH:],
                 aad,
             )
+        elif self._session_key is not None:
+            # Once a session key is installed every application frame must be
+            # CCM-protected. Accepting ENCRYPT_TYPE_NONE (or an unsupported
+            # type) here would let a peer that can inject bytes into the TCP
+            # stream supply an unauthenticated data-transmit payload, because
+            # the trailing signature is not verified. The handshake codec never
+            # holds a session key, so key agreement still exchanges its
+            # plaintext frames through the else branch below.
+            raise CannotAuthenticate
         else:
             body = raw_body
 

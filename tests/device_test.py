@@ -32,7 +32,9 @@ from midealan.message import (
     encode_toshiba_frame,
 )
 from midealan.tls import (
+    FRAME_MAGIC,
     MSG_TYPE_DATA_TRANSMIT,
+    MSG_TYPE_DATA_TRANSMIT_RESPONSE,
     MSG_TYPE_HEARTBEAT,
     MSG_TYPE_HEARTBEAT_RESPONSE,
     CertBundle,
@@ -2432,6 +2434,10 @@ class _FakeTLSSocket:
             self._buf += self._device.respond_finish()
         return len(data)
 
+    def sendall(self, data: bytes) -> None:
+        """Send the whole frame (the handshake uses sendall, not send)."""
+        self.send(data)
+
     def recv(self, size: int) -> bytes:
         """Return up to ``size`` queued reply bytes."""
         chunk = bytes(self._buf[:size])
@@ -2577,6 +2583,17 @@ class TestMideaDeviceTLS:
         device._socket = sock
         assert device._recv_tls_frame() == frame
 
+    def test_recv_tls_frame_length_below_minimum(self) -> None:
+        """A 5a5a header declaring a sub-minimum length is rejected."""
+        device = self._tls_device(_make_bundle())
+        device._socket = MagicMock()
+        # Full-length buffer, valid magic, but declared length 0 (< minimum).
+        buffer = bytearray(80)
+        buffer[0:2] = FRAME_MAGIC
+        device._buffer = bytes(buffer)
+        with pytest.raises(MessageWrongFormat):
+            device._recv_tls_frame()
+
     def test_send_message_tls_no_codec(self) -> None:
         """Sending before the handshake completes raises SocketException."""
         device = self._tls_device(_make_bundle())
@@ -2690,6 +2707,30 @@ class TestMideaDeviceTLS:
         frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
         assert device.parse_message(frame[:60]) == MessageResult.PADDING
         assert device._buffer == frame[:60]
+
+    def test_parse_tls_message_length_below_minimum_clears_buffer(self) -> None:
+        """A 5a5a frame declaring a sub-minimum length is dropped, not retained."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        # Valid magic, full-length buffer, but declared length 0 (< minimum):
+        # it can never complete, so the buffer must be cleared (not retained).
+        buffer = bytearray(80)
+        buffer[0:2] = FRAME_MAGIC
+        assert device.parse_message(bytes(buffer)) == MessageResult.PADDING
+        assert device._buffer == b""
+
+    def test_parse_tls_message_accepts_data_transmit_response(self) -> None:
+        """A 0x8020 data-transmit reply dispatches like a 0x0020 frame."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        updates: list[dict[str, Any]] = []
+        device.register_update(updates.append)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT_RESPONSE)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+        assert updates == [{"body": "01020304"}]
 
     def test_parse_tls_message_dispatch_error(self) -> None:
         """An exception in process_message is caught and yields PADDING."""

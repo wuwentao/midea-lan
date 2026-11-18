@@ -239,6 +239,25 @@ class TestMSDatagram:
         frame = codec.encode(b"abc", MSG_TYPE_DATA_TRANSMIT)
         assert codec.decode(frame).body == b"abc"
 
+    def test_decode_rejects_plaintext_after_session_key(self) -> None:
+        """A plaintext frame is rejected once a session key is installed."""
+        # An attacker who can inject into the TCP stream crafts a valid-looking
+        # unencrypted data-transmit frame; the application codec (which holds a
+        # session key) must refuse it rather than dispatch the payload.
+        sender = MSDatagram(_DEVICE_ID, ap_private_key=_AP_PRIVATE_KEY)
+        plaintext_frame = sender.encode(
+            b"\x01\x02\x03\x04",
+            MSG_TYPE_DATA_TRANSMIT,
+            encrypt_type=ENCRYPT_TYPE_NONE,
+        )
+        receiver = MSDatagram(
+            _DEVICE_ID,
+            ap_private_key=_AP_PRIVATE_KEY,
+            session_key=get_random_bytes(16),
+        )
+        with pytest.raises(CannotAuthenticate):
+            receiver.decode(plaintext_frame)
+
     def test_send_counter_wraps(self) -> None:
         """The send counter wraps back to 1 after 0xFFFF."""
         codec = MSDatagram(_DEVICE_ID, ap_private_key=_AP_PRIVATE_KEY)

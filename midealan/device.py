@@ -33,6 +33,7 @@ from .tls import (
     FRAME_MAGIC,
     HEADER_LENGTH,
     MSG_TYPE_DATA_TRANSMIT,
+    MSG_TYPE_DATA_TRANSMIT_RESPONSE,
     MSG_TYPE_HEARTBEAT,
     MSG_TYPE_HEARTBEAT_RESPONSE,
     SIGNATURE_LENGTH,
@@ -49,6 +50,12 @@ MIN_V2_FACTUAL_MSG_LENGTH = 6
 # TLS frame is at least the 40-byte header plus its 16-byte trailing signature.
 TLS_LENGTH_OFFSET = 4
 TLS_MIN_FRAME_LENGTH = HEADER_LENGTH + SIGNATURE_LENGTH
+# A device answers a data-transmit query (0x0020) with the high-bit reply type
+# 0x8020 (MSG_TYPE_DATA_TRANSMIT_RESPONSE); both carry an appliance payload we
+# must dispatch, so the TLS body filter accepts either.
+TLS_DATA_TRANSMIT_TYPES = frozenset(
+    {MSG_TYPE_DATA_TRANSMIT, MSG_TYPE_DATA_TRANSMIT_RESPONSE},
+)
 # A TLS handshake reply can exceed the classic 512-byte recv window because it
 # carries the module certificate chain.
 TLS_RECV_BUFFER = 4096
@@ -450,7 +457,10 @@ class MideaDevice(threading.Thread):
         session = TLSSession(self._cert_bundle, self._device_id)
         _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
         try:
-            self._socket.send(session.build_cert_request())
+            # sendall() guarantees the whole handshake frame is written; a bare
+            # send() may transmit only part of the (large) cert request, leaving
+            # both peers waiting on each other.
+            self._socket.sendall(session.build_cert_request())
             reply = self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: cert response %d bytes: %s",
@@ -459,7 +469,7 @@ class MideaDevice(threading.Thread):
                 reply.hex(),
             )
             session.process_cert_response(reply)
-            self._socket.send(session.build_finish())
+            self._socket.sendall(session.build_finish())
             finish_reply = self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: finish response %d bytes: %s",
@@ -499,7 +509,12 @@ class MideaDevice(threading.Thread):
                     self._buffer[TLS_LENGTH_OFFSET : TLS_LENGTH_OFFSET + 2],
                     "little",
                 )
-                if length >= TLS_MIN_FRAME_LENGTH and len(self._buffer) >= length:
+                if length < TLS_MIN_FRAME_LENGTH:
+                    # A declared length below the header+signature floor is
+                    # corrupt framing, not a short read; waiting for more bytes
+                    # would spin forever, so reject the frame outright.
+                    raise MessageWrongFormat("TLS frame length below minimum")
+                if len(self._buffer) >= length:
                     frame = self._buffer[:length]
                     self._buffer = self._buffer[length:]
                     return frame
@@ -1072,7 +1087,19 @@ class MideaDevice(threading.Thread):
                 self._buffer[TLS_LENGTH_OFFSET : TLS_LENGTH_OFFSET + 2],
                 "little",
             )
-            if length < TLS_MIN_FRAME_LENGTH or len(self._buffer) < length:
+            if length < TLS_MIN_FRAME_LENGTH:
+                # Corrupt framing: a sub-minimum length can never complete, so
+                # drop the buffer instead of retaining it and letting a chatty
+                # peer grow it without bound (mirrors the bad-magic reset).
+                _LOGGER.warning(
+                    "[%s] Dropping TLS buffer with length below minimum: %s",
+                    self._device_id,
+                    self._buffer.hex(),
+                )
+                self._buffer = b""
+                break
+            if len(self._buffer) < length:
+                # Valid length, frame not fully arrived yet: keep and wait.
                 break
             frame = self._buffer[:length]
             self._buffer = self._buffer[length:]
@@ -1083,7 +1110,7 @@ class MideaDevice(threading.Thread):
                 # counter instead of eventually reconnecting an idle device.
                 dispatched = True
                 continue
-            if parsed.msg_type != MSG_TYPE_DATA_TRANSMIT or not parsed.body:
+            if parsed.msg_type not in TLS_DATA_TRANSMIT_TYPES or not parsed.body:
                 # Handshake replies carry no appliance payload.
                 continue
             try:

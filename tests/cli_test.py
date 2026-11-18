@@ -282,7 +282,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         tls_device = {
             "device_id": 3,
             "protocol": ProtocolVersion.V3,
-            "type": "E3",
+            "type": 0xE3,
             "ip_address": "192.168.0.3",
             "port": 6444,
             "model": "",
@@ -317,7 +317,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             return {
                 "device_id": device_id,
                 "protocol": ProtocolVersion.V3,
-                "type": "E3",
+                "type": 0xE3,
                 "ip_address": ip,
                 "port": 6444,
                 "model": "",
@@ -354,7 +354,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         tls_device = {
             "device_id": 3,
             "protocol": ProtocolVersion.V3,
-            "type": "E3",
+            "type": 0xE3,
             "ip_address": "192.168.0.3",
             "port": 6444,
             "model": "",

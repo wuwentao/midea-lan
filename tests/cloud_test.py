@@ -2952,6 +2952,33 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         ):
             assert await cloud.apply_cert() is None
 
+    async def test_apply_cert_non_string_chain_entry(self) -> None:
+        """apply_cert aborts (not raises) when a chain entry is not a string.
+
+        A chain like ``[None, cert]`` clears the length check but would raise
+        inside base64.b64decode; apply_cert must return None so CLI discovery
+        skips the device instead of aborting.
+        """
+        cloud = self._cloud()
+        bad = {"cert": self._APP_CERT, "superiorCert": [None, self._CENTER_CERT]}
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(side_effect=[self._private_key_response(), bad]),
+        ):
+            assert await cloud.apply_cert() is None
+
+    async def test_apply_cert_non_mapping_datakey_entry(self) -> None:
+        """apply_cert aborts (not raises) when datakey[0] is not a mapping.
+
+        A payload like ``datakey=[None]`` clears the nonempty check but would
+        raise AttributeError on ``.get()``; apply_cert must return None.
+        """
+        cloud = self._cloud()
+        response = {"datakey": [None], "msmart": []}
+        with patch.object(cloud, "_api_request", AsyncMock(return_value=response)):
+            assert await cloud.apply_cert() is None
+
     async def test_cert_value_cbc_scheme(self) -> None:
         """The CBC privateKey scheme decrypts with the access-token key."""
         cloud = self._cloud()

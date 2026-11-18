@@ -525,7 +525,15 @@ class MideaCloud:
             return None
         cert = response.get("cert")
         superior = response.get("superiorCert") or []
-        if not isinstance(cert, str) or len(superior) < CERT_SUPERIOR_MIN:
+        # Guard every entry we b64decode below: a chain like [None, cert] clears
+        # the length check but raises inside base64.b64decode, and the CLI
+        # provisioning caller does not catch it, so discovery would abort
+        # instead of skipping the affected TLS device.
+        if (
+            not isinstance(cert, str)
+            or len(superior) < CERT_SUPERIOR_MIN
+            or not all(isinstance(entry, str) for entry in superior[:CERT_SUPERIOR_MIN])
+        ):
             _LOGGER.warning("applyCertByP10 response missing cert chain")
             return None
         return CertBundle(
@@ -554,7 +562,10 @@ class MideaCloud:
             _LOGGER.warning("privateKey returned no data")
             return None
         datakey = response.get("datakey") or []
-        if not datakey:
+        # datakey[0] must be a mapping before we read keyId from it; a payload
+        # like datakey=[None] clears the nonempty check but raises AttributeError
+        # on .get(), and that escapes apply_cert and stops CLI discovery.
+        if not datakey or not isinstance(datakey[0], Mapping):
             _LOGGER.warning("privateKey response missing datakey")
             return None
         # keyId is plaintext (it seeds the CSR common name); the AP private key

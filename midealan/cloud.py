@@ -1486,7 +1486,7 @@ class MideaAirCloud(MideaCloud):
             res = await self._session.get(url, timeout=ClientTimeout(10))
             if res.status != HTTPStatus.OK:
                 return None
-            return cast("str", await res.text())
+            return str(await res.text())
         except (ClientError, TimeoutError) as e:
             _LOGGER.warning(
                 "Failed to download lua for appliance %s from %s: %s",

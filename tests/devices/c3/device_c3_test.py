@@ -199,8 +199,8 @@ class TestMideaC3Device:
         assert isinstance(queries[-1], MessageQueryDiagnostic)
         assert device.temperature_step == 1.0
 
-    def test_build_query_17100007_keeps_standard_protocol(self) -> None:
-        """Test the 17100007 X00 model is not treated as short X01."""
+    def test_build_query_17100007_uses_2010_protocol(self) -> None:
+        """Test this model uses its confirmed query instead of legacy X01."""
         device = MideaC3Device(
             name="Test Device",
             device_id=1,
@@ -216,7 +216,10 @@ class TestMideaC3Device:
 
         queries = device.build_query()
 
-        assert len(queries) == 5
+        assert len(queries) == 6
+        assert queries[0].body == bytes.fromhex("002010ffffffff00ffff")
+        assert queries[1].body == bytes.fromhex("002080ffffffff00ffff")
+        assert queries[2].body == bytes.fromhex("002f12ffffffff00ffff")
         assert not any(isinstance(query, MessageQueryDiagnostic) for query in queries)
         assert device.temperature_step == 0.5
 
@@ -869,6 +872,36 @@ class TestMideaC3Device:
             assert new_status[name] == value, name
             assert self.device.attributes[DeviceAttributes[name]] == value, name
 
+    def test_process_message_17100007_keeps_setpoint_on_invalid_telemetry(
+        self,
+    ) -> None:
+        """Test a 2F10 0x7FFF idu_t1s1 sentinel keeps the 2010 setpoint echo."""
+        self.device._model = C3_X00_TELEMETRY_MODEL
+        basic = bytes.fromhex(
+            "aa7cc300000000000003002010ff1cffff00ffff01ff000301187fff00f001f4"
+            "00ff00000000010101000000000000000000020202022600fa00fa0032022600"
+            "fa00fa0032012c00aa025800c801f900010002ff010130000000002f00000000"
+            "000000000000000000000100500000ffff001a0b041603ff0000ff006f",
+        )
+        telemetry = bytes.fromhex(
+            "aac0c300000000000003002f10ff1cffff00ffff000000005a0050015e010601"
+            "04000000f10104000000f8012e01f90000006800d200960000be7fff7fff0039"
+            "0000000000000000086d000015ca00000840000014de00000004000000000000"
+            "0f960000055c2a03030000000000000000000000000000000000000000000000"
+            "00000001080000055c01e0000000000000000000000000014a00000001000101"
+            "000000000000000000054600000cf20000009400000008000000080000000001"
+            "e6",
+        )
+
+        self.device.process_message(basic)
+        assert self.device.attributes[DeviceAttributes.idu_t1s1] == 28.0
+
+        new_status = self.device.process_message(telemetry)
+
+        assert "idu_t1s1" not in new_status
+        assert self.device.attributes[DeviceAttributes.idu_t1s1] == 28.0
+        assert self.device.attributes[DeviceAttributes.temp_t1] == 26.0
+
     def test_process_message_x00_exposes_model_17100007_telemetry(self) -> None:
         """Test confirmed 0x2F10 telemetry reaches the device attributes."""
         self.device._model = C3_X00_TELEMETRY_MODEL
@@ -897,9 +930,11 @@ class TestMideaC3Device:
             "temp_tw_in": 26.0,
             "temp_tw_out": 27.8,
             "temp_t1": 27.8,
+            "temp_tw2": None,
             "temp_t2": 27.8,
             "temp_t2b": 36.1,
             "temp_t5": 30.0,
+            "temp_ta": None,
             "pressure_high": 1870,
             "temp_th": 6.0,
             "temp_tf": 18.0,

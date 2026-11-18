@@ -6,7 +6,7 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.a1 import DeviceAttributes, MideaA1Device
-from midealan.devices.a1.message import MessageQuery, MessageSet
+from midealan.devices.a1.message import GroupOneQuery, MessageQuery, MessageSet
 
 
 class TestMideaA1Device:
@@ -168,6 +168,69 @@ class TestMideaA1Device:
         queries = self.device.build_query()
         assert len(queries) == 1
         assert isinstance(queries[0], MessageQuery)
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [
+            ("00000Q1A", None),
+            ("Comfee CDDF7-20DEN7-WFI", "00000Q1A"),
+            ("Comfee CDDF7-20DEN7-WFI", "00000Q1A\x00\x00"),
+            ("Comfee CDDF7-20DEN7-WFI", " 00000Q1A "),
+        ],
+    )
+    def test_group_one_profile(self, model: str, sn8: str | None) -> None:
+        """Test group telemetry is enabled only for the verified profile."""
+        device = MideaA1Device(
+            name="Group Device",
+            device_id=2,
+            ip_address="192.168.1.101",
+            port=6444,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model=model,
+            subtype=41377,
+            sn8=sn8,
+            customize="",
+        )
+
+        queries = device.build_query()
+        assert len(queries) == 2
+        assert isinstance(queries[1], GroupOneQuery)
+        assert device.attributes[DeviceAttributes.compressor] is None
+        assert device.attributes[DeviceAttributes.evaporator_temperature] is None
+
+        running = bytes.fromhex(
+            "aa1fa100000000000803c82101c13200000000004e340000000000000036b3ed",
+        )
+        assert device.process_message(running) == {
+            DeviceAttributes.compressor.value: True,
+            DeviceAttributes.evaporator_temperature.value: 1.0,
+        }
+
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.compressor, False)
+            device.set_attribute(DeviceAttributes.evaporator_temperature, 5.0)
+            mock_build_send.assert_not_called()
+
+    def test_group_one_profile_requires_verified_subtype(self) -> None:
+        """Test the matching model alone does not enable the undocumented query."""
+        device = MideaA1Device(
+            name="Other Subtype",
+            device_id=3,
+            ip_address="192.168.1.102",
+            port=6444,
+            token="AA",
+            key="BB",
+            device_protocol=ProtocolVersion.V3,
+            model="00000Q1A",
+            subtype=1,
+            customize="",
+        )
+
+        assert len(device.build_query()) == 1
+        assert DeviceAttributes.compressor not in device.attributes
+        assert DeviceAttributes.evaporator_temperature not in device.attributes
 
     def test_make_message_set(self) -> None:
         """Test make message set."""

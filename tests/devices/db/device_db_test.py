@@ -1,5 +1,6 @@
 """Test DB Device."""
 
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +24,24 @@ DB_BODY = bytes.fromhex(
 DB_RESERVED = bytes.fromhex(
     "040106001f0540060303020400427a01208a0000db5933b10000003f0c080000"
     "02ffff000000ffffffffffffffff140101ffffffff01ff200000080000",
+)
+# Real notify1 frames from a v41 washer-dryer (SN8 38123703, subtype 16695):
+# drying status of a wash & dry cycle, then the end-of-cycle report (0405).
+V41_DRYING = (
+    "aa33db000000000000040401020002012101050000000000000010290000db37414c"
+    "0000000403000000000000000000000000de"
+)
+V41_CONSUMPTION = (
+    "aa33db000000000000040553017902090000ffffffffffffffffffffffffdb37414c"
+    "ffffffffffffff0000000000000000000085"
+)
+# Real query response from the MD10L7PRO (SN8 38131780, subtype 13914),
+# captured in midea_ac_lan issue #1140 (fast_wash_30, washing, dryer off).
+# The device's cloud decoder reported the matching values used below.
+V41_MD10L7PRO_STATUS = (
+    "aa47db00000000000003"
+    "0300000017022001030401000100000004010000db5a364c0000000f050000d0"
+    "ffffffffffffffffffffffffffff000101ffffffffff0000ffff08ffff"
 )
 BASE_ARGS: MideaDeviceInitKwargs = {
     "name": "Test laundry appliance",
@@ -454,6 +473,32 @@ class TestMideaDBDevice:
             )
 
     @pytest.mark.parametrize(
+        ("model", "subtype", "sn8", "manufacturer_code", "tag"),
+        [
+            ("38131140", 13145, None, None, "v33-write"),
+            ("38132386", 0, None, None, "v41-readonly"),
+            ("unknown", 99, None, None, "legacy"),
+            ("toshiba", 0, None, "0008", "legacy"),
+        ],
+    )
+    def test_profile_tag_is_logged_for_each_identity(
+        self,
+        model: str,
+        subtype: int,
+        sn8: str | None,
+        manufacturer_code: str | None,
+        tag: str,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Log the recognized profile (v33-write/v41-readonly/legacy) at init."""
+        args = device_args(model, subtype, sn8=sn8)
+        if manufacturer_code is not None:
+            args["manufacturer_code"] = manufacturer_code
+        with caplog.at_level(logging.DEBUG, logger="midealan.devices.db"):
+            MideaDBDevice(customize="", **args)
+        assert f"DB profile tag={tag}" in caplog.text
+
+    @pytest.mark.parametrize(
         ("model", "sn8"),
         [("38132386", None), ("marketing name", "38132386")],
     )
@@ -570,3 +615,113 @@ class TestMideaDBDevice:
             device.get_attribute(DeviceAttributes.appointment_controls_available)
             is True
         )
+
+    def test_verified_start_preserves_parameters(self) -> None:
+        """Start without replaying the stale snapshot that reset spin/time.
+
+        The verified v33 washer restored program-default spin speed and
+        minutes when start replayed MessageStart.washing_data. The profile
+        now sends a no-change parameter body with only the start status and
+        the current function flags (byte 13), so confirmed parameters stay.
+        """
+        device = verified_washer(DB_BODY)
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.start, True)
+        assert len(send.call_args_list) == 2
+        message = send.call_args_list[0].args[0]
+        assert isinstance(message, MessageParameters)
+        assert isinstance(send.call_args_list[1].args[0], MessageQuery)
+        body = message._body
+        # Status byte set to start; all parameters no-change; flags preserved.
+        assert body[1] == 0x01
+        assert body[12] == DB_BODY[13]
+        assert all(byte == 0xFF for i, byte in enumerate(body) if i not in (1, 12))
+
+    def test_verified_pause_preserves_parameters(self) -> None:
+        """Pause sends a no-change body with the pause status (not a snapshot)."""
+        device = verified_washer(DB_BODY)
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.start, False)
+        message = send.call_args_list[0].args[0]
+        assert isinstance(message, MessageParameters)
+        assert message._body[1] == 0x00
+
+    def test_verified_start_without_status_raises(self) -> None:
+        """Reject start before the washer has reported a real status."""
+        device = verified_washer()
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueError, match="powered on"),
+        ):
+            device.set_attribute(DeviceAttributes.start, True)
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38123703", None), ("MF200D80WB/T-A1", "38123703")],
+    )
+    def test_v41_washer_dryer_profile_publishes_lua_fields(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Expose drying, option, error and consumption fields for the profile."""
+        device = MideaDBDevice(customize="", **device_args(model, 16695, sn8=sn8))
+        assert DeviceAttributes.dryer in device.attributes
+        assert device.get_attribute(DeviceAttributes.dryer) is None
+        status = device.process_message(bytes.fromhex(V41_DRYING))
+        assert status[DeviceAttributes.program] == "fast_wash"
+        assert status[DeviceAttributes.progress] == "dry"
+        assert status[DeviceAttributes.dryer] == 1
+        assert status[DeviceAttributes.wind_dispel] is False
+        assert status[DeviceAttributes.remote_control_flag] is False
+        report = device.process_message(bytes.fromhex(V41_CONSUMPTION))
+        assert report == {
+            DeviceAttributes.water_consumption: 339,
+            DeviceAttributes.power_consumption: 633,
+            DeviceAttributes.wash_count: 9,
+        }
+        assert device.get_attribute(DeviceAttributes.dryer) == 1
+        assert device.get_attribute(DeviceAttributes.progress) == "dry"
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("38131780", None), ("MD10L7PRO", "38131780")],
+    )
+    def test_v41_md10l7pro_profile_decodes_real_frame(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Decode the MD10L7PRO (#1140) real status frame as the v41 profile.
+
+        Values match the device cloud decoder in the issue debug log.
+        """
+        device = MideaDBDevice(customize="", **device_args(model, 13914, sn8=sn8))
+        assert DeviceAttributes.dryer in device.attributes
+        status = device.process_message(bytes.fromhex(V41_MD10L7PRO_STATUS))
+        assert status[DeviceAttributes.program] == "fast_wash_30"
+        assert status[DeviceAttributes.progress] == "wash"
+        assert status[DeviceAttributes.dryer] == 0
+        assert status[DeviceAttributes.soak_count] == 2
+        assert status[DeviceAttributes.speedy] is False
+        assert status[DeviceAttributes.lock] is False
+        assert status[DeviceAttributes.appointment_time] == 0
+        assert status[DeviceAttributes.error_code] == 0
+        assert status[DeviceAttributes.beforehand_wash] is False
+        assert status[DeviceAttributes.steam_wash] is False
+        assert status[DeviceAttributes.add_rinse] is False
+        assert status[DeviceAttributes.wind_dispel] is False
+        assert status[DeviceAttributes.remote_control_flag] is False
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("38123703", 0), ("other", 16695), ("other", 0)],
+    )
+    def test_v41_fields_are_profile_scoped(self, model: str, subtype: int) -> None:
+        """Keep legacy DB profiles free of v41-only attributes."""
+        device = MideaDBDevice(customize="", **device_args(model, subtype))
+        status = device.process_message(bytes.fromhex(V41_DRYING))
+        assert DeviceAttributes.dryer not in device.attributes
+        assert DeviceAttributes.dryer not in status
+        assert device.process_message(bytes.fromhex(V41_CONSUMPTION)) == {}

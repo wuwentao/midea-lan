@@ -39,8 +39,27 @@ type ControlValue = bool | int | str | None
 # T_0000_DB_41.lua.
 PROFILE_MODEL = "38131140"
 PROFILE_SUBTYPE = 13145
+# Verified v33 write-control identities, as a frozenset of (model/sn8, subtype)
+# pairs mirroring V41_PROFILES. Add future verified v33 models here rather than
+# widening the gate; an identity here enables writes, so never auto-detect it.
+V33_PROFILES = frozenset({(PROFILE_MODEL, PROFILE_SUBTYPE)})
 PROFILE_V41_MODEL = "38132386"
 PROFILE_V41_SUBTYPE = 0
+# Front-load washer-dryer MF200D80WB/T-A1 (South America). Its cloud plugin
+# downloads the same T_0000_DB_41.lua; status frames verified against a device.
+PROFILE_V41_WASHER_DRYER_MODEL = "38123703"
+PROFILE_V41_WASHER_DRYER_SUBTYPE = 16695
+# Washer-dryer MD10L7PRO (China, Meiju). Its cloud download returns the same
+# T_0000_DB_41.lua, so it reuses the v41 read-only decode and program maps.
+PROFILE_V41_MD10L7PRO_MODEL = "38131780"
+PROFILE_V41_MD10L7PRO_SUBTYPE = 13914
+V41_PROFILES = frozenset(
+    {
+        (PROFILE_V41_MODEL, PROFILE_V41_SUBTYPE),
+        (PROFILE_V41_WASHER_DRYER_MODEL, PROFILE_V41_WASHER_DRYER_SUBTYPE),
+        (PROFILE_V41_MD10L7PRO_MODEL, PROFILE_V41_MD10L7PRO_SUBTYPE),
+    },
+)
 STATUS_IDLE = 0
 STATUS_STANDBY = 1
 STATUS_END = 4
@@ -85,6 +104,48 @@ APPOINTMENT_REPORT_MASK = 0x02
 APPOINTMENT_CONTROL_OFFSET = 35
 APPOINTMENT_OFF = 0xF3
 APPOINTMENT_ON = 0xF7
+# Start/pause control byte. The verified v33 washer reports its packed function
+# flags (e.g. the quick/speedy bit) at this offset; a start command must carry
+# the current flags back unchanged, so the appliance keeps the confirmed
+# spin/time parameters instead of restoring a stale start snapshot.
+FUNCTION_FLAGS_OFFSET = 13
+RUNNING_STATUSES = (2, 6)
+
+# DB v41 read-only status fields, named after T_0000_DB_41.lua
+# (updateGlobalPropertyValueByByte / assembleJsonByGlobalProperty).
+# The Lua decoder reads them from dataType 0202, 0303 and 0404 bodies.
+V41_STATUS_BODY_TYPES = (0x02, 0x03, 0x04)
+V41_DRYER_OFFSET = 6  # low nibble: dryer, high nibble: soakCount
+V41_DRYER_MASK = 0x0F
+V41_SOAK_COUNT_MASK = 0xF0
+V41_FUNCTION_OFFSET = 13  # byte13
+V41_SPEEDY_MASK = 0x08
+V41_LOCK_MASK = 0x20
+V41_ERROR_CODE_OFFSET = 24
+V41_WASH_OPTION_OFFSET = 25  # byte25
+V41_BEFOREHAND_WASH_MASK = 0x01
+V41_STEAM_WASH_MASK = 0x10
+V41_CARE_OPTION_OFFSET = 29  # byte29
+V41_ADD_RINSE_MASK = 0x04
+V41_WIND_DISPEL_MASK = 0x40
+V41_DEVICE_FLAG_OFFSET = 31  # byte31, absent from 31-byte status bodies
+V41_REMOTE_CONTROL_MASK = 0x04
+# dataType 0405: per-cycle report sent with the end status.
+V41_CONSUMPTION_LENGTH = 5
+V41_WATER_CONSUMPTION_OFFSET = 1
+V41_POWER_CONSUMPTION_OFFSET = 3
+# wash_count is not decoded by T_0000_DB_41.lua; the official app plugin for
+# 0xDB reads it from the same 0405 report (bit offset 120, 16 bits).
+V41_WASH_COUNT_OFFSET = 5
+V41_WASH_COUNT_END = 7
+
+
+class DBProfile(StrEnum):
+    """Tag identifying which protocol profile a washer was recognized as."""
+
+    legacy = "legacy"
+    v33_write = "v33-write"
+    v41_readonly = "v41-readonly"
 
 
 class ControlAttributes(StrEnum):
@@ -105,6 +166,28 @@ class ControlAttributes(StrEnum):
     appointment_controls_available = "appointment_controls_available"
     appointment = "appointment"
     appointment_finish = "appointment_finish"
+
+
+class V41Attributes(StrEnum):
+    """Read-only DB v41 status fields, named after T_0000_DB_41.lua keys."""
+
+    dryer = "dryer"
+    soak_count = "soak_count"
+    speedy = "speedy"
+    lock = "lock"
+    appointment_time = "appointment_time"
+    error_code = "error_code"
+    beforehand_wash = "beforehand_wash"
+    steam_wash = "steam_wash"
+    add_rinse = "add_rinse"
+    wind_dispel = "wind_dispel"
+    remote_control_flag = "remote_control_flag"
+    water_consumption = "water_consumption"
+    power_consumption = "power_consumption"
+    wash_count = "wash_count"
+
+
+type V41Status = dict[V41Attributes, bool | int]
 
 
 class ParameterField(NamedTuple):
@@ -345,6 +428,65 @@ APPOINTMENT_ATTRIBUTES = (
 )
 
 
+def decode_v41_status(body: bytearray) -> V41Status:
+    """Decode v41-only fields of a full status body (dataType 0202/0303/0404)."""
+    if len(body) < MINIMUM_STATUS_LENGTH or body[0] not in V41_STATUS_BODY_TYPES:
+        return {}
+    function = body[V41_FUNCTION_OFFSET]
+    wash_option = body[V41_WASH_OPTION_OFFSET]
+    care_option = body[V41_CARE_OPTION_OFFSET]
+    status: V41Status = {
+        # Drying level and soak count share one byte in the Lua decoder.
+        V41Attributes.dryer: body[V41_DRYER_OFFSET] & V41_DRYER_MASK,
+        V41Attributes.soak_count: (body[V41_DRYER_OFFSET] & V41_SOAK_COUNT_MASK)
+        >> NIBBLE_SHIFT,
+        V41Attributes.speedy: bool(function & V41_SPEEDY_MASK),
+        V41Attributes.lock: bool(function & V41_LOCK_MASK),
+        # appointment_time is a little-endian minute count (bytes 14-15).
+        V41Attributes.appointment_time: int.from_bytes(
+            body[APPOINTMENT_TIME_OFFSET:APPOINTMENT_TIME_END],
+            "little",
+        ),
+        V41Attributes.error_code: body[V41_ERROR_CODE_OFFSET],
+        V41Attributes.beforehand_wash: bool(wash_option & V41_BEFOREHAND_WASH_MASK),
+        V41Attributes.steam_wash: bool(wash_option & V41_STEAM_WASH_MASK),
+        V41Attributes.add_rinse: bool(care_option & V41_ADD_RINSE_MASK),
+        # wind_dispel is the post-cycle fresh-air (anti-odour) option.
+        V41Attributes.wind_dispel: bool(care_option & V41_WIND_DISPEL_MASK),
+    }
+    if len(body) > V41_DEVICE_FLAG_OFFSET:
+        status[V41Attributes.remote_control_flag] = bool(
+            body[V41_DEVICE_FLAG_OFFSET] & V41_REMOTE_CONTROL_MASK,
+        )
+    return status
+
+
+def decode_v41_consumption(message_type: MessageType, body: bytearray) -> V41Status:
+    """Decode the v41 end-of-cycle report (dataType 0405) as raw Lua counters."""
+    if (
+        message_type != MessageType.notify1
+        or len(body) < V41_CONSUMPTION_LENGTH
+        or body[0] != ListTypes.X05
+    ):
+        return {}
+    report: V41Status = {
+        V41Attributes.water_consumption: int.from_bytes(
+            body[V41_WATER_CONSUMPTION_OFFSET:V41_POWER_CONSUMPTION_OFFSET],
+            "little",
+        ),
+        V41Attributes.power_consumption: int.from_bytes(
+            body[V41_POWER_CONSUMPTION_OFFSET:V41_CONSUMPTION_LENGTH],
+            "little",
+        ),
+    }
+    if len(body) >= V41_WASH_COUNT_END:
+        report[V41Attributes.wash_count] = int.from_bytes(
+            body[V41_WASH_COUNT_OFFSET:V41_WASH_COUNT_END],
+            "little",
+        )
+    return report
+
+
 def parameter_body(length: int = PARAMETER_BODY_LENGTH) -> bytearray:
     """Build a no-change body, including no change to power and start."""
     return bytearray([ListTypes.X02] + [UNCHANGED] * (length - 1))
@@ -467,7 +609,7 @@ class DBGeneralMessageBody(MessageBody):
         """Initialize DB message general body."""
         super().__init__(body)
         self.power = body[1] > 0
-        self.start = body[2] in [2, 6]
+        self.start = body[STATUS_OFFSET] in RUNNING_STATUSES
         self.washing_data = body[3:16]
         self.status = body[2]
         self.mode = body[3]
@@ -726,6 +868,23 @@ class DBControls:
             protocol_version,
             self.encode(key, value),
         )
+
+    def start_message(self, *, start: bool, protocol_version: int) -> MessageParameters:
+        """Start or pause without overwriting the confirmed spin/time parameters.
+
+        The legacy start command replayed a 13-byte status snapshot
+        (MessageStart.washing_data), which on this washer restored the
+        program-default spin speed and minutes instead of the parameters the
+        user had just confirmed. Send a no-change parameter body that only
+        sets the start/pause status and carries the current function flags
+        (byte 13) back unchanged, so the appliance keeps its current state.
+        """
+        if not self.body:
+            raise ValueError("Keep the appliance powered on before start")
+        body = parameter_body()
+        body[STATUS_OFFSET] = START_COMMAND if start else PAUSE_COMMAND
+        body[FUNCTION_FLAGS_OFFSET] = self.body[FUNCTION_FLAGS_OFFSET]
+        return MessageParameters(protocol_version, body)
 
     def _encode(self, attr: ControlAttributes, value: bool | float | str) -> bytearray:
         """Encode a verified select option, preserving all other fields."""

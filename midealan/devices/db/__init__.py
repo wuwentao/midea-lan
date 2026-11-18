@@ -14,19 +14,21 @@ from midealan.exceptions import ValueWrongType
 from midealan.message import MessageRequest, MessageType, ToshibaFrame
 
 from .message import (
-    PROFILE_MODEL,
-    PROFILE_SUBTYPE,
-    PROFILE_V41_MODEL,
-    PROFILE_V41_SUBTYPE,
     PROGRAMS,
     TOSHIBA_PROGRAMS,
+    V33_PROFILES,
+    V41_PROFILES,
     V41_PROGRAMS,
     V41_TEMPERATURES,
     DBControls,
+    DBProfile,
     MessageDBResponse,
     MessagePower,
     MessageQuery,
     MessageStart,
+    V41Attributes,
+    decode_v41_consumption,
+    decode_v41_status,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -73,6 +75,21 @@ class DeviceAttributes(StrEnum):
     forget_free = "forget_free"
     stains = "stains"
     dirty_degree = "dirty_degree"
+    # Read-only v41 profile fields (see V41Attributes).
+    dryer = "dryer"
+    soak_count = "soak_count"
+    speedy = "speedy"
+    lock = "lock"
+    appointment_time = "appointment_time"
+    error_code = "error_code"
+    beforehand_wash = "beforehand_wash"
+    steam_wash = "steam_wash"
+    add_rinse = "add_rinse"
+    wind_dispel = "wind_dispel"
+    remote_control_flag = "remote_control_flag"
+    water_consumption = "water_consumption"
+    power_consumption = "power_consumption"
+    wash_count = "wash_count"
 
 
 class MideaDBDevice(MideaDevice):
@@ -289,22 +306,41 @@ class MideaDBDevice(MideaDevice):
             },
         )
 
-        is_v41 = self.subtype == PROFILE_V41_SUBTYPE and PROFILE_V41_MODEL in (
-            self.model,
-            self.sn8,
+        is_v41 = any(
+            self.subtype == subtype and model in (self.model, self.sn8)
+            for model, subtype in V41_PROFILES
         )
         self._is_v41_profile = is_v41
         self._profile_programs = V41_PROGRAMS if is_v41 else {}
         self._profile_temperatures = V41_TEMPERATURES if is_v41 else {}
-        self._controls = (
-            DBControls()
-            if not self.toshiba_protocol
-            and self.subtype == PROFILE_SUBTYPE
-            and PROFILE_MODEL in (self.model, self.sn8)
-            else None
+        if is_v41:
+            self._attributes.update(dict.fromkeys(V41Attributes))
+        # Verified v33 write identities live in V33_PROFILES (same (model/sn8,
+        # subtype) shape as V41_PROFILES). Both profiles are matched by explicit
+        # identity only: v33 enables writes and the v41 frame is indistinguishable
+        # from legacy, so neither is ever auto-detected from a response.
+        is_v33_write = not self.toshiba_protocol and any(
+            self.subtype == subtype and model in (self.model, self.sn8)
+            for model, subtype in V33_PROFILES
         )
+        self._controls = DBControls() if is_v33_write else None
         if self._controls is not None:
             self._attributes.update(self._controls.attributes)
+        if is_v41:
+            profile = DBProfile.v41_readonly
+        elif is_v33_write:
+            profile = DBProfile.v33_write
+        else:
+            profile = DBProfile.legacy
+        _LOGGER.debug(
+            "[%s] DB profile tag=%s (model=%s, sn8=%s, subtype=%s, toshiba=%s)",
+            self.device_id,
+            profile,
+            self.model,
+            self.sn8,
+            self.subtype,
+            self.toshiba_protocol,
+        )
 
     def get_parameter_options(self, attr: str) -> list[str]:
         """Return verified model options, including actual-minute time choices."""
@@ -374,6 +410,14 @@ class MideaDBDevice(MideaDevice):
             controls = self._controls.update(message.body)
             self._attributes.update(controls)
             new_status.update({str(attr): value for attr, value in controls.items()})
+        if self._is_v41_profile:
+            v41_status = (
+                decode_v41_status(message.body)
+                if hasattr(message, "washing_data")
+                else decode_v41_consumption(message.message_type, message.body)
+            )
+            self._attributes.update(v41_status)
+            new_status.update({str(attr): value for attr, value in v41_status.items()})
         return new_status
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
@@ -443,6 +487,17 @@ class MideaDBDevice(MideaDevice):
             message.power = value
             self.build_send(message)
         elif attr == DeviceAttributes.start:
+            if self._controls is not None:
+                # Verified v33 profile: preserve the confirmed parameters
+                # instead of replaying a stale start snapshot.
+                self.build_send(
+                    self._controls.start_message(
+                        start=value,
+                        protocol_version=self._message_protocol_version,
+                    ),
+                )
+                self.build_send(MessageQuery(self._message_protocol_version))
+                return
             message = MessageStart(self._message_protocol_version)
             message.start = value
             message.washing_data = self._attributes[DeviceAttributes.washing_data]

@@ -34,8 +34,16 @@ STATUS_RUNNING_PAUSED = 3
 type ControlValue = bool | int | str | None
 
 
-PROFILE_MODEL = "38208801"
 PROFILE_SUBTYPE = 13367
+# Dryers that use the extended profile. They share subtype 13367 but report
+# different identifiers, so match on either the marketing model or the sn8.
+# Append more verified (identifier, subtype) pairs as new units are confirmed.
+PROFILE_IDENTITIES = frozenset(
+    {
+        ("38208801", PROFILE_SUBTYPE),  # first verified extended-profile dryer
+        ("38208341", PROFILE_SUBTYPE),  # TH100QH19WZ, midea_ac_lan issue 1156
+    },
+)
 STATUS_IDLE = 0
 STATUS_STANDBY = 1
 STATUS_PAUSE = 3
@@ -60,6 +68,15 @@ TEMPERATURE_BODY_LENGTH = 33
 TEMPERATURE_CONTROL_OFFSET = 24
 RESERVED_CONTROL_OFFSET = 28
 SEASON_CONTROL_OFFSET = 29
+# Extended model-specific selects (verified against TH100QH19WZ captures and
+# Lua T_0000_DC_5.lua). Status and command use different body offsets.
+STEAM_REPORT_OFFSET = 26  # Lua [37] {0xf0:"steam", rshift 4}; high nibble
+STEAM_CONTROL_OFFSET = 20  # Lua command bitspec steam offset 240 -> body[20]
+STEAM_NIBBLE_SHIFT = 4
+STEAM_CONTROL_LOW_NIBBLE = 0x0F  # low nibble left unchanged in the command byte
+MATERIAL_REPORT_OFFSET = 28  # Lua [39] "material"; same byte as the raw sensor
+MATERIAL_CONTROL_OFFSET = 21  # Lua command bitspec material offset 248 -> body[21]
+EXTENDED_COMMAND_LENGTH = 30  # captured steam/material/season command body length
 TIMED_PROGRAM = 26
 TIMED_EXTRA_MAX = 170
 TIMED_EXTRA_STEP = 10
@@ -87,10 +104,20 @@ class ControlAttributes(StrEnum):
     sterilize = "sterilize"
     anti_wrinkle = "anti_wrinkle"
     timed_extra = "timed_extra"
+    steam_level_control = "steam_level_control"
+    material_control = "material_control"
+    season_control = "season_control"
     appointment_control_supported = "appointment_control_supported"
     appointment_controls_available = "appointment_controls_available"
     appointment = "appointment"
     appointment_finish = "appointment_finish"
+
+
+class DCProfile(StrEnum):
+    """Tag identifying which protocol profile a dryer was recognized as."""
+
+    generic = "generic"
+    extended = "extended"
 
 
 class ParameterField(NamedTuple):
@@ -98,6 +125,22 @@ class ParameterField(NamedTuple):
 
     offset: int
     options: dict[int, str]
+
+
+class ExtendedSelect(NamedTuple):
+    """Model-specific select with distinct status and command body offsets.
+
+    ``packed`` steam shares its command byte with an adjacent field, so the
+    raw code is written to the high nibble; the status byte is read the same way.
+    ``programs`` gates availability to the programs that expose the select, which
+    matches the app and the verified device readback.
+    """
+
+    report_offset: int
+    control_offset: int
+    options: dict[int, str]
+    programs: frozenset[int]
+    packed: bool = False
 
 
 GENERIC_PROGRAMS = {
@@ -191,6 +234,57 @@ PROFILE_PROGRAMS = {
     39: "air_wash",
 }
 TEMPERATURE_OPTIONS = {1: "standard", 2: "low"}
+# Steam-care levels 1/2/3 map to raw codes 2/3/4 (issue 1156, report byte 26
+# high nibble). The command byte uses the same high-nibble encoding.
+STEAM_LEVELS = {2: "1", 3: "2", 4: "3"}
+# Air-wash materials and their verified raw codes (issue 1156).
+MATERIAL_OPTIONS = {
+    1: "shirt",
+    3: "wool",
+    4: "down",
+    15: "plush_toy",
+    14: "odor_removal",
+    7: "small_suit",
+    6: "silk_quilt",
+    24: "latex",
+}
+# Hanfu seasonal choice (issue 1156): spring/summer 1, autumn/winter 2.
+SEASON_OPTIONS = {1: "spring_summer", 2: "autumn_winter"}
+# Programs that expose each model-specific select. Steam care, air wash and
+# hanfu program codes come from Lua T_0000_DC_5.lua; the hanfu variants share
+# the seasonal selector, so the whole family is gated together.
+STEAM_PROGRAMS = frozenset({24, 35, 38})  # steam_care, steam_sterilize, steam_no_iron
+AIR_WASH_PROGRAMS = frozenset({39})  # air_wash
+HANFU_PROGRAMS = frozenset({62, 85, 86, 87, 88})  # hanfu and its dynasty variants
+EXTENDED_SELECTS: dict[ControlAttributes, ExtendedSelect] = {
+    ControlAttributes.steam_level_control: ExtendedSelect(
+        STEAM_REPORT_OFFSET,
+        STEAM_CONTROL_OFFSET,
+        STEAM_LEVELS,
+        STEAM_PROGRAMS,
+        packed=True,
+    ),
+    ControlAttributes.material_control: ExtendedSelect(
+        MATERIAL_REPORT_OFFSET,
+        MATERIAL_CONTROL_OFFSET,
+        MATERIAL_OPTIONS,
+        AIR_WASH_PROGRAMS,
+    ),
+    ControlAttributes.season_control: ExtendedSelect(
+        SEASON_REPORT_OFFSET,
+        SEASON_CONTROL_OFFSET,
+        SEASON_OPTIONS,
+        HANFU_PROGRAMS,
+    ),
+}
+
+
+def matches_profile(model: str, sn8: str | None, subtype: int) -> bool:
+    """Return whether an identity is a known extended-profile dryer."""
+    return (model, subtype) in PROFILE_IDENTITIES or (
+        sn8,
+        subtype,
+    ) in PROFILE_IDENTITIES
 
 
 APPOINTMENT_ATTRIBUTES = (
@@ -328,6 +422,8 @@ class MessageDCResponse(MessageResponse):
     def __init__(self, message: bytes) -> None:
         """Initialize DC message response."""
         super().__init__(bytearray(message))
+        self.extended_status = False
+        self.profile_evidence = ""
         if (
             len(super().body) >= MINIMUM_STATUS_LENGTH
             and super().body[1] in (0, 1)
@@ -340,7 +436,25 @@ class MessageDCResponse(MessageResponse):
             )
         ):
             self.set_body(DCGeneralMessageBody(super().body))
+            self._detect_extended(super().body)
         self.set_attr()
+
+    def _detect_extended(self, body: bytearray) -> None:
+        """Flag the extended layout so unknown units self-identify once seen.
+
+        Only decoded status bodies carry the extra fields; the extended frame is
+        longer and reports a real season byte where the generic frame has none.
+        """
+        if (
+            body[0] in STATUS_BODY_TYPES
+            and len(body) >= EXTENDED_STATUS_LENGTH
+            and body[SEASON_REPORT_OFFSET] != UNKNOWN_CODE
+        ):
+            self.extended_status = True
+            self.profile_evidence = (
+                f"status length {len(body)} >= {EXTENDED_STATUS_LENGTH}, "
+                f"season byte 0x{body[SEASON_REPORT_OFFSET]:02x}"
+            )
 
 
 class MessageParameters(MessageDCBase):
@@ -373,8 +487,12 @@ class DCControls:
 
     def __init__(self, *, profile: bool = False) -> None:
         """Start with generic controls and optional verified extensions."""
-        self.profile = profile
         self.body = b""
+        self._configure(profile=profile)
+
+    def _configure(self, *, profile: bool) -> None:
+        """Build the field table and attribute keys for the active profile."""
+        self.profile = profile
         programs = PROFILE_PROGRAMS if profile else GENERIC_PROGRAMS
         self.fields: dict[ControlAttributes, ParameterField] = {
             ControlAttributes.program_control: ParameterField(PROGRAM_OFFSET, programs),
@@ -395,6 +513,7 @@ class DCControls:
                 (
                     ControlAttributes.temperature_control,
                     ControlAttributes.timed_extra,
+                    *EXTENDED_SELECTS,
                 )
                 if profile
                 else ()
@@ -408,6 +527,10 @@ class DCControls:
         self.attributes.update(dict.fromkeys(APPOINTMENT_ATTRIBUTES))
         self.attributes[ControlAttributes.appointment_control_supported] = True
         self.attributes[ControlAttributes.appointment_controls_available] = False
+
+    def enable_profile(self) -> None:
+        """Latch the extended profile after a response proves the richer layout."""
+        self._configure(profile=True)
 
     def supports(self, attr: str) -> bool:
         """Return whether an attribute is a writable parameter."""
@@ -465,9 +588,14 @@ class DCControls:
             self.body[BASIC_PARAMETER_START:APPOINTMENT_REPORT_OFFSET]
             + bytes([self.body[APPOINTMENT_REPORT_OFFSET] & ~APPOINTMENT_MASK])
             + self.body[STERILIZE_FLAG_OFFSET:APPOINTMENT_TIME_OFFSET]
+            # Fingerprint every profile-only select (temperature, season, steam,
+            # material) so a panel change during the confirmation window aborts
+            # the start, honouring the guard's "unchanged options" guarantee.
             + (
                 self.body[TEMPERATURE_REPORT_OFFSET : TEMPERATURE_REPORT_OFFSET + 1]
                 + self.body[SEASON_REPORT_OFFSET : SEASON_REPORT_OFFSET + 1]
+                + self.body[STEAM_REPORT_OFFSET : STEAM_REPORT_OFFSET + 1]
+                + self.body[MATERIAL_REPORT_OFFSET : MATERIAL_REPORT_OFFSET + 1]
                 if self.profile
                 else b""
             )
@@ -639,11 +767,13 @@ class DCControls:
             else None
         )
         if self.profile:
+            extended = (
+                len(self.body) >= EXTENDED_STATUS_LENGTH
+                and self.body[SEASON_REPORT_OFFSET] != UNKNOWN_CODE
+            )
             values[ControlAttributes.temperature_control] = (
                 TEMPERATURE_OPTIONS.get(self.body[TEMPERATURE_REPORT_OFFSET])
-                if len(self.body) >= EXTENDED_STATUS_LENGTH
-                and self.body[SEASON_REPORT_OFFSET] != UNKNOWN_CODE
-                and values[ControlAttributes.anti_wrinkle] is not None
+                if extended and values[ControlAttributes.anti_wrinkle] is not None
                 else None
             )
             extra = int.from_bytes(self.body[DRY_TIME_OFFSET:DRY_TIME_END], "little")
@@ -654,7 +784,26 @@ class DCControls:
                 and extra % TIMED_EXTRA_STEP == 0
                 else None
             )
+            values.update(self.decode_extended_selects(extended=extended))
         return values
+
+    def decode_extended_selects(
+        self,
+        *,
+        extended: bool,
+    ) -> dict[ControlAttributes, ControlValue]:
+        """Expose each model-specific select only in the programs that use it."""
+        decoded: dict[ControlAttributes, ControlValue] = {}
+        for attr, select in EXTENDED_SELECTS.items():
+            raw = self.body[select.report_offset] if extended else 0
+            if select.packed:
+                raw >>= STEAM_NIBBLE_SHIFT
+            decoded[attr] = (
+                select.options.get(raw)
+                if extended and self.body[PROGRAM_OFFSET] in select.programs
+                else None
+            )
+        return decoded
 
     def options(self, attr: str) -> list[str]:
         """Reflect the real instant-wear constraint when sterilization is on."""
@@ -668,6 +817,12 @@ class DCControls:
                 return []
             if self.attributes.get(ControlAttributes.sterilize):
                 return ["ready_to_wear"]
+        if key in EXTENDED_SELECTS:
+            return (
+                list(EXTENDED_SELECTS[key].options.values())
+                if self.attributes.get(key) is not None
+                else []
+            )
         return self._options(attr)
 
     def encode(self, attr: ControlAttributes, value: bool | float | str) -> bytearray:
@@ -678,6 +833,8 @@ class DCControls:
             return self.encode_temperature(value)
         if attr in (ControlAttributes.sterilize, ControlAttributes.anti_wrinkle):
             return self.encode_feature(attr, value)
+        if attr in EXTENDED_SELECTS:
+            return self.encode_extended_select(attr, value)
         if attr == ControlAttributes.timed_extra:
             if not self.profile:
                 raise ValueError("This parameter is unavailable in the current profile")
@@ -712,6 +869,26 @@ class DCControls:
         body[TEMPERATURE_CONTROL_OFFSET] = code
         body[RESERVED_CONTROL_OFFSET] = 0
         body[SEASON_CONTROL_OFFSET] = self.body[SEASON_REPORT_OFFSET]
+        return body
+
+    def encode_extended_select(
+        self,
+        attr: ControlAttributes,
+        value: bool | float | str,
+    ) -> bytearray:
+        """Change only one model-specific select; keep every other field unchanged."""
+        select = EXTENDED_SELECTS[attr]
+        label = option_label(value)
+        if label not in self.options(attr):
+            raise ValueError(f"Unsupported dryer option for {attr}: {label}")
+        code = next(code for code, option in select.options.items() if option == label)
+        body = parameter_body(EXTENDED_COMMAND_LENGTH)
+        body[RESERVED_CONTROL_OFFSET] = 0
+        body[select.control_offset] = (
+            (code << STEAM_NIBBLE_SHIFT) | STEAM_CONTROL_LOW_NIBBLE
+            if select.packed
+            else code
+        )
         return body
 
     def encode_feature(

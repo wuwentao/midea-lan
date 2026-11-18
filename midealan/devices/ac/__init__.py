@@ -131,6 +131,8 @@ class DeviceAttributes(StrEnum):
     wind_straight = "wind_straight"
     wind_avoid = "wind_avoid"
     indoor_humidity = "indoor_humidity"
+    humidify = "humidify"
+    target_humidity = "target_humidity"
     breezeless = "breezeless"
     fresh_air_power = "fresh_air_power"
     fresh_air_fan_speed = "fresh_air_fan_speed"
@@ -367,6 +369,8 @@ class MideaACDevice(MideaDevice):
                 DeviceAttributes.wind_straight: None,
                 DeviceAttributes.wind_avoid: None,
                 DeviceAttributes.indoor_humidity: None,
+                DeviceAttributes.humidify: False,
+                DeviceAttributes.target_humidity: None,
                 DeviceAttributes.breezeless: False,
                 DeviceAttributes.total_energy_consumption: None,
                 DeviceAttributes.total_operating_consumption: None,
@@ -1739,6 +1743,8 @@ class MideaACDevice(MideaDevice):
             DeviceAttributes.indoor_temperature,
             DeviceAttributes.outdoor_temperature,
             DeviceAttributes.indoor_humidity,
+            DeviceAttributes.humidify,
+            DeviceAttributes.target_humidity,
             DeviceAttributes.full_dust,
             DeviceAttributes.total_energy_consumption,
             DeviceAttributes.current_energy_consumption,

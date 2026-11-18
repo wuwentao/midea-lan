@@ -1,5 +1,6 @@
 """Test DC device integration."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -8,12 +9,13 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.device import MideaDeviceInitKwargs
 from midealan.devices.dc import DeviceAttributes, MideaDCDevice
-from midealan.devices.dc.message import ControlAttributes as Attr
 from midealan.devices.dc.message import (
+    MINIMUM_STATUS_LENGTH,
     MessagePower,
     MessageQuery,
     MessageStart,
 )
+from midealan.devices.dc.message import ControlAttributes as Attr
 from midealan.exceptions import ValueWrongType
 from midealan.message import MessageType
 
@@ -265,7 +267,9 @@ def test_profile_identity_and_legacy_isolation(
 def test_generic_lua_controls_are_available_without_profile_identity() -> None:
     """Generic Lua fields use the complete protocol program table."""
     device = MideaDCDevice(customize="", **BASE_ARGS)
-    report = bytearray(DC_BODY)
+    # A real generic device reports the 30-byte status; a longer extended frame
+    # would self-identify and auto-upgrade to the profile program table.
+    report = bytearray(DC_BODY[:MINIMUM_STATUS_LENGTH])
     report[0:3] = bytes([3, 1, 1])
     device.process_message(frame(report))
     assert device.get_parameter_options(Attr.program_control)[1] == "fiber"
@@ -275,6 +279,29 @@ def test_generic_lua_controls_are_available_without_profile_identity() -> None:
     with patch.object(device, "build_send") as send:
         device.set_attribute(Attr.program_control, "fiber")
     assert send.call_args_list[0].args[0].body[4] == 1
+
+
+def test_unknown_identity_upgrades_to_extended_from_its_response(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unrecognized dryer self-identifies the first time it reports extended."""
+    args = BASE_ARGS.copy()
+    args["model"], args["subtype"] = ("unknown", 99)
+    device = MideaDCDevice(customize="", **args)
+    assert device._controls is not None
+    # A generic start: the extended controls are absent until a response proves them.
+    assert Attr.temperature_control not in device.attributes
+    report = bytearray(DC_BODY)  # 43-byte extended frame with a real season byte
+    report[0:3] = bytes([3, 1, 1])
+    with caplog.at_level(logging.DEBUG, logger="midealan.devices.dc"):
+        device.process_message(frame(report))
+    # The richer program table and the gated extended controls become available.
+    assert device._controls.profile is True
+    assert len(device.get_parameter_options(Attr.program_control)) == 36
+    assert Attr.temperature_control in device.attributes
+    assert Attr.steam_level_control in device.attributes
+    # The debug tag lets a user confirm which profile their dryer was detected as.
+    assert "detected from response" in caplog.text
 
 
 def test_missing_extended_fields_and_short_acknowledgements() -> None:
@@ -383,7 +410,9 @@ def test_dryer_start_reflects_running_and_active_reservation_only(
     report[2] = status
     assert dryer(report).get_attribute("start") is active
     legacy = MideaDCDevice(customize="", **BASE_ARGS)
-    legacy.process_message(frame(report))
+    # Keep the legacy device generic with the 30-byte status; the extended frame
+    # would auto-upgrade it and apply the corrected profile start semantics.
+    legacy.process_message(frame(report[:MINIMUM_STATUS_LENGTH]))
     assert legacy.get_attribute("start") is (status in (2, 6))
 
 
@@ -415,7 +444,9 @@ def test_reservation_starts_only_after_a_matching_query(profile: bool) -> None:
     """A prepare write cannot start a cycle before its real fields are confirmed."""
     device = dryer() if profile else MideaDCDevice(customize="", **BASE_ARGS)
     if not profile:
-        report = bytearray(DC_BODY)
+        # A generic device reports the 30-byte status; the extended frame would
+        # auto-upgrade it to the profile.
+        report = bytearray(DC_BODY[:MINIMUM_STATUS_LENGTH])
         report[1:3] = bytes([1, 1])
         device.process_message(frame(report))
     with (
@@ -436,10 +467,6 @@ def test_reservation_starts_only_after_a_matching_query(profile: bool) -> None:
         report[0:3] = bytes([3, 1, 6])
         report[12] = report[12] & ~3 | 1
         report[14:16] = prepare[14:16]
-        if not profile:
-            # These extensions are not generic Lua fields or generic controls.
-            report[36] += 1
-            report[42] += 1
         device.process_message(frame(report))
         assert len(send.call_args_list) == 4
         started = send.call_args_list[2].args[0].body
@@ -493,9 +520,13 @@ def test_unconfirmed_reservation_never_sends_start(response: str) -> None:
             assert send.call_args_list[-1].args[0].body == b"\x03"
 
 
-@pytest.mark.parametrize("offset", [4, 9, 12, 13, 17, 36, 42])
+@pytest.mark.parametrize("offset", [4, 9, 12, 13, 17, 26, 28, 36, 42])
 def test_parameter_change_aborts_pending_reservation(offset: int) -> None:
-    """Do not start if another controller changes selected options or duration."""
+    """Do not start if another controller changes selected options or duration.
+
+    Offsets 26 and 28 are the steam and material report bytes; a panel change to
+    either during the confirmation window must abort the pending start too.
+    """
     device = dryer()
     assert device._controls is not None
     with (

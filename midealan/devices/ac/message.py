@@ -39,6 +39,9 @@ BB_FRESH_AIR_EXHAUST_SPEED_INDEX = 47
 BB_COMPRESSOR_TARGET_FREQUENCY_INDEX = 10
 BB_COMPRESSOR_FREQUENCY_INDEX = 11
 BB_BASIC_FAN_SPEED_INDEX = 7
+BB_HUMIDIFY_INDEX = 4
+BB_HUMIDIFY_MASK = 0x01
+BB_TARGET_HUMIDITY_INDEX = 13
 BB_INDOOR_TEMPERATURE_HIGH_INDEX = 8
 BB_INDOOR_HUMIDITY_INDEX = 30
 BB_SN8_FLAG_INDEX = 80
@@ -2517,6 +2520,23 @@ class SubProtocolBody(MessageBody):
                 self.mode = 0
             self.target_temperature = (subprotocol_body[6] - 30) / 2
             self.fan_speed = subprotocol_body[7]
+            # Verified on model 22396945 (subtype 1): the X11 status frame
+            # carries the humidify switch at byte 4 and the target humidity
+            # percentage at byte 13. X20 shares the basic fields above but
+            # does not carry these two.
+            # The BB trailer is two bytes and MessageResponse keeps one of them
+            # when it strips the outer checksum, so the final byte here is not
+            # payload; require one more byte than the last field index so a
+            # short frame cannot expose its trailer as target_humidity.
+            if (
+                data_type == ListTypes.X11
+                and subprotocol_body_len > BB_TARGET_HUMIDITY_INDEX + 1
+            ):
+                self.humidify = (
+                    subprotocol_body[BB_HUMIDIFY_INDEX] & BB_HUMIDIFY_MASK
+                ) > 0
+                target_humidity = subprotocol_body[BB_TARGET_HUMIDITY_INDEX]
+                self.target_humidity = target_humidity or None
             self.timer = (
                 (subprotocol_body[25] & 0x04) > 0
                 if subprotocol_body_len > TIMER_MIN_SUBPROTOCOL_LENGTH

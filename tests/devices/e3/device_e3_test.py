@@ -36,7 +36,7 @@ class TestMideaE3Device:
             customize="",
         )
 
-    def _old_subtype_device(self) -> MideaE3Device:
+    def _old_subtype_device(self, subtype: int = 32) -> MideaE3Device:
         """Midea E3 Device with an old protocol subtype."""
         return MideaE3Device(
             name="Test Device",
@@ -47,7 +47,7 @@ class TestMideaE3Device:
             key="BB",
             device_protocol=ProtocolVersion.V1,
             model="test_model",
-            subtype=32,
+            subtype=subtype,
             customize="",
         )
 
@@ -205,6 +205,7 @@ class TestMideaE3Device:
             assert isinstance(message, NewProtocolSet)
             assert message.value == 80.0
 
+    @pytest.mark.parametrize("subtype", [32, 38, 39])
     @pytest.mark.parametrize(
         ("attr", "value"),
         [
@@ -214,17 +215,38 @@ class TestMideaE3Device:
     )
     def test_set_attribute_old_subtype(
         self,
+        subtype: int,
         attr: DeviceAttributes,
         value: bool | float,
     ) -> None:
         """Test set attribute with an old protocol subtype."""
-        device = self._old_subtype_device()
+        device = self._old_subtype_device(subtype)
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(attr.value, value)
             mock_build_send.assert_called_once()
             message = mock_build_send.call_args[0][0]
             assert isinstance(message, MessageSet)
             assert getattr(message, attr.value) == value
+
+    @pytest.mark.parametrize("subtype", [38, 39])
+    def test_old_subtype_sequential_writes_keep_requested_temperature(
+        self,
+        subtype: int,
+    ) -> None:
+        """Keep a preceding temperature write in the next legacy full frame."""
+        device = self._old_subtype_device(subtype)
+        device.set_customize('{"precision_halves": true}')
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.target_temperature.value, 45.0)
+            device.set_attribute(DeviceAttributes.zero_cold_water.value, True)
+
+        first_message = mock_build_send.call_args_list[0].args[0]
+        second_message = mock_build_send.call_args_list[1].args[0]
+        assert isinstance(first_message, MessageSet)
+        assert isinstance(second_message, MessageSet)
+        assert first_message.body[5] == 90
+        assert second_message.body[5] == 90
+        assert second_message.zero_cold_water is True
 
     @pytest.mark.parametrize(
         "attr",
@@ -251,6 +273,12 @@ class TestMideaE3Device:
         assert message.zero_cold_pulse is False
         assert message.smart_volume is False
         assert message.target_temperature == 40.0
+
+    def test_make_message_set_precision_halves(self) -> None:
+        """Convert a cached user temperature back to legacy wire units."""
+        self.device.set_customize('{"precision_halves": true}')
+        message = self.device.make_message_set()
+        assert message.body[5] == 80
 
     def test_set_customize(self) -> None:
         """Test set customize."""

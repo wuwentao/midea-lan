@@ -28,7 +28,11 @@ from midealan.device import (
     NoSupportedProtocol,
 )
 from midealan.devices import device_selector
-from midealan.discover import SERIAL_TYPE1_LENGTH, discover
+from midealan.discover import (
+    SERIAL_TYPE1_LENGTH,
+    SUPPORT_UNSUPPORTED,
+    discover,
+)
 from midealan.exceptions import SocketException
 from midealan.tls import CertBundle
 from midealan.version import __version__
@@ -148,6 +152,33 @@ class MideaCLI:
         shared_bundle: CertBundle | None = None
         bundle_loaded = False
         for device in devices.values():
+            # Surface the identity fields discover() already parsed (type,
+            # subtype, model, manufacturer code, protocol) so they are in the
+            # log/output for direct later use -- e.g. feeding subtype/model to
+            # download or setattr -- without a second scan or a cloud round-trip.
+            _LOGGER.info(
+                "Discovered device %s at %s: type 0x%02x, subtype %s, model %s, "
+                "manufacturer_code %s, protocol %s",
+                device["device_id"],
+                device.get("ip_address"),
+                device.get("type", 0),
+                device.get("device_subtype"),
+                device.get("model"),
+                device.get("manufacturer_code"),
+                device.get("protocol"),
+            )
+            # discover() now surfaces devices midealan has no package for so the
+            # user can see them (and the reason) in the scan. Those can't be
+            # instantiated, so report the reason and move on instead of trying
+            # to open a socket to a device we can't drive.
+            if device.get("support") == SUPPORT_UNSUPPORTED:
+                _LOGGER.warning(
+                    "Skipping unsupported device (type 0x%02x) at %s: %s",
+                    device.get("type", 0),
+                    device.get("ip_address"),
+                    device.get("support_reason") or "no device package",
+                )
+                continue
             # TLS (udp_version>=4) devices run the cert/ECDH handshake instead
             # of the token/key 8370 handshake: provision a certificate once and
             # drive control through it with empty token/key.
@@ -178,7 +209,10 @@ class MideaCLI:
                     key=key["key"],
                     device_protocol=device["protocol"],
                     model=device["model"],
-                    subtype=0,
+                    # Reuse the subtype discover() already decoded instead of 0,
+                    # so the instantiated device matches the real appliance (and
+                    # its 0xA0 reply no longer looks like a subtype mismatch).
+                    subtype=device.get("device_subtype", 0),
                     customize="",
                     mac=device["mac"],
                     serial_number=device["sn"],
@@ -502,6 +536,75 @@ class MideaCLI:
                 appliance["manufacturer_code"],
             )
 
+    async def info(self) -> None:
+        """Print the cloud account appliances grouped by home (group).
+
+        Logs in to the cloud account and lists every appliance under the home
+        it belongs to, so an account with several homes shows each home's
+        devices beneath its own header instead of merged into one flat list.
+        For each device it prints the fields that identify and locate it: name,
+        device type, model, sn8, Wi-Fi module version, and online state. The
+        Wi-Fi version is only returned by the Meiju cloud's per-device info
+        endpoint; other clouds fall back to the list entry, which does not carry
+        it.
+        """
+        cloud = await self._get_cloud()
+        _LOGGER.debug("Try to authenticate to the cloud.")
+        if not await cloud.login():
+            _LOGGER.error("Failed to authenticate to the cloud.")
+            return
+
+        # Appliances are scoped to a home (group): list_home() returns every
+        # home keyed by its id, and list_appliances(home_id) filters to one
+        # home. Iterate per home so a multi-home account keeps its devices
+        # grouped instead of flattening them into a single list that discards
+        # which home each device belongs to. Clouds with no real home concept
+        # return one synthetic home, so they still print a single group.
+        homes = await cloud.list_home() or {}
+        total = 0
+        for home_id, home_name in homes.items():
+            total += await self._print_home_appliances(cloud, home_id, home_name)
+        if total == 0:
+            _LOGGER.error("No devices found in the cloud account.")
+            return
+        _LOGGER.info(
+            "Found %d device(s) across %d home(s) in the cloud account.",
+            total,
+            len(homes),
+        )
+
+    async def _print_home_appliances(
+        self,
+        cloud: MideaCloud,
+        home_id: int,
+        home_name: object,
+    ) -> int:
+        """List and print one home's appliances; return the device count.
+
+        Prints a header line for the home followed by one indented line per
+        device. The home header is emitted even when the home is empty so the
+        account's full home layout stays visible.
+        """
+        appliances = await cloud.list_appliances(home_id=str(home_id)) or {}
+        _LOGGER.info("Home %s (%s): %d device(s)", home_id, home_name, len(appliances))
+        for device_id, appliance in appliances.items():
+            # get_device_info returns a richer per-device record (including the
+            # Wi-Fi module version on Meiju); fall back to the list entry when
+            # the cloud has no dedicated info endpoint or the lookup fails.
+            device_info = await cloud.get_device_info(device_id) or appliance
+            _LOGGER.info(
+                "  Device %s: name %s, type 0x%02X, model %s, sn8 %s, "
+                "wifi_version %s, online %s",
+                device_id,
+                device_info.get("name"),
+                device_info.get("type", 0),
+                device_info.get("model"),
+                device_info.get("sn8"),
+                device_info.get("wifi_version"),
+                device_info.get("online"),
+            )
+        return len(appliances)
+
     async def set_attribute(self) -> None:
         """Set attribute for device."""
         device_list = await self.discover()
@@ -685,6 +788,13 @@ def main() -> NoReturn:
         help="IP Address of the device.",
     )
     download_parser.set_defaults(func=cli.download)
+
+    info_parser = subparsers.add_parser(
+        "info",
+        description="List cloud account appliances and their basic info.",
+        parents=[common_parser],
+    )
+    info_parser.set_defaults(func=cli.info)
 
     attribute_parser = subparsers.add_parser(
         "setattr",

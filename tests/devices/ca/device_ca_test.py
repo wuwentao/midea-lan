@@ -1,6 +1,5 @@
 """Test CA Device."""
 
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -76,7 +75,7 @@ def _build_toshiba_device(
     model: str = "test_model",
 ) -> MideaCADevice:
     """Build a CA device with optional manufacturer identity."""
-    identity: dict[str, Any] = (
+    identity = (
         {"manufacturer_code": manufacturer_code}
         if manufacturer_code is not None
         else {}

@@ -552,3 +552,31 @@ class TestHandshake:
         reply[-SIGNATURE_LENGTH - 1] ^= 0xFF
         with pytest.raises(CannotAuthenticate):
             session.process_finish(bytes(reply))
+
+    def test_process_finish_inflated_inner_len(self) -> None:
+        """A finish reply whose declared inner_len exceeds the body is rejected.
+
+        Without the pre-slice length check, Python silently truncates the
+        ``body[4:4+inner_len]`` slice to the available bytes; a body that
+        happens to carry a valid CCM blob could then pass authentication
+        despite the malformed length. The parser must reject it up front.
+        """
+        bundle = _make_bundle()
+        device = _SimulatedDevice(bundle, _DEVICE_ID)
+        session = TLSSession(bundle, _DEVICE_ID)
+        session.process_cert_response(
+            device.respond_hello(session.build_cert_request()),
+        )
+        reply = bytearray(device.respond_finish())
+        parsed = session._codec.decode(bytes(reply))
+        body = bytearray(parsed.body)
+        # Inflate the 2-byte inner_len past the actual body length.
+        body[2:4] = (len(body) + 64).to_bytes(2, "little")
+        bad = session._codec.encode(
+            bytes(body),
+            MSG_TYPE_CERT_RESPONSE,
+            encrypt_type=ENCRYPT_TYPE_NONE,
+            device_id=0,
+        )
+        with pytest.raises(DataUnexpectedLength):
+            session.process_finish(bad)

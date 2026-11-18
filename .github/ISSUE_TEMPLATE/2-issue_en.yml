@@ -1,0 +1,107 @@
+---
+name: Bug report (English)
+description: Report discovery, protocol parsing/encoding, encryption, or cloud-library problems
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Complete every required field and attach the full debug log as a file.
+        Without appliance details and a complete debug log, the problem cannot be confirmed and the issue will be closed; no other information is needed.
+        `midea-lan` is the protocol library. Home Assistant entity or UI problems belong in the `midea_ac_lan` integration repository.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have read the [README](https://github.com/wuwentao/midea-lan/blob/main/README.md) and the debug instructions.
+          required: true
+        - label: I searched existing issues and did not find the same problem.
+          required: true
+        - label: I provided the appliance details and complete debug log.
+          required: true
+
+  - type: input
+    id: library_version
+    attributes:
+      label: midea-lan version
+      description: Output of the installed `midealan` package version.
+      placeholder: 2026.10.0
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: "3.12"
+    validations:
+      required: true
+
+  - type: input
+    id: last_working_version
+    attributes:
+      label: Last known working version
+      description: Enter N/A if it has never worked.
+      placeholder: N/A
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: Device type and Device SN
+      placeholder: Air Conditioner (0xAC), SN 22012225xxxxxx
+      description: |
+        > Discover devices on your LAN with `from midealan.discover import discover; discover()`.
+        > The device type (hex) and SN appear in the discovery result and in your SmartHome APP.
+        > If you prefer not to share the SN, link or attach the matching `midea-lua` protocol file instead and note the device subtype/model.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cloud
+    attributes:
+      label: App / Cloud containing the appliance
+      description: Names match the library's supported cloud list and are intentionally not translated.
+      options:
+        - 美的美居
+        - SmartHome
+        - Midea Air
+        - NetHome Plus
+        - Ariston Clima
+        - TSmartLife
+        - Toshiba Iolife
+        - N/A / manually configured
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and reproduction steps
+      description: Identify the appliance and describe the exact action, actual result, expected result, and corresponding official-app behavior.
+      placeholder: |
+        1. Steps to reproduce:
+        2. Actual result:
+        3. Expected result:
+        4. Result in the official app:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Complete debug log
+      description: Reproduce the problem with debug logging enabled and drag the complete log file here. Do not paste only selected lines. Many discovery and initialization parameters are important for analysis, and a bug often applies only to a specific appliance subtype rather than every model/subtype. Redact credentials, tokens, and keys.
+      placeholder: Drag the log file here
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add the related midea_ac_lan issue, the midea-lua protocol source, official-app screenshots, or raw payloads if useful.

@@ -584,6 +584,10 @@ class TLSSession:
         if len(body) < _MIN_FINISH_BODY or body[0] != _CERT_STEP_FINISH:
             raise CannotAuthenticate
         inner_len = _u16_le(body[2:4])
+        # Validate the declared length against the body before slicing: a
+        # too-large inner_len would otherwise be silently truncated by Python
+        # and a coincidentally-valid CCM blob could pass authentication.
+        self._require(len(body) >= 4 + inner_len)
         inner = body[4 : 4 + inner_len]
         self._require(len(inner) >= CCM_NONCE_LENGTH + CCM_TAG_LENGTH)
         nonce = inner[:CCM_NONCE_LENGTH]

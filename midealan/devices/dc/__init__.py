@@ -16,18 +16,18 @@ from .message import (
     APPOINTMENT_TIME_OFFSET,
     BASIC_PARAMETER_END,
     BASIC_PARAMETER_START,
-    PROFILE_MODEL,
-    PROFILE_SUBTYPE,
     STATUS_DELAY,
     STATUS_OFFSET,
     STATUS_START,
     UNCHANGED,
     DCControls,
+    DCProfile,
     MessageDCResponse,
     MessageParameters,
     MessagePower,
     MessageQuery,
     MessageStart,
+    matches_profile,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -75,6 +75,9 @@ class DeviceAttributes(StrEnum):
     sterilize = "sterilize"
     anti_wrinkle = "anti_wrinkle"
     timed_extra = "timed_extra"
+    steam_level_control = "steam_level_control"
+    material_control = "material_control"
+    season_control = "season_control"
 
 
 class MideaDCDevice(MideaDevice):
@@ -175,16 +178,24 @@ class MideaDCDevice(MideaDevice):
             },
         )
 
-        profile = self.subtype == PROFILE_SUBTYPE and PROFILE_MODEL in (
-            self.model,
-            self.sn8,
-        )
+        profile = matches_profile(self.model, self.sn8, self.subtype)
         # The Lua 0xDC protocol confirms generic program, feature, and
         # appointment fields; only the extended profile fields remain gated.
+        # Known identities enable the extended profile directly; unknown units
+        # are detected from their status responses (see _maybe_enable_profile).
         self._controls = DCControls(profile=profile)
         self._attributes.update(self._controls.attributes)
         self._appointment_lock = RLock()
         self._pending_appointment: _PendingAppointment | None = None
+        _LOGGER.debug(
+            "[%s] DC profile tag=%s (model=%s, sn8=%s, subtype=%s, source=%s)",
+            self.device_id,
+            DCProfile.extended if profile else DCProfile.generic,
+            self.model,
+            self.sn8,
+            self.subtype,
+            "identity table" if profile else "pending response detection",
+        )
 
     def get_parameter_options(self, attr: str) -> list[str]:
         """Return active protocol options, including profile-specific choices."""
@@ -203,6 +214,7 @@ class MideaDCDevice(MideaDevice):
         """Publish real state before checking a pending reservation confirmation."""
         message = MessageDCResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        self._maybe_enable_profile(message)
         new_status = {}
         progress = [
             "prog0",
@@ -252,6 +264,28 @@ class MideaDCDevice(MideaDevice):
             new_status.update({str(attr): value for attr, value in controls.items()})
             self._confirm_appointment(message.message_type)
         return new_status
+
+    def _maybe_enable_profile(self, message: MessageDCResponse) -> None:
+        """Latch the extended profile once a response proves the richer layout.
+
+        Known identities already start as extended; this upgrades an unrecognized
+        unit the first time it reports an extended status frame, then logs the
+        evidence so a user can confirm which profile their dryer was detected as.
+        """
+        if (
+            self._controls is None
+            or self._controls.profile
+            or not message.extended_status
+        ):
+            return
+        self._controls.enable_profile()
+        self._attributes.update(self._controls.attributes)
+        _LOGGER.debug(
+            "[%s] DC profile tag=%s detected from response (%s)",
+            self.device_id,
+            DCProfile.extended,
+            message.profile_evidence,
+        )
 
     def _expire_appointment(self) -> None:
         """Never start a reservation whose confirmation did not arrive in time."""

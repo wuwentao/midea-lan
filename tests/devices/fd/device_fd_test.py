@@ -47,6 +47,7 @@ def _process_lua_25_status(device: MideaFDDevice) -> None:
     body[0] = 0xC8
     body[3] = 39
     body[13] = 1
+    body[14] = 1
     body[42] = 0x40
     body[43] = 0x01
     device.process_message(_build_message(MessageType.query, body))
@@ -87,6 +88,7 @@ class TestMideaFDDevice:
         assert self.device.attributes[DeviceAttributes.screen_display] is None
         assert self.device.attributes[DeviceAttributes.disinfect] is None
         assert self.device.attributes[DeviceAttributes.wet_pad_dry] is None
+        assert self.device.attributes[DeviceAttributes.light_color] is None
 
     def test_modes(self) -> None:
         """Test modes property."""
@@ -174,6 +176,26 @@ class TestMideaFDDevice:
         device = _build_device(7, model="another_compatible_model")
         _process_lua_2024110101_status(device)
         assert device.screen_displays == ["bright", "dim", "off"]
+
+    def test_light_colors_lua_25(self) -> None:
+        """Test Lua 25 exposes the hardware-verified light-ring colors."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
+        assert device.light_colors == [
+            "off",
+            "red",
+            "orange",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "pink",
+        ]
+        assert device.attributes[DeviceAttributes.light_color] == "off"
+
+    def test_light_colors_unsupported_protocol(self) -> None:
+        """Test protocols without a verified light ring expose no choices."""
+        assert self.device.light_colors == []
 
     def test_detect_modes(self) -> None:
         """Test detect modes property."""
@@ -351,10 +373,12 @@ class TestMideaFDDevice:
         assert message.fan_speed == 101
         assert message.target_humidity == 45
         assert message.screen_display is None
+        assert message.light_color is None
         body = message._body
         assert body[2] == 0
         assert body[6] == 45
         assert body[10] == 2
+        assert body[11] == 0
         assert body[14] == 0
 
     def test_make_message_set_lua_2024110101(self) -> None:
@@ -413,6 +437,28 @@ class TestMideaFDDevice:
         assert isinstance(message, MessageSet)
         assert message.wet_pad_dry is True
         assert message._body[20] == 1
+
+    def test_set_attribute_light_color_lua_25(self) -> None:
+        """Test Lua 25 sends a selected light-ring color."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.light_color.value, "cyan")
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.light_color == 8
+        assert message._body[11] == 8
+
+    def test_set_attribute_light_color_invalid(self) -> None:
+        """Test an unsupported light-ring color is left unchanged."""
+        device = _build_device(0, model="another_compatible_model")
+        _process_lua_25_status(device)
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.light_color.value, "white")
+        message = mock_build_send.call_args[0][0]
+        assert isinstance(message, MessageSet)
+        assert message.light_color is None
+        assert message._body[11] == 0
 
     def test_set_attribute_mode(self) -> None:
         """Test set attribute mode converts the name to its index."""

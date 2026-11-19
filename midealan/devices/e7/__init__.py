@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -96,6 +97,11 @@ class MideaE7Device(MideaDevice):
         # The frame layout (16-bit vs 32-bit function_no) is keyed off the
         # device subtype, mirroring the Lua getSoftVersion mapping.
         self._soft_version = soft_version_for_subtype(self.subtype)
+        # A control frame carries every writable field. Keep successful writes
+        # pending until a report confirms them so a rapid follow-up write does
+        # not rebuild the frame from stale reported state.
+        self._pending_controls: dict[str, int] = {}
+        self._pending_controls_lock = threading.RLock()
         self.set_customize(customize)
 
     @property
@@ -124,16 +130,24 @@ class MideaE7Device(MideaDevice):
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
                 self._attributes[status] = value
+                status_key = str(status)
+                with self._pending_controls_lock:
+                    if self._pending_controls.get(status_key) == value:
+                        del self._pending_controls[status_key]
                 new_status[str(status)] = value
         return new_status
 
     def _make_message_set(self) -> MessageSet:
         """Build a control message seeded from the current device state."""
         message = MessageSet(self._soft_version)
-        for key in _SEED_ATTRS:
-            current = self._attributes[key]
-            if isinstance(current, int) and not isinstance(current, bool):
-                setattr(message, str(key), current)
+        with self._pending_controls_lock:
+            for key in _SEED_ATTRS:
+                current = self._pending_controls.get(
+                    str(key),
+                    self._attributes[key],
+                )
+                if isinstance(current, int) and not isinstance(current, bool):
+                    setattr(message, str(key), current)
         return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
@@ -150,9 +164,19 @@ class MideaE7Device(MideaDevice):
         if not low <= number <= high:
             msg = f"[e7] {attr} must be in [{low}, {high}]"
             raise ValueOutOfRange(msg)
-        message = self._make_message_set()
-        setattr(message, str(attr), number)
-        self.build_send(message)
+        attr_key = str(attr)
+        with self._pending_controls_lock:
+            previous_pending = self._pending_controls.copy()
+            self._pending_controls[attr_key] = number
+            message = self._make_message_set()
+            try:
+                self.build_send(message)
+            except Exception:
+                if attr_key in previous_pending:
+                    self._pending_controls[attr_key] = previous_pending[attr_key]
+                else:
+                    del self._pending_controls[attr_key]
+                raise
 
     def set_customize(self, customize: str) -> None:
         """Midea e7 device set customize (JSON, same style as other appliances)."""

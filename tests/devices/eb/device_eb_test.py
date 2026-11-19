@@ -1,6 +1,7 @@
 """Test eb device."""
 
 from collections.abc import Sequence
+from threading import Event, Thread
 from unittest.mock import patch
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.eb import DeviceAttributes, MideaEBDevice
 from midealan.devices.eb.message import INNER_HEAD
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
 
 
@@ -111,6 +112,130 @@ class TestMideaEBDevice:
         assert body[11] == 1  # overridden work_status
         assert body[12] == 2  # seeded reserve hr
         assert body[14] == 3  # seeded fire_level
+
+    def test_consecutive_sets_preserve_pending_values(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A rapid second write includes the first unconfirmed value."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+            device.set_attribute(DeviceAttributes.time_reserve_min, 30)
+        second_body = build_send.call_args_list[1].args[0].body
+        assert second_body[12] == 1
+        assert second_body[13] == 30
+
+    def test_stale_report_keeps_pending_value(self, device: MideaEBDevice) -> None:
+        """A stale intervening report does not undo an unconfirmed write."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+            device.process_message(_report_frame(_status_body()))
+            device.set_attribute(DeviceAttributes.time_reserve_min, 30)
+        second_body = build_send.call_args_list[1].args[0].body
+        assert second_body[12] == 1
+        assert second_body[13] == 30
+
+    def test_report_confirms_pending_value(self, device: MideaEBDevice) -> None:
+        """A matching report clears the confirmed pending control."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+        body = _status_body()
+        body[17] = 1
+        device.process_message(_report_frame(body))
+        assert DeviceAttributes.time_reserve_hr not in device._pending_controls
+
+    def test_failed_send_does_not_add_pending_value(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A failed first send leaves no optimistic control value behind."""
+        with (
+            patch.object(device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+        assert device._pending_controls == {}
+
+    def test_failed_replacement_restores_previous_pending_value(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A failed replacement keeps the last successfully sent value."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+        with (
+            patch.object(device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
+        assert device._pending_controls[DeviceAttributes.time_reserve_hr] == 1
+
+    def test_pending_replacement_uses_confirmation_lock(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A replacement cannot race a report's pending confirmation."""
+        completed = Event()
+
+        def replace_pending() -> None:
+            with patch.object(device, "build_send"):
+                device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
+            completed.set()
+
+        with device._pending_controls_lock:
+            replace_thread = Thread(target=replace_pending)
+            replace_thread.start()
+            assert not completed.wait(timeout=0.05)
+        replace_thread.join(timeout=1)
+        assert not replace_thread.is_alive()
+        assert completed.is_set()
+
+    def test_failed_replacement_does_not_restore_confirmed_value(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A report received during a failed send confirms the prior value."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+
+        send_started = Event()
+        release_send = Event()
+        report_completed = Event()
+        send_errors: list[SocketException] = []
+
+        def fail_send(_message: object) -> None:
+            send_started.set()
+            release_send.wait(timeout=1)
+            raise SocketException
+
+        def replace_pending() -> None:
+            try:
+                device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
+            except SocketException as error:
+                send_errors.append(error)
+
+        body = _status_body()
+        body[17] = 1
+
+        def confirm_previous() -> None:
+            device.process_message(_report_frame(body))
+            report_completed.set()
+
+        with patch.object(device, "build_send", side_effect=fail_send):
+            replace_thread = Thread(target=replace_pending)
+            replace_thread.start()
+            assert send_started.wait(timeout=1)
+            report_thread = Thread(target=confirm_previous)
+            report_thread.start()
+            assert not report_completed.wait(timeout=0.05)
+            release_send.set()
+            replace_thread.join(timeout=1)
+            report_thread.join(timeout=1)
+
+        assert not replace_thread.is_alive()
+        assert not report_thread.is_alive()
+        assert send_errors
+        assert DeviceAttributes.time_reserve_hr not in device._pending_controls
 
     @pytest.mark.parametrize(
         ("attr", "value"),

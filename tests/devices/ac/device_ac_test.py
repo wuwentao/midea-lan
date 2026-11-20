@@ -125,9 +125,9 @@ class TestMideaACDevice:
         )
 
     @staticmethod
-    def _response(body: bytearray) -> bytes:
-        """Wrap an AC response body in a complete query frame."""
-        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 1, 3])
+    def _response(body: bytearray, message_type: int = 3) -> bytes:
+        """Wrap an AC response body in a complete query/notify frame."""
+        header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 1, message_type])
         header[1] = len(header) + len(body)
         frame = header + body
         frame.append(MessageBase.checksum(frame[1:]))
@@ -2507,6 +2507,32 @@ class TestMideaACDevice:
         assert "fan_speeds" not in self.device._customize_capabilities
         # Other valid capabilities should still be set
         assert self.device._customize_capabilities.get("other_capability") is True
+
+    def test_a5_power_model_gate(self) -> None:
+        """Test the A5 decoder is enabled only for the verified model."""
+        assert self._make_device("00000Q1A", 0)._a5_power_model
+        assert not self._make_device("00000Q11", 0)._a5_power_model
+
+    def test_a5_power_survives_c1_group44_and_resets(self) -> None:
+        """Test A5 power wins over C1 0x44 and resets when the compressor stops."""
+        device = self._make_device("00000Q1A", 0)
+        a5 = bytearray.fromhex(
+            "a539003900000000da07000000000000030050004b000075231900000000006692",
+        )
+        status = device.process_message(self._response(a5, message_type=4))
+        assert status[DeviceAttributes.realtime_power] == 2010
+
+        group44 = bytearray.fromhex(
+            "c1210144005eb8004b6200000000000000000000017a",
+        )
+        device.process_message(self._response(group44))
+        assert device.attributes[DeviceAttributes.realtime_power] == 2010
+
+        group41_off = bytearray.fromhex(
+            "c121014100000001da055250424109000000000001a6",
+        )
+        device.process_message(self._response(group41_off))
+        assert device.attributes[DeviceAttributes.realtime_power] == 0
 
 
 class TestHASupportProperties:

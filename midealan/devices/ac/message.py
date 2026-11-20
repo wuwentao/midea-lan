@@ -48,6 +48,22 @@ BB_SN8_FLAG_INDEX = 80
 BB_OUTDOOR_TEMPERATURE_HIGH_INDEX = 6
 
 A0_A1_C0_MIN_BODY_LENGTH = 18
+# 00000Q1A subtype 0 sends a notify1/A5 frame with the outdoor-unit telemetry.
+# Captured on a live unit: byte 1 is the compressor frequency (byte 3 echoes
+# it), bytes 8-9 little-endian are the whole outdoor-unit input power in W,
+# bytes 23-24 are the coil temperatures T2/T3 as (byte - 50) / 2 and byte 25
+# is the discharge-pipe temperature. The power field holds a ~470 W offset when
+# the compressor is off, so it is reported as 0 W when the frequency is 0.
+A5_MIN_BODY_LENGTH = 27
+A5_FREQUENCY_OFFSET = 1
+A5_FREQUENCY_ECHO_OFFSET = 3
+A5_POWER_OFFSET = 8
+A5_POWER_END = 10
+A5_INDOOR_COIL_OFFSET = 23
+A5_OUTDOOR_COIL_OFFSET = 24
+A5_DISCHARGE_PIPE_OFFSET = 25
+A5_TEMPERATURE_BASE = 50
+A5_TEMPERATURE_DIVISOR = 2
 # Toshiba AC versions 24-30 share these base-status offsets. Their C0/D0
 # bodies differ from the ordinary Midea C0 body despite matching type bytes.
 TOSHIBA_AC_BASE_LENGTH = 22
@@ -1661,6 +1677,37 @@ class XA0Body(MessageBody):
             self.fresh_filter_timeout = (body[13] & 0x40) >> 6
 
 
+class A5Body(MessageBody):
+    """AC A5 outdoor-unit telemetry body (00000Q1A subtype 0)."""
+
+    def __init__(self, body: bytearray) -> None:
+        """Initialize AC A5 message body."""
+        super().__init__(body)
+        if len(body) < A5_MIN_BODY_LENGTH:
+            return
+        # The A5 frame repeats the compressor frequency at byte 3. Require the
+        # echo so an unrelated A5 body on another model is not misdecoded.
+        if body[A5_FREQUENCY_OFFSET] != body[A5_FREQUENCY_ECHO_OFFSET]:
+            return
+        frequency = body[A5_FREQUENCY_OFFSET]
+        self.compressor_frequency = frequency
+        # A5 carries the whole outdoor-unit input power. The field keeps a
+        # ~470 W offset when the compressor is off, so expose 0 W when the
+        # frequency is 0 instead of a phantom standby load.
+        self.realtime_power = (
+            int.from_bytes(body[A5_POWER_OFFSET:A5_POWER_END], "little")
+            if frequency > 0
+            else 0
+        )
+        self.indoor_coil_temperature = (
+            body[A5_INDOOR_COIL_OFFSET] - A5_TEMPERATURE_BASE
+        ) / A5_TEMPERATURE_DIVISOR
+        self.outdoor_coil_temperature = (
+            body[A5_OUTDOOR_COIL_OFFSET] - A5_TEMPERATURE_BASE
+        ) / A5_TEMPERATURE_DIVISOR
+        self.discharge_pipe_temperature = body[A5_DISCHARGE_PIPE_OFFSET]
+
+
 class XMessageBody(MessageBody):
     """AC A1/C0 message body - common functions."""
 
@@ -2619,6 +2666,7 @@ class MessageACResponse(MessageResponse):
         message: bytearray,
         power_analysis_method: int = 3,
         new_protocol_temperature: bool = False,
+        parse_a5_power: bool = False,
     ) -> None:
         """Initialize AC message response."""
         super().__init__(message)
@@ -2646,6 +2694,21 @@ class MessageACResponse(MessageResponse):
                 )
             else:
                 self.set_body(XA1Body(super().body))
+        # dataType 0x04 and messageBytes[0] 0xA5 (00000Q1A subtype 0)
+        elif (
+            parse_a5_power
+            and self.message_type == MessageType.notify1
+            and self.body_type == ListTypes.A5
+        ):
+            if len(super().body) < A5_MIN_BODY_LENGTH:
+                _LOGGER.debug(
+                    "Skipping notify1 A5 body too short to parse (%d < %d bytes): %s",
+                    len(super().body),
+                    A5_MIN_BODY_LENGTH,
+                    super().body.hex(),
+                )
+            else:
+                self.set_body(A5Body(super().body))
         # parse CapabilitiesQuery/CapabilitiesAdditionalQuery response
         # dataType 0x03 and messageBytes[0] 0xB5
         elif self.message_type == MessageType.query and self.body_type == ListTypes.B5:
@@ -2689,3 +2752,24 @@ class MessageACResponse(MessageResponse):
             self.set_body(SubProtocolBody(super().body))
 
         self.set_attr()
+        if parse_a5_power:
+            self._apply_a5_power_precedence()
+
+    def _apply_a5_power_precedence(self) -> None:
+        """Keep the A5 realtime power when C1 0x44/C0 would overwrite it.
+
+        C1 group 0x44 reports realtime_power=0 on 00000Q1A. The integration
+        polls that group every refresh cycle, so without this guard it would
+        replace the A5 value with 0. Group 0x41 resets the value to 0 when the
+        compressor stops; C0 power-off resets it as well.
+        """
+        if self.body_type == ListTypes.C1:
+            if hasattr(self, "compressor_frequency"):
+                if self.compressor_frequency == 0:
+                    self.realtime_power = 0
+                elif hasattr(self, "realtime_power"):
+                    del self.realtime_power
+            elif hasattr(self, "realtime_power"):
+                del self.realtime_power
+        elif self.body_type == ListTypes.C0 and getattr(self, "power", None) is False:
+            self.realtime_power = 0

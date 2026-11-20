@@ -235,6 +235,11 @@ AC_MODEL_CAPABILITIES = {
 # https://github.com/wuwentao/midea_ac_lan/issues/893
 NEW_PROTOCOL_TEMPERATURE_MODELS = frozenset({"22013279"})
 
+# 00000Q1A subtype 0 sends the outdoor-unit input power in a notify1/A5 frame
+# while its C1 group 0x44 realtime_power field is always zero. Only enable the
+# A5 decoder for the exact model/subtype pair verified on hardware.
+A5_POWER_MODELS = frozenset({("00000Q1A", 0)})
+
 STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.target_temperature,
     DeviceAttributes.indoor_temperature,
@@ -415,6 +420,7 @@ class MideaACDevice(MideaDevice):
             },
         )
         self._model_key = (str(self.model), int(self.subtype))
+        self._a5_power_model = self._model_key in A5_POWER_MODELS
         self._model_capabilities = AC_MODEL_CAPABILITIES.get(
             self._model_key,
             DEFAULT_AC_MODEL_CAPABILITIES,
@@ -781,6 +787,7 @@ class MideaACDevice(MideaDevice):
             bytearray(msg),
             power_analysis_method=self._power_analysis_method,
             new_protocol_temperature=self._uses_new_protocol_temperature,
+            parse_a5_power=self._a5_power_model,
         )
         self._fix_c0_temperature(message)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)

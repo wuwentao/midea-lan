@@ -3871,3 +3871,75 @@ class TestMessageSetAnion:
         msg = StateSet(protocol_version=ProtocolVersion.V1)
         msg.anion = value
         assert msg._body[8] & 0x20 == expected_bit
+
+
+class TestMessageACResponseA5:
+    """Test the A5 outdoor-unit telemetry decoder for 00000Q1A subtype 0."""
+
+    a5_header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0x02, 0x04])
+    query_header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0x02, 0x03])
+    a5_heat = bytearray.fromhex(
+        "a539003900000000da07000000000000030050004b000075231900000000006692",
+    )
+    a5_off = bytearray.fromhex(
+        "a500000000000000da01000000000000030000004b0000824029000000000052bc",
+    )
+    c1_group44 = bytearray.fromhex(
+        "c1210144005eb8004b6200000000000000000000017a",
+    )
+    c1_group41_off = bytearray.fromhex(
+        "c121014100000001da055250424109000000000001a6",
+    )
+    c0_off = bytearray.fromhex(
+        "c00085147f7f003f00000066410900730000000000000030fa",
+    )
+
+    def test_a5_power_parsed(self) -> None:
+        """Test A5 power/temperature decoding on a live heating frame."""
+        response = MessageACResponse(
+            self.a5_header + self.a5_heat,
+            parse_a5_power=True,
+        )
+        assert response.compressor_frequency == 57
+        assert response.realtime_power == 2010
+        assert response.indoor_coil_temperature == 33.5
+        assert response.outdoor_coil_temperature == -7.5
+        assert response.discharge_pipe_temperature == 25
+
+    def test_a5_power_off_is_zero(self) -> None:
+        """Test A5 reports 0 W while the compressor is off."""
+        response = MessageACResponse(
+            self.a5_header + self.a5_off,
+            parse_a5_power=True,
+        )
+        assert response.compressor_frequency == 0
+        assert response.realtime_power == 0
+
+    def test_a5_power_disabled_by_default(self) -> None:
+        """Test A5 is ignored unless the model opts in."""
+        response = MessageACResponse(self.a5_header + self.a5_heat)
+        assert not hasattr(response, "realtime_power")
+
+    def test_c1_group44_does_not_override_a5_power(self) -> None:
+        """Test C1 0x44 zero realtime_power is dropped for A5 models."""
+        response = MessageACResponse(
+            self.query_header + self.c1_group44,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+
+    def test_c1_group41_zero_resets_a5_power(self) -> None:
+        """Test C1 0x41 resets realtime_power when the compressor stops."""
+        response = MessageACResponse(
+            self.query_header + self.c1_group41_off,
+            parse_a5_power=True,
+        )
+        assert response.realtime_power == 0
+
+    def test_c0_power_off_resets_a5_power(self) -> None:
+        """Test C0 power-off resets realtime_power."""
+        response = MessageACResponse(
+            self.query_header + self.c0_off,
+            parse_a5_power=True,
+        )
+        assert response.realtime_power == 0

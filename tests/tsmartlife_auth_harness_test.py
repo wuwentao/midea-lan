@@ -171,6 +171,56 @@ class TestTSmartLifeAuthHarness(IsolatedAsyncioTestCase):
         assert cloud._security._aes_key == b"0123456789abcdef"
         assert cloud._security._aes_iv == b"fedcba9876543210"
 
+    async def test_login_falls_back_when_routed_region_does_not_know_account(
+        self,
+    ) -> None:
+        """login() returns to the configured server when the routed one says 3102.
+
+        Seen live: the route call on mp-jp-prod answered with mp-us-prod for a
+        real TSmartLife account, mp-us-prod then rejected /v1/user/login/id/get
+        with 3102, and the same account logged in fine on mp-jp-prod.
+        """
+        session, cloud = self._make_cloud()
+        home_url = cloud._api_url
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                b'{"code": 3102, "msg": "account not exist"}',
+                self.responses["cloud_login_id.json"],
+                self.responses["tsmartlife_synthetic_login.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+
+        result = await cloud.login()
+
+        assert result is True
+        urls = [call.args[1] for call in session.request.await_args_list]
+        assert urls[1] == "https://reroute.url//v1/user/login/id/get"
+        assert urls[2] == f"{home_url}/v1/user/login/id/get"
+        assert urls[3] == f"{home_url}/mj/user/login"
+        assert cloud._api_url == home_url
+
+    async def test_login_fails_once_when_both_regions_reject_account(self) -> None:
+        """No loop: one retry on the configured server, then login() is False."""
+        session, cloud = self._make_cloud()
+        home_url = cloud._api_url
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                b'{"code": 3102, "msg": "account not exist"}',
+                b'{"code": 3102, "msg": "account not exist"}',
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+
+        assert await cloud.login() is False
+        assert session.request.await_count == 3
+        third_url = session.request.await_args_list[2].args[1]
+        assert third_url == f"{home_url}/v1/user/login/id/get"
+
     # ------------------------------------------------------------------
     # Stage 3: get_cloud_keys() -- v1 (inherited, pre-fix) path
     # ------------------------------------------------------------------

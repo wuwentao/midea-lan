@@ -933,8 +933,21 @@ class SmartHomeCloud(MideaCloud):
 
     async def login(self) -> bool:
         """Authenticate to MSmart Cloud."""
+        configured_url = self._api_url
         await self._re_route()
-        if login_id := await self._get_login_id():
+        login_id = await self._get_login_id()
+        if not login_id and self._api_url != configured_url:
+            # The route answer can name a region that does not hold this
+            # account: a TSmartLife account routed from mp-jp-prod to
+            # mp-us-prod got 3102 there and logs in on mp-jp-prod.
+            _LOGGER.debug(
+                "Routed server %s did not accept the account, retrying on %s",
+                self._api_url,
+                configured_url,
+            )
+            self._api_url = configured_url
+            login_id = await self._get_login_id()
+        if login_id:
             self._login_id = login_id
             iot_data = self._make_general_data()
             iot_data.pop("uid")

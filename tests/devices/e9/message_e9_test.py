@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from midealan.const import DeviceType
 from midealan.devices.e9.message import (
     INNER_HEAD,
+    QUERY_CMD_INFO,
     QUERY_CMD_STATUS,
     REPORT_BASE_PUSH,
     REPORT_BASE_QUERY,
@@ -156,6 +157,14 @@ class TestMessageQuery:
         serialized = query.serialize()
         assert serialized[2] == DeviceType.E9
         assert serialized[9] == MessageType.query
+
+    def test_info_query_body(self) -> None:
+        """Info query carries cmd code 0x51 and a matching inner checksum."""
+        body = MessageQuery(3, QUERY_CMD_INFO).body
+
+        assert body[6] == QUERY_CMD_INFO
+        assert body[7] == 0xC3
+        assert body[-1] == _inner_checksum(list(body[:-1]))
 
 
 class TestMessageSet:

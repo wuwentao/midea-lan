@@ -160,7 +160,11 @@ class MessageE9Base(MessageRequest):
 class MessageQuery(MessageE9Base):
     """e9 message query."""
 
-    def __init__(self, protocol_version: int) -> None:
+    def __init__(
+        self,
+        protocol_version: int,
+        query_command: int = QUERY_CMD_STATUS,
+    ) -> None:
         """Initialize e9 message query."""
         super().__init__(
             protocol_version=protocol_version,
@@ -168,6 +172,7 @@ class MessageQuery(MessageE9Base):
             # body[0] is the inner 0xAA frame head.
             body_type=ListTypes(INNER_HEAD),
         )
+        self.query_command = query_command
 
     @property
     def _body(self) -> bytearray:
@@ -180,7 +185,7 @@ class MessageQuery(MessageE9Base):
             0x00,
             BODY_LENGTH_QUERY,
             TASK_TYPE_SETTING,
-            QUERY_CMD_STATUS,
+            self.query_command,
             QUERY_CMD_HIGH,
         ]
         frame.append(_inner_checksum(frame))

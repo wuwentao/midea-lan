@@ -140,7 +140,11 @@ class MideaF1Device(MideaDevice):
             return
         message = self._make_message_set()
         if attr == DeviceAttributes.power:
-            message.power = bool(value)
+            power = bool(value)
+            message.power = power
+            # Lua binToModel does not expose power in status reports. Retain
+            # the requested state so later numeric writes do not reset it.
+            self._attributes[DeviceAttributes.power] = power
         else:
             low, high = _NUMERIC_RANGES[attr]
             if isinstance(value, bool) or not isinstance(value, int | float):

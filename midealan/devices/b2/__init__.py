@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -49,6 +50,16 @@ class DeviceAttributes(StrEnum):
     lock = "lock"
 
 
+_WRITABLE_ATTRS = (
+    DeviceAttributes.work_status,
+    DeviceAttributes.work_mode,
+    DeviceAttributes.work_hour,
+    DeviceAttributes.work_minute,
+    DeviceAttributes.temperature,
+    DeviceAttributes.lock,
+)
+
+
 class MideaB2Device(MideaDevice):
     """Midea b2 device (steam box / steam oven)."""
 
@@ -74,6 +85,11 @@ class MideaB2Device(MideaDevice):
                 DeviceAttributes.lock: None,
             },
         )
+        # A B2 control frame carries every writable field. Keep successful
+        # writes pending until a report confirms them so a rapid follow-up
+        # write does not rebuild the frame from stale reported state.
+        self._pending_controls: dict[str, bool | int | str] = {}
+        self._pending_controls_lock = threading.RLock()
         self.set_customize(customize)
 
     def build_query(self) -> list[MessageQuery]:
@@ -89,28 +105,37 @@ class MideaB2Device(MideaDevice):
             if hasattr(message, str(status)):
                 value = getattr(message, str(status))
                 self._attributes[status] = value
-                new_status[str(status)] = value
+                status_key = str(status)
+                with self._pending_controls_lock:
+                    if self._pending_controls.get(status_key) == value:
+                        del self._pending_controls[status_key]
+                new_status[status_key] = value
         return new_status
 
     def _make_message_set(self) -> MessageSet:
         """Build a control message seeded from the current device state."""
         message = MessageSet(self._message_protocol_version)
-        status = self._attributes[DeviceAttributes.work_status]
-        if isinstance(status, str) and status in WORK_STATUS_CODES:
-            message.work_status = WORK_STATUS_CODES[status]
-        mode = self._attributes[DeviceAttributes.work_mode]
-        if isinstance(mode, str) and mode in MODE_CODES:
-            message.work_mode = MODE_CODES[mode]
-        for key in (
-            DeviceAttributes.work_hour,
-            DeviceAttributes.work_minute,
-            DeviceAttributes.temperature,
-        ):
-            current = self._attributes[key]
-            if isinstance(current, int):
-                setattr(message, str(key), current)
-        lock = self._attributes[DeviceAttributes.lock]
-        message.lock = LOCK_ON if lock else LOCK_OFF
+        with self._pending_controls_lock:
+            controls = {
+                key: self._pending_controls.get(str(key), self._attributes[key])
+                for key in _WRITABLE_ATTRS
+            }
+            status = controls[DeviceAttributes.work_status]
+            if isinstance(status, str) and status in WORK_STATUS_CODES:
+                message.work_status = WORK_STATUS_CODES[status]
+            mode = controls[DeviceAttributes.work_mode]
+            if isinstance(mode, str) and mode in MODE_CODES:
+                message.work_mode = MODE_CODES[mode]
+            for key in (
+                DeviceAttributes.work_hour,
+                DeviceAttributes.work_minute,
+                DeviceAttributes.temperature,
+            ):
+                current = controls[key]
+                if isinstance(current, int) and not isinstance(current, bool):
+                    setattr(message, str(key), current)
+            lock = controls[DeviceAttributes.lock]
+            message.lock = LOCK_ON if lock else LOCK_OFF
         return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
@@ -122,19 +147,16 @@ class MideaB2Device(MideaDevice):
             DeviceAttributes.box_state,
         ):
             return
-        message = self._make_message_set()
         if attr == DeviceAttributes.work_status:
             if not isinstance(value, str) or value not in WORK_STATUS_CODES:
                 msg = "[b2] work_status is not a recognized value"
                 raise ValueWrongType(msg)
-            message.work_status = WORK_STATUS_CODES[value]
         elif attr == DeviceAttributes.work_mode:
             if not isinstance(value, str) or value not in MODE_CODES:
                 msg = "[b2] work_mode is not a recognized value"
                 raise ValueWrongType(msg)
-            message.work_mode = MODE_CODES[value]
         elif attr == DeviceAttributes.lock:
-            message.lock = LOCK_ON if value else LOCK_OFF
+            value = bool(value)
         else:  # work_hour / work_minute / temperature
             low, high = _PARAM_RANGES[attr]
             if isinstance(value, bool) or not isinstance(value, int | float):
@@ -144,8 +166,20 @@ class MideaB2Device(MideaDevice):
             if not low <= number <= high:
                 msg = f"[b2] {attr} must be in [{low}, {high}]"
                 raise ValueOutOfRange(msg)
-            setattr(message, str(attr), number)
-        self.build_send(message)
+            value = number
+        attr_key = str(attr)
+        with self._pending_controls_lock:
+            previous_pending = self._pending_controls.copy()
+            self._pending_controls[attr_key] = value
+            message = self._make_message_set()
+            try:
+                self.build_send(message)
+            except Exception:
+                if attr_key in previous_pending:
+                    self._pending_controls[attr_key] = previous_pending[attr_key]
+                else:
+                    del self._pending_controls[attr_key]
+                raise
 
     def set_customize(self, customize: str) -> None:
         """Midea b2 device set customize (JSON, same style as other appliances)."""

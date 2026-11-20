@@ -12,6 +12,7 @@ from midealan.devices.ac.message import (
     _B1_MAX_CAPABILITY_BATCHES,
     _B1_MAX_PROPERTIES_PER_BATCH,
     A0_A1_C0_MIN_BODY_LENGTH,
+    A5_MIN_BODY_LENGTH,
     CAPABILITY_ONLY_TAGS,
     COMMON_TAGS,
     CONFORT_MODE_MIN_LENGTH2,
@@ -19,6 +20,7 @@ from midealan.devices.ac.message import (
     NEW_PROTOCOL_WIND_ANGLE_BYTE,
     PROPERTIES_TAGS,
     SMART_DRY_MIN_LENGTH,
+    A5Body,
     CapabilitiesQuery,
     CapabilityBody,
     CapabilityTag,
@@ -3936,10 +3938,50 @@ class TestMessageACResponseA5:
         )
         assert response.realtime_power == 0
 
-    def test_c0_power_off_resets_a5_power(self) -> None:
-        """Test C0 power-off resets realtime_power."""
+    def test_c0_power_off_does_not_reset_a5_power(self) -> None:
+        """Test C0 indoor-unit power-off leaves the shared A5 power alone."""
         response = MessageACResponse(
             self.query_header + self.c0_off,
             parse_a5_power=True,
         )
-        assert response.realtime_power == 0
+        assert not hasattr(response, "realtime_power")
+
+    def test_a5_dispatcher_short_body_skipped(self) -> None:
+        """Test the notify1 A5 dispatcher skips a body below the minimum."""
+        body = bytearray(A5_MIN_BODY_LENGTH - 1)
+        body[0] = ListTypes.A5
+        response = MessageACResponse(
+            self.a5_header + body,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+        assert not hasattr(response, "compressor_frequency")
+        assert not hasattr(response, "indoor_coil_temperature")
+        assert not hasattr(response, "outdoor_coil_temperature")
+        assert not hasattr(response, "discharge_pipe_temperature")
+
+    def test_a5_body_short_body_guard(self) -> None:
+        """Test A5Body rejects a body below the minimum directly."""
+        body = bytearray(A5_MIN_BODY_LENGTH - 1)
+        body[0] = ListTypes.A5
+        a5 = A5Body(body)
+        assert not hasattr(a5, "realtime_power")
+        assert not hasattr(a5, "compressor_frequency")
+        assert not hasattr(a5, "indoor_coil_temperature")
+        assert not hasattr(a5, "outdoor_coil_temperature")
+        assert not hasattr(a5, "discharge_pipe_temperature")
+
+    def test_a5_frequency_echo_mismatch_rejected(self) -> None:
+        """Test A5Body rejects a frame whose frequency echo differs."""
+        body = bytearray(self.a5_heat)
+        body[1] = 57
+        body[3] = 58
+        response = MessageACResponse(
+            self.a5_header + body,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+        assert not hasattr(response, "compressor_frequency")
+        assert not hasattr(response, "indoor_coil_temperature")
+        assert not hasattr(response, "outdoor_coil_temperature")
+        assert not hasattr(response, "discharge_pipe_temperature")

@@ -2756,12 +2756,14 @@ class MessageACResponse(MessageResponse):
             self._apply_a5_power_precedence()
 
     def _apply_a5_power_precedence(self) -> None:
-        """Keep the A5 realtime power when C1 0x44/C0 would overwrite it.
+        """Keep the A5 realtime power when C1 0x44 would overwrite it.
 
         C1 group 0x44 reports realtime_power=0 on 00000Q1A. The integration
         polls that group every refresh cycle, so without this guard it would
         replace the A5 value with 0. Group 0x41 resets the value to 0 when the
-        compressor stops; C0 power-off resets it as well.
+        compressor stops. Do not clear on C0 indoor-unit power-off: in a
+        multi-split the other indoor unit can keep the shared outdoor unit
+        running.
         """
         if self.body_type == ListTypes.C1:
             if hasattr(self, "compressor_frequency"):
@@ -2771,5 +2773,3 @@ class MessageACResponse(MessageResponse):
                     del self.realtime_power
             elif hasattr(self, "realtime_power"):
                 del self.realtime_power
-        elif self.body_type == ListTypes.C0 and getattr(self, "power", None) is False:
-            self.realtime_power = 0

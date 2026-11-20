@@ -8,7 +8,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.b2 import DeviceAttributes, MideaB2Device
 from midealan.devices.b2.message import STATUS_STANDBY, STATUS_WORK
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
 
 
@@ -137,6 +137,71 @@ class TestMideaB2Device:
         assert body[3] == 20  # seeded minute
         assert body[4] == 70  # seeded temperature
         assert body[14] == 0x01  # seeded lock
+
+    def test_consecutive_sets_preserve_pending_values(
+        self,
+        device: MideaB2Device,
+    ) -> None:
+        """A rapid second write includes the first unconfirmed value."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.work_hour, 1)
+            device.set_attribute(DeviceAttributes.work_minute, 30)
+            device.set_attribute(DeviceAttributes.work_status, "work")
+        second_body = build_send.call_args_list[1].args[0].body
+        assert second_body[2] == 1
+        assert second_body[3] == 30
+        third_body = build_send.call_args_list[2].args[0].body
+        assert third_body[0] == STATUS_WORK
+        assert third_body[2] == 1
+        assert third_body[3] == 30
+
+    def test_stale_report_keeps_pending_value(self, device: MideaB2Device) -> None:
+        """A stale intervening report does not undo an unconfirmed write."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.work_hour, 1)
+            device.process_message(_report_frame(_report_body()))
+            device.set_attribute(DeviceAttributes.work_minute, 30)
+        second_body = build_send.call_args_list[1].args[0].body
+        assert second_body[2] == 1
+        assert second_body[3] == 30
+
+    def test_report_confirms_pending_values(self, device: MideaB2Device) -> None:
+        """A matching report clears each confirmed pending control."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.work_status, "work")
+            device.set_attribute(DeviceAttributes.work_mode, "vegetable")
+            device.set_attribute(DeviceAttributes.work_hour, 2)
+            device.set_attribute(DeviceAttributes.work_minute, 45)
+            device.set_attribute(DeviceAttributes.temperature, 90)
+            device.set_attribute(DeviceAttributes.lock, True)
+        device.process_message(_report_frame(_report_body()))
+        assert device._pending_controls == {}
+
+    def test_failed_send_does_not_add_pending_value(
+        self,
+        device: MideaB2Device,
+    ) -> None:
+        """A failed first send leaves no optimistic control value behind."""
+        with (
+            patch.object(device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            device.set_attribute(DeviceAttributes.work_hour, 1)
+        assert device._pending_controls == {}
+
+    def test_failed_replacement_restores_previous_pending_value(
+        self,
+        device: MideaB2Device,
+    ) -> None:
+        """A failed replacement keeps the last successfully sent value."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.work_hour, 1)
+        with (
+            patch.object(device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            device.set_attribute(DeviceAttributes.work_hour, 2)
+        assert device._pending_controls[DeviceAttributes.work_hour] == 1
 
     def test_set_ignores_unknown_seed(self, device: MideaB2Device) -> None:
         """A stored status / mode not in the code map is not seeded."""

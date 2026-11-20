@@ -118,13 +118,24 @@ class TestMessageSet:
         msg.target_humidity = 45
         msg.mode = 2
         msg.screen_display = 0
+        msg.light_color = 3
         body = msg._body
         assert body[2] == 0
         assert body[6] == 45
         assert body[8] == 0
         assert body[9] == 0
         assert body[10] == 2
+        assert body[11] == 3
         assert body[14] == 0x80
+
+    def test_set_body_lua_25_leaves_light_color_unchanged(self) -> None:
+        """Test unrelated Lua 25 controls do not change the light ring."""
+        msg = MessageSet(
+            protocol_version=ProtocolVersion.V1,
+            lua_protocol=FD_LUA_PROTOCOL_25,
+        )
+        assert msg.light_color is None
+        assert msg._body[11] == 0
 
     def test_set_body_lua_25_manual(self) -> None:
         """Test Lua 25 sends a level only in manual mode."""
@@ -222,6 +233,7 @@ class TestMessageFDResponse:
         body[3] = 0
         body[8] = 0
         body[13] = 2
+        body[14] = 7
         body[42] = 0x40
         body[43] = 0x02
         msg = MessageFDResponse(_build_message(MessageType.query, body))
@@ -229,6 +241,7 @@ class TestMessageFDResponse:
         assert response.lua_protocol == FD_LUA_PROTOCOL_25
         assert response.mode == 2
         assert response.fan_speed == 101
+        assert response.light_color == 7
         assert response.screen_display == 0
 
     def test_response_short_c8_lua_25(self) -> None:

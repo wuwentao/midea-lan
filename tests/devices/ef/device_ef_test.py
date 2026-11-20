@@ -8,7 +8,7 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.ef import DeviceAttributes, MideaEFDevice
 from midealan.devices.ef.message import DRINK_WARM, INNER_HEAD
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
+from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
 
 
@@ -128,6 +128,31 @@ class TestMideaEFDevice:
         assert body[4] == 0x55  # seeded cmd_code
         assert body[9] == 0x01 | 0x02 | 0x04  # seeded reserve + warm + warm_drink
         assert body[14] == 70  # seeded temperature_setting
+
+    def test_consecutive_timer_sets_preserve_previous_values(
+        self,
+        device: MideaEFDevice,
+    ) -> None:
+        """A later timer write keeps earlier write-only timer settings."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 3)
+            device.set_attribute(DeviceAttributes.time_reserve_min, 30)
+            device.set_attribute(DeviceAttributes.warm, True)
+        second_body = build_send.call_args_list[1].args[0].body
+        assert second_body[10] == 3
+        assert second_body[11] == 30
+        final_body = build_send.call_args_list[2].args[0].body
+        assert final_body[10] == 3
+        assert final_body[11] == 30
+
+    def test_failed_timer_send_is_not_retained(self, device: MideaEFDevice) -> None:
+        """A failed timer write does not become the seed for later controls."""
+        with (
+            patch.object(device, "build_send", side_effect=SocketException),
+            pytest.raises(SocketException),
+        ):
+            device.set_attribute(DeviceAttributes.time_warm_min, 15)
+        assert device.attributes[DeviceAttributes.time_warm_min] is None
 
     def test_set_ignores_unknown_seed_style(self, device: MideaEFDevice) -> None:
         """A stored drink_style not in the known set is not seeded."""

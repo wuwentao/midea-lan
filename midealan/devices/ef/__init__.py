@@ -72,6 +72,15 @@ _NUMERIC_RANGES: dict[str, tuple[int, int]] = {
 }
 # All writable control params (bool + drink_style + numeric).
 _SETTABLE = _BOOL_ATTRS | {DeviceAttributes.drink_style} | set(_NUMERIC_RANGES)
+# Timer settings are sent in control frames but are absent from status reports.
+_WRITE_ONLY = frozenset(
+    {
+        DeviceAttributes.time_reserve_hr,
+        DeviceAttributes.time_reserve_min,
+        DeviceAttributes.time_warm_hr,
+        DeviceAttributes.time_warm_min,
+    },
+)
 # Control-frame fields seeded from current state (name -> message attribute).
 _SEED_BOOL = (DeviceAttributes.reserve, DeviceAttributes.warm)
 _SEED_NUMERIC = (
@@ -180,6 +189,10 @@ class MideaEFDevice(MideaDevice):
                 raise ValueOutOfRange(msg)
             setattr(message, str(attr), number)
         self.build_send(message)
+        # Persist write-only timers after a successful send so every later
+        # full control frame preserves them instead of resetting them to zero.
+        if attr in _WRITE_ONLY:
+            self._attributes[attr] = number
 
     def set_customize(self, customize: str) -> None:
         """Midea ef device set customize (JSON, same style as other appliances)."""

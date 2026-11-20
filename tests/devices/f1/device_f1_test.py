@@ -91,6 +91,21 @@ class TestMideaF1Device:
             device.set_attribute(DeviceAttributes.power, False)
         assert build_send.call_args[0][0].body[9] == 0x00
 
+    @pytest.mark.parametrize(("power", "power_byte"), [(True, POWER_ON), (False, 0x00)])
+    def test_numeric_set_preserves_requested_power(
+        self,
+        device: MideaF1Device,
+        *,
+        power: bool,
+        power_byte: int,
+    ) -> None:
+        """A numeric write keeps the latest requested on/off state."""
+        with patch.object(device, "build_send") as build_send:
+            device.set_attribute(DeviceAttributes.power, power)
+            device.set_attribute(DeviceAttributes.speed, 5)
+        assert device.attributes[DeviceAttributes.power] is power
+        assert build_send.call_args_list[1].args[0].body[9] == power_byte
+
     def test_set_work_mode(self, device: MideaF1Device) -> None:
         """Setting work_mode sends it little-endian at body[4..7]."""
         with patch.object(device, "build_send") as build_send:

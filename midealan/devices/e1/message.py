@@ -225,24 +225,39 @@ class MessageStorage(MessageE1Base):
 
 
 class MessageDrySetting(MessageE1Base):
-    """Set 7600644C drying without modifying other options."""
+    """Set the independent drying switch without modifying other options."""
 
-    def __init__(self, protocol_version: int, *, enabled: bool) -> None:
-        """Initialize the drying setting command."""
+    def __init__(
+        self,
+        protocol_version: int,
+        *,
+        enabled: bool,
+        fill_end: int = DRY_SETTINGS_END_INDEX,
+    ) -> None:
+        """Initialize the drying setting command.
+
+        ``fill_end`` is the last Lua ``bodyBytes`` index the model's own vendor
+        script pads with 0xFF. The scripts differ (for example 7600002B pads
+        through 13, 7600644C through 11 and 760001EC through 10), so the range
+        is per model instead of one shared constant.
+        """
         super().__init__(
             protocol_version=protocol_version,
             message_type=MessageType.set,
             body_type=ListTypes.X81,
         )
         self.enabled = enabled
+        self._fill_end = fill_end
 
     @property
     def _body(self) -> bytearray:
         body = bytearray(CONTROL_BODY_LENGTH)
-        # Lua dryswitch: body[9] is the setting; other body[4:12] bytes are FF.
-        body[DRY_SETTINGS_START_INDEX:DRY_SETTINGS_END_INDEX] = bytes(
-            [DRY_SETTING_UNCHANGED],
-        ) * (DRY_SETTINGS_END_INDEX - DRY_SETTINGS_START_INDEX)
+        # Lua bodyBytes[4:fill_end] = 0xFF; body[9] carries the setting. The
+        # message body is one byte longer than _body because it starts with
+        # the body-type byte, so Lua index i maps to _body[i - 1].
+        start = DRY_SETTINGS_START_INDEX
+        end = self._fill_end
+        body[start:end] = bytes([DRY_SETTING_UNCHANGED]) * (end - start)
         body[DRY_SETTING_INDEX] = int(self.enabled)
         return body
 

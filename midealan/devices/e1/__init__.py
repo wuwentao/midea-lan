@@ -32,8 +32,18 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_DELAY_MINUTES = 24 * 60
 MAX_STORAGE_HOURS = 72
-# Scope the dryswitch and air_set_hour controls to the verified model/subtype.
-_DRY_STORAGE_SETTINGS_DEVICE = ("7600644C", 3)
+# Models whose exact vendor Lua encodes the independent dryswitch (0x81 body[9])
+# and air_set_hour (0x86 body[1]) commands and decodes the same status bits.
+# The value is the last Lua bodyBytes index the model's own script pads with
+# 0xFF for the dryswitch command. 7600644C is hardware-verified on subtype 3;
+# the others are confirmed against their per-model vendor scripts only, so they
+# stay opt-in in the integration.
+_DRY_STORAGE_SETTINGS_MODELS = {
+    "7600002B": 13,
+    "760001EC": 10,
+    "760RX20S": 10,
+}
+_DRY_STORAGE_SETTINGS_VERIFIED_DEVICE = ("7600644C", 3, 11)
 
 # Complete European program profile from the exact 760001EC Lua. Keep
 # established shared state values where their meaning is equivalent. Model
@@ -326,7 +336,7 @@ class MideaE1Device(MideaDevice):
                 DeviceAttributes.light_strip_on: None,
             },
         )
-        if (self.model, self.subtype) == _DRY_STORAGE_SETTINGS_DEVICE:
+        if self._supports_dry_storage_settings():
             self._attributes[DeviceAttributes.dry_setting] = None
             self._attributes[DeviceAttributes.storage_set_time] = None
         self._modes = {
@@ -701,6 +711,23 @@ class MideaE1Device(MideaDevice):
         """Return the door auto-open setting, or None to leave it unchanged."""
         return self._door_auto_open_setting
 
+    def _supports_dry_storage_settings(self) -> bool:
+        """Whether this model's vendor protocol exposes both extra settings."""
+        verified_model, verified_subtype, _ = _DRY_STORAGE_SETTINGS_VERIFIED_DEVICE
+        return self.model in _DRY_STORAGE_SETTINGS_MODELS or (
+            self.model == verified_model and self.subtype == verified_subtype
+        )
+
+    def _dry_settings_fill_end(self) -> int:
+        """Return the model's 0xFF fill end for the dryswitch command."""
+        verified_model, _, verified_fill_end = _DRY_STORAGE_SETTINGS_VERIFIED_DEVICE
+        if self.model in _DRY_STORAGE_SETTINGS_MODELS:
+            return _DRY_STORAGE_SETTINGS_MODELS[self.model]
+        if self.model == verified_model:
+            return verified_fill_end
+        msg = f"[e1] {self.model} has no verified dryswitch fill range"
+        raise ValueWrongType(msg)
+
     def _selected_mode(self) -> int:
         """Return the program to start: the selected one, else the reported mode."""
         program = self.get_attribute(DeviceAttributes.program)
@@ -843,7 +870,11 @@ class MideaE1Device(MideaDevice):
             if not isinstance(value, bool):
                 raise ValueWrongType("[e1] Expected bool for dry_setting")
             self.build_send(
-                MessageDrySetting(self._message_protocol_version, enabled=value),
+                MessageDrySetting(
+                    self._message_protocol_version,
+                    enabled=value,
+                    fill_end=self._dry_settings_fill_end(),
+                ),
             )
             return
         if (

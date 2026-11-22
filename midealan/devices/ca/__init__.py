@@ -1,18 +1,39 @@
 """Midea lan CA device."""
 
 import logging
+import threading
+import time
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import MideaDevice, MideaDeviceInitKwargs
-from midealan.message import MessageRequest, MessageType, ToshibaFrame
+from midealan.exceptions import ValueWrongType
+from midealan.message import (
+    ListTypes,
+    MessageQuestCustom,
+    MessageRequest,
+    MessageType,
+    ToshibaFrame,
+)
 
-from .message import MessageCAResponse, MessageQuery, decode_toshiba_ca_status
+from .message import (
+    CA_MODE_BODY_LENGTH,
+    CA_MODE_BODY_OFFSET,
+    CA_MODE_MASKS,
+    CA_MODE_MAX_AGE_SECONDS,
+    MessageCAResponse,
+    MessageQuery,
+    build_ca_mode_body,
+    decode_toshiba_ca_status,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 SUBTYPE_310A2111 = 56
+CA_MODE_MODEL = "310Z999Z"
+CA_MODE_SUBTYPE = 56
 TOSHIBA_SHIFTED_MODEL = "0000000D"
 FLEX_ZONE_MODE_BY_TEMPERATURE: dict[float, str] = {
     6.0: "baby",
@@ -26,6 +47,7 @@ class DeviceAttributes(StrEnum):
 
     mode = "mode"
     code_mode = "code_mode"
+    storage_mode = "storage_mode"
     freezing_mode = "freezing_mode"
     smart_mode = "smart_mode"
     energy_saving_mode = "energy_saving_mode"
@@ -56,6 +78,15 @@ class DeviceAttributes(StrEnum):
     electronic_smell = "electronic_smell"
     humidity = "humidity"
     variable_mode = "variable_mode"
+
+
+@dataclass(frozen=True, slots=True)
+class _CAModeStatus:
+    """Last accepted Midea CA general status body."""
+
+    body: bytes
+    received_at: float
+    generation: int
 
 
 class MideaCADevice(MideaDevice):
@@ -97,6 +128,7 @@ class MideaCADevice(MideaDevice):
                 # Read-only parser values; None means no general status received.
                 DeviceAttributes.mode: None,
                 DeviceAttributes.code_mode: None,
+                DeviceAttributes.storage_mode: None,
                 DeviceAttributes.freezing_mode: None,
                 DeviceAttributes.smart_mode: None,
                 DeviceAttributes.energy_saving_mode: None,
@@ -130,6 +162,9 @@ class MideaCADevice(MideaDevice):
             },
         )
         self._modes = [""]
+        self._ca_mode_lock = threading.RLock()
+        self._ca_mode_status: _CAModeStatus | None = None
+        self._ca_mode_pending_generation: int | None = None
 
     def build_query(self) -> list[MessageRequest]:
         """Midea CA device build query."""
@@ -144,6 +179,7 @@ class MideaCADevice(MideaDevice):
             return status
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
+        self._remember_ca_mode_status(message)
         new_status = {}
         for attr in self._attributes:
             if hasattr(message, str(attr)):
@@ -192,9 +228,84 @@ class MideaCADevice(MideaDevice):
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea CA device set attribute."""
-        del attr, value
-        self.reject_toshiba_write()
+        if self.toshiba_protocol:
+            del attr, value
+            self.reject_toshiba_write()
+            return
+        mask = CA_MODE_MASKS.get(attr)
+        if (
+            mask is None
+            or self.model != CA_MODE_MODEL
+            or self.subtype != CA_MODE_SUBTYPE
+        ):
+            return
+        if not isinstance(value, bool):
+            raise ValueWrongType("[ca] Expected bool")
+
+        with self._ca_mode_lock:
+            status = self._fresh_ca_mode_status()
+            if status is None:
+                return
+            if (
+                self._ca_mode_pending_generation is not None
+                and status.generation <= self._ca_mode_pending_generation
+            ):
+                return
+            body = build_ca_mode_body(status.body, mask, value)
+            if body == status.body:
+                return
+            command = MessageQuestCustom(
+                DeviceType.CA,
+                self._message_protocol_version,
+                MessageType.set,
+                bytearray(body),
+            )
+            self.build_send(command)
+            self._ca_mode_pending_generation = status.generation
+
+    def _remember_ca_mode_status(self, message: MessageCAResponse) -> None:
+        """Store only a complete Midea general status body for later SETs."""
+        if (
+            self.model != CA_MODE_MODEL
+            or self.subtype != CA_MODE_SUBTYPE
+            or getattr(message, "message_type", None)
+            not in (MessageType.query, MessageType.notify1)
+        ):
+            return
+        if getattr(message, "body_type", None) != ListTypes.X00:
+            return
+        body = getattr(message, "body", bytearray())
+        end = CA_MODE_BODY_OFFSET + CA_MODE_BODY_LENGTH
+        if len(body) < end:
+            return
+        raw_body = bytes(body[CA_MODE_BODY_OFFSET:end])
+        with self._ca_mode_lock:
+            generation = (
+                1
+                if self._ca_mode_status is None
+                else self._ca_mode_status.generation + 1
+            )
+            self._ca_mode_status = _CAModeStatus(
+                body=raw_body,
+                received_at=time.monotonic(),
+                generation=generation,
+            )
+            if (
+                self._ca_mode_pending_generation is not None
+                and generation > self._ca_mode_pending_generation
+            ):
+                self._ca_mode_pending_generation = None
+
+    def _fresh_ca_mode_status(self) -> _CAModeStatus | None:
+        """Return a recent complete status body, if one is available."""
+        status = self._ca_mode_status
+        if status is None:
+            return None
+        if time.monotonic() - status.received_at > CA_MODE_MAX_AGE_SECONDS:
+            return None
+        return status
 
 
 class MideaAppliance(MideaCADevice):
     """Midea CA appliance."""
+

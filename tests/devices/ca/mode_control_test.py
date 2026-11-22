@@ -5,12 +5,17 @@ from unittest.mock import patch
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.devices.ca import DeviceAttributes, MideaCADevice
+from midealan.devices.ca import (
+    CAModeWritePendingError,
+    DeviceAttributes,
+    MideaCADevice,
+)
 from midealan.devices.ca.message import (
     CA_MODE_BODY_LENGTH,
+    MessageCAResponse,
     build_ca_mode_body,
 )
-from midealan.message import MessageBase, MessageQuestCustom, MessageType
+from midealan.message import ListTypes, MessageBase, MessageQuestCustom, MessageType
 
 
 def _device() -> MideaCADevice:
@@ -30,14 +35,18 @@ def _device() -> MideaCADevice:
     )
 
 
-def _status(mode: int = 0) -> bytes:
+def _status(
+    mode: int = 0,
+    message_type: MessageType = MessageType.query,
+    body_type: ListTypes = ListTypes.X00,
+) -> bytes:
     """Build a complete general-status response with a 61-byte payload."""
     body = bytearray(CA_MODE_BODY_LENGTH + 1)
-    body[0] = 0x00
+    body[0] = body_type
     body[1] = mode
     body[2:] = bytes(range(2, CA_MODE_BODY_LENGTH + 1))
     header = bytearray(
-        [0xAA, 0, 0, 0, 0, 0, 0, 0, ProtocolVersion.V3, MessageType.query],
+        [0xAA, 0, 0, 0, 0, 0, 0, 0, ProtocolVersion.V3, message_type],
     )
     return bytes(header + body + bytearray([0]))
 
@@ -113,12 +122,38 @@ def test_set_requires_status_and_waits_for_next_status() -> None:
         assert command.body[0] == 0x01
         assert command.body[1:] == bytes(range(2, CA_MODE_BODY_LENGTH + 1))
 
-        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        with pytest.raises(CAModeWritePendingError, match="waiting for a newer"):
+            device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 1
 
         device.process_message(_status(0x01))
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 2
+
+
+def test_notify02_general_status_is_a_valid_set_template() -> None:
+    """General-status notifications preserve existing mode bits."""
+    device = _device()
+    device.process_message(_status(0x01, MessageType.notify1, ListTypes.X02))
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+    command = send.call_args.args[0]
+    assert command.body[0] == 0x03
+
+
+def test_status_received_before_set_does_not_clear_pending_guard() -> None:
+    """A parsed pre-SET status cannot release the pending write."""
+    device = _device()
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        device._remember_ca_mode_status(
+            MessageCAResponse(_status(0x00)),
+            1,
+        )
+        with pytest.raises(CAModeWritePendingError):
+            device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 1
 
 
 def test_failed_send_does_not_publish_state_or_leave_pending() -> None:

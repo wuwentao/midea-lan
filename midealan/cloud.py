@@ -35,6 +35,9 @@ SN8_MIN_SERIAL_LENGTH = 17
 DAY_REPORT_ALIAS = "/cfhrs/e3/v1/api"
 DAY_REPORT_MESSAGE = "dayReportV2"
 DAY_REPORT_TIMEOUT = ClientTimeout(20)
+E1_FILTER_WASH_TIME_ALIAS = "/cfhrs/e1/v1/api"
+E1_FILTER_WASH_TIME_MESSAGE = "selfCleanV2"
+E1_FILTER_WASH_TIME_ACTION = "getCleanTimes"
 # Codes the gateway answers when the access token is missing, rejected or not a
 # user token; callers log in again instead of retrying the same token.
 AUTH_ERROR_CODES = frozenset({40001, 40002, 44001})
@@ -331,12 +334,16 @@ class MideaCloud:
                         timeout=ClientTimeout(10),
                     )
                     raw = await r.read()
-                    _LOGGER.debug(
-                        "Midea cloud API url: %s, \n data: %s, \n response: %s",
-                        url,
-                        _redact_data(str(data)),
-                        _redact_data(str(raw)),
-                    )
+                    if endpoint in {"/v1/user/login/id/get", "/mj/user/login"}:
+                        # Login replies contain identifiers and session credentials.
+                        _LOGGER.debug("Midea cloud authentication response received")
+                    else:
+                        _LOGGER.debug(
+                            "Midea cloud API url: %s, \n data: %s, \n response: %s",
+                            url,
+                            _redact_data(str(data)),
+                            _redact_data(str(raw)),
+                        )
                     response = json.loads(raw)
                     break
             except (TimeoutError, ClientConnectionError, json.JSONDecodeError) as e:
@@ -437,24 +444,38 @@ class MideaCloud:
             or answered with an error.
 
         """
+        data = await self._request_signed_proxy(
+            DAY_REPORT_ALIAS,
+            {"msg": DAY_REPORT_MESSAGE, "params": {"applianceId": str(appliance_id)}},
+        )
+        error_code = data.get("code")
+        if error_code is not None:
+            raise _day_report_error(error_code, data.get("msg", ""))
+        if str(data.get("retCode")) != "0":
+            raise _day_report_error(0, data.get("desc", data.get("retCode")))
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
+
+    async def _request_signed_proxy(
+        self,
+        alias: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send a signed request using the current user access token."""
         if not self._access_token:
             msg = "No Midea cloud access token"
             raise CloudAuthError(msg)
         if "alias=" not in self._api_url:
-            msg = f"Cloud {self._api_url} does not provide usage reports"
+            msg = "Midea cloud does not provide a signed proxy"
             raise CloudError(msg)
-        url = f"{self._api_url}{DAY_REPORT_ALIAS}"
-        payload = {
-            "msg": DAY_REPORT_MESSAGE,
-            "params": {"applianceId": str(appliance_id)},
-        }
+        url = f"{self._api_url}{alias}"
         # The proxy validates the same request signature as the rest of the cloud
         # API; without these headers it answers 44001 "sign is empty".
         random = str(int(time.time()))
         dump_data = json.dumps(payload)
         sign = self._security.sign("", dump_data, random)
         if sign is None:
-            msg = f"Cloud {self._api_url} cannot sign usage report requests"
+            msg = "Midea cloud cannot sign the proxy request"
             raise CloudError(msg)
         headers = {
             "content-type": "application/json; charset=utf-8",
@@ -474,19 +495,13 @@ class MideaCloud:
                     allow_redirects=False,
                 )
                 data: Any = await response.json(content_type=None)
-        except (ClientError, TimeoutError, ValueError) as err:
-            msg = f"Midea cloud usage report request failed: {err}"
-            raise CloudError(msg) from err
+        except (ClientError, TimeoutError, ValueError):
+            msg = "Midea cloud proxy request failed"
+            raise CloudError(msg) from None
         if not isinstance(data, dict):
-            msg = f"Unexpected Midea cloud usage report response: {type(data).__name__}"
+            msg = "Unexpected Midea cloud proxy response"
             raise CloudError(msg)
-        error_code = data.get("code")
-        if error_code is not None:
-            raise _day_report_error(error_code, data.get("msg", ""))
-        if str(data.get("retCode")) != "0":
-            raise _day_report_error(0, data.get("desc", data.get("retCode")))
-        result = data.get("result")
-        return result if isinstance(result, dict) else None
+        return data
 
     @staticmethod
     def _get_lua_download_metadata(
@@ -565,6 +580,54 @@ class MeijuCloud(MideaCloud):
             "appId": self._app_id,
             "language": "en_US",
         }
+
+    async def get_e1_filter_wash_time(self, appliance_id: int) -> int | None:
+        """Read the E1 filter's cumulative washing time in minutes.
+
+        The 7600644C app plugin reads ``selfCleanV2/getCleanTimes`` via the
+        signed proxy. The E3-style gateway envelope is not yet verified live
+        for E1. This method requires an existing Meiju user session.
+
+        Returns:
+            Whole, non-negative minutes, or None if the result is missing or
+            invalid. Zero is a valid reading, not a fallback.
+
+        Raises:
+            CloudAuthError: If the user access token is absent or rejected.
+            CloudError: If the proxy request fails or returns an error.
+
+        """
+        data = await self._request_signed_proxy(
+            E1_FILTER_WASH_TIME_ALIAS,
+            {
+                "msg": E1_FILTER_WASH_TIME_MESSAGE,
+                "params": {
+                    "applianceId": str(appliance_id),
+                    "action": E1_FILTER_WASH_TIME_ACTION,
+                    "diffWashTimes": 0,
+                    "totalWashTimes": 0,
+                },
+            },
+        )
+        code = data.get("code")
+        if str(code) in {str(auth_code) for auth_code in AUTH_ERROR_CODES}:
+            msg = "Midea cloud rejected the E1 filter query credentials"
+            raise CloudAuthError(msg)
+        if code is not None or str(data.get("retCode")) != "0":
+            msg = "Midea cloud rejected the E1 filter query"
+            raise CloudError(msg)
+        result = data.get("result")
+        minutes = result.get("time") if isinstance(result, dict) else None
+        if isinstance(minutes, int) and not isinstance(minutes, bool):
+            return minutes if minutes >= 0 else None
+        # Accept decimal integer strings and zero-only fractional suffixes,
+        # without rounding, float conversion or interpreting a boolean as time.
+        if isinstance(minutes, str) and re.fullmatch(r"[0-9]+(?:\.0+)?", minutes):
+            try:
+                return int(minutes.partition(".")[0])
+            except ValueError:
+                return None  # Python may limit very large integer strings.
+        return None
 
     async def login(self) -> bool:
         """Authenticate to Meiju Cloud."""

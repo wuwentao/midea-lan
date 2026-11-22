@@ -2205,6 +2205,74 @@ class DayReportTest(IsolatedAsyncioTestCase):
         session.request.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"time": "601.0"}, 601),
+        ({"time": 0}, 0),
+        ({"totalTimes": 16}, None),
+        ({"time": "12.5"}, None),
+        ({"time": -1}, None),
+        ({"time": True}, None),
+    ],
+)
+async def test_meiju_e1_filter_wash_time(
+    result: dict[str, object],
+    expected: int | None,
+) -> None:
+    """Read whole wash minutes through the authenticated, read-only query."""
+    session = DayReportTest._session({"retCode": "0", "result": result})
+    cloud = MeijuCloud("美的美居", session, "test-account", "test-password")
+    cloud.set_access_token("test-user-session")
+
+    assert await cloud.get_e1_filter_wash_time(100) == expected
+
+    call = session.request.await_args
+    assert call.args == (
+        "POST",
+        "https://mp-prod.smartmidea.net/mas/v5/app/proxy?alias=/cfhrs/e1/v1/api",
+    )
+    assert json.loads(call.kwargs["data"]) == {
+        "msg": "selfCleanV2",
+        "params": {
+            "applianceId": "100",
+            "action": "getCleanTimes",
+            "diffWashTimes": 0,
+            "totalWashTimes": 0,
+        },
+    }
+    assert call.kwargs["headers"]["accessToken"] == "test-user-session"
+    assert call.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "error"),
+    [
+        ({"code": "40002", "msg": "private-cloud-detail"}, CloudAuthError),
+        ({"retCode": "1", "desc": "private-cloud-detail"}, CloudError),
+        (ClientConnectionError("private-cloud-detail"), CloudError),
+    ],
+)
+async def test_meiju_e1_filter_query_failure_is_sanitized(
+    response: dict[str, str] | ClientConnectionError,
+    error: type[CloudError],
+) -> None:
+    """Expose a safe failure, never a zero reading or server-provided text."""
+    session = DayReportTest._session(response)
+    if isinstance(response, ClientConnectionError):
+        session.request.side_effect = response
+    cloud = MeijuCloud("美的美居", session, "test-account", "test-password")
+    cloud.set_access_token("test-user-session")
+
+    with pytest.raises(error) as exc:
+        await cloud.get_e1_filter_wash_time(100)
+
+    assert type(exc.value) is error
+    assert "private-cloud-detail" not in str(exc.value)
+
+
 # Snapshotted once, at module import, before any test (in this file or
 # any other) can mutate SUPPORTED_CLOUDS["TSmartLife"]. TestTSmartLifeCloud's
 # setUp/tearDown below always reset to this fixed baseline rather than

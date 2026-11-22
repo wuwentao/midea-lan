@@ -71,6 +71,33 @@ def test_body_length_is_strict() -> None:
         build_ca_mode_body(bytes(CA_MODE_BODY_LENGTH + 1), 0x01, True)
 
 
+def test_missing_or_stale_status_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Absent and older-than-two-minutes status bodies cannot be written."""
+    device = _device()
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        send.assert_not_called()
+
+        clock = [100.0]
+        monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+        device.process_message(_status(0x00))
+        clock[0] += 121.0
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        send.assert_not_called()
+
+
+def test_invalid_status_body_is_not_cached() -> None:
+    """A short CA response does not create a writable status cache."""
+    device = _device()
+    short_body = bytes(
+        [0xAA, 0, 0, 0, 0, 0, 0, 0, ProtocolVersion.V3, MessageType.query, 0, 0],
+    )
+    device.process_message(short_body)
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.holiday_mode.value, True)
+        send.assert_not_called()
+
+
 def test_set_requires_status_and_waits_for_next_status() -> None:
     """Writes require a fresh status and a later status releases the guard."""
     device = _device()

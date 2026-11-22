@@ -27,7 +27,11 @@ class TestMideaE1Device:
     @pytest.fixture(autouse=True)
     def _setup_device(self) -> None:
         """Set up E1 device."""
-        self.device = MideaE1Device(
+        self.device = self._make_device()
+
+    @staticmethod
+    def _make_device(model: str = "test_model", subtype: int = 1) -> MideaE1Device:
+        return MideaE1Device(
             name="Test Device",
             device_id=1,
             ip_address="192.168.1.100",
@@ -35,8 +39,8 @@ class TestMideaE1Device:
             token="AA",
             key="BB",
             device_protocol=ProtocolVersion.V3,
-            model="test_model",
-            subtype=1,
+            model=model,
+            subtype=subtype,
             customize="test_customize",
         )
 
@@ -637,6 +641,146 @@ class TestMideaE1Device:
         message = mock_build_send.call_args.args[0]
         assert isinstance(message, MessageStorage)
         assert message.storage is True
+
+    @pytest.mark.parametrize(
+        ("enabled", "reference_frame"),
+        [
+            (
+                True,
+                (
+                    "aa30e10000000000000281000000ffffffffff01ffff000000000000"
+                    "000000000000000000000000000000000000000072"
+                ),
+            ),
+            (
+                False,
+                (
+                    "aa30e10000000000000281000000ffffffffff00ffff000000000000"
+                    "000000000000000000000000000000000000000073"
+                ),
+            ),
+        ],
+    )
+    def test_dry_setting_sends_and_tracks_device_report(
+        self,
+        enabled: bool,
+        reference_frame: str,
+    ) -> None:
+        """Changing drying sends the vendor frame and reads only the setting bit."""
+        device = self._make_device("7600644C", 3)
+        assert DeviceAttributes.dry_setting in device.attributes
+        assert device.get_attribute(DeviceAttributes.dry_setting) is None
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.dry_setting, enabled)
+        send.assert_called_once()
+        # 7600644C Lua jsonToData output for the independent dryswitch command.
+        assert send.call_args.args[0].serialize() == bytes.fromhex(reference_frame)
+        assert device.get_attribute(DeviceAttributes.dry_setting) is None
+
+        body = bytearray(40)
+        body[4] = 0x10 if enabled else 0x20  # Deliberately opposite running bit.
+        update = device.process_message(self._message(MessageType.query, body))
+        assert update[DeviceAttributes.dry_setting] is enabled
+        assert device.get_attribute(DeviceAttributes.dry_status) is not enabled
+
+    @pytest.mark.parametrize(
+        ("hours", "reference_frame"),
+        [
+            (
+                0,
+                (
+                    "aa30e100000000000002860000000000000000000000000000000000"
+                    "000000000000000000000000000000000000000067"
+                ),
+            ),
+            (
+                37.0,
+                (
+                    "aa30e100000000000002862500000000000000000000000000000000"
+                    "000000000000000000000000000000000000000042"
+                ),
+            ),
+            (
+                72,
+                (
+                    "aa30e100000000000002864800000000000000000000000000000000"
+                    "00000000000000000000000000000000000000001f"
+                ),
+            ),
+        ],
+    )
+    def test_storage_set_time_sends_and_tracks_device_report(
+        self,
+        hours: float,
+        reference_frame: str,
+    ) -> None:
+        """Set whole storage hours separately from the countdown and switch."""
+        device = self._make_device("7600644C", 3)
+        attr = DeviceAttributes.storage_set_time
+        assert attr in device.attributes
+        assert device.get_attribute(attr) is None
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(attr, hours)
+        send.assert_called_once()
+        # 7600644C Lua jsonToData output for air_set_hour only.
+        assert send.call_args.args[0].serialize() == bytes.fromhex(reference_frame)
+        assert device.get_attribute(attr) is None
+
+        body = bytearray(40)
+        update = device.process_message(self._message(MessageType.query, body[:17]))
+        assert update[attr] is None  # Cannot interpret an absent byte as 0 hours.
+        body[17] = int(hours)
+        body[18] = 9
+        update = device.process_message(self._message(MessageType.query, body))
+        assert type(update[attr]) is int
+        assert update[attr] == hours
+        assert update[DeviceAttributes.storage_remaining] == 9
+        assert update[DeviceAttributes.storage] is False
+
+    @pytest.mark.parametrize(("model", "subtype"), [("76000228", 3), ("7600644C", 1)])
+    def test_dry_and_storage_settings_not_exposed_on_unverified_device(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Do not expose or send the model-specific controls on other units."""
+        device = self._make_device(model, subtype)
+        body = bytearray(40)
+        update = device.process_message(self._message(MessageType.query, body))
+        with patch.object(device, "build_send") as send:
+            for attr, value in (
+                (DeviceAttributes.dry_setting, True),
+                (DeviceAttributes.storage_set_time, 48),
+            ):
+                assert attr not in device.attributes
+                assert attr not in update
+                with pytest.raises(ValueWrongType, match="unsupported"):
+                    device.set_attribute(attr, value)
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            (DeviceAttributes.dry_setting, 1),
+            (DeviceAttributes.storage_set_time, True),
+            (DeviceAttributes.storage_set_time, -1),
+            (DeviceAttributes.storage_set_time, 73),
+            (DeviceAttributes.storage_set_time, 36.5),
+        ],
+    )
+    def test_invalid_dry_or_storage_settings_do_not_send(
+        self,
+        attr: DeviceAttributes,
+        value: bool | float,
+    ) -> None:
+        """Reject invalid types, fractions and out-of-range hours before sending."""
+        device = self._make_device("7600644C", 3)
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueWrongType, match="Expected"),
+        ):
+            device.set_attribute(attr, value)
+        send.assert_not_called()
 
     def test_set_attribute_unknown_attribute_is_noop(self) -> None:
         """Test set attribute with an unsupported attribute sends nothing."""

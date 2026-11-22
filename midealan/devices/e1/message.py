@@ -10,9 +10,17 @@ from midealan.message import (
 )
 
 BRIGTH_BYTE = 24
+STORAGE_SET_TIME_BYTE = 17
 STORAGE_REMAINING_BYTE = 18
 HUMIDITY_BYTE = 33
 CONTROL_BODY_LENGTH = 37  # 38 bytes with the body type, as in Midea's Lua
+
+# 7600644C setting offsets after the body type byte.
+DRY_SETTINGS_START_INDEX = 3
+DRY_SETTING_INDEX = 8
+DRY_SETTINGS_END_INDEX = 11
+DRY_SETTING_UNCHANGED = 0xFF
+STORAGE_SET_TIME_INDEX = 0
 
 WORK_STATUS_POWER_OFF = 0x00
 WORK_STATUS_CANCEL = 0x01
@@ -216,6 +224,48 @@ class MessageStorage(MessageE1Base):
         )
 
 
+class MessageDrySetting(MessageE1Base):
+    """Set 7600644C drying without modifying other options."""
+
+    def __init__(self, protocol_version: int, *, enabled: bool) -> None:
+        """Initialize the drying setting command."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.set,
+            body_type=ListTypes.X81,
+        )
+        self.enabled = enabled
+
+    @property
+    def _body(self) -> bytearray:
+        body = bytearray(CONTROL_BODY_LENGTH)
+        # Lua dryswitch: body[9] is the setting; other body[4:12] bytes are FF.
+        body[DRY_SETTINGS_START_INDEX:DRY_SETTINGS_END_INDEX] = bytes(
+            [DRY_SETTING_UNCHANGED],
+        ) * (DRY_SETTINGS_END_INDEX - DRY_SETTINGS_START_INDEX)
+        body[DRY_SETTING_INDEX] = int(self.enabled)
+        return body
+
+
+class MessageStorageSetTime(MessageE1Base):
+    """Set storage hours independently from the storage switch."""
+
+    def __init__(self, protocol_version: int, hours: int) -> None:
+        """Initialize the storage duration command."""
+        super().__init__(
+            protocol_version=protocol_version,
+            message_type=MessageType.set,
+            body_type=ListTypes.X86,
+        )
+        self.hours = hours
+
+    @property
+    def _body(self) -> bytearray:
+        body = bytearray(CONTROL_BODY_LENGTH)
+        body[STORAGE_SET_TIME_INDEX] = self.hours  # Lua air_set_hour, body[1]
+        return body
+
+
 class MessageQuery(MessageE1Base):
     """E1 message query."""
 
@@ -263,6 +313,8 @@ class E1GeneralMessageBody(MessageBody):
             else 0
         )
         self.dry = (body[4] & 0x10) > 0
+        # The setting follows the dryswitch bit, not the drystatus running bit.
+        self.dry_setting = self.dry
         self.dry_status = (body[4] & 0x20) > 0
         self.storage = (body[5] & 0x20) > 0  # airswitch
         self.storage_status = (body[5] & 0x40) > 0  # airstatus
@@ -272,8 +324,8 @@ class E1GeneralMessageBody(MessageBody):
             if _left_time_high:
                 self.time_remaining = _left_time_high * 256 + self.time_remaining
         self.progress = body[9]  # washStage
-        self.storage_set_time = (  # airSetTime    Hour
-            body[17] if len(body) > STORAGE_REMAINING_BYTE else False
+        self.storage_set_time = (  # Lua air_set_hour, distinct from air_left_hour
+            body[STORAGE_SET_TIME_BYTE] if len(body) > STORAGE_SET_TIME_BYTE else None
         )
         self.storage_remaining = (  # airLeftTime    Hour
             body[18] if len(body) > STORAGE_REMAINING_BYTE else False

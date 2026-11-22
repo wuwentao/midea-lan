@@ -17,18 +17,23 @@ from .message import (
     WORK_STATUS_CANCEL_ORDER,
     WORK_STATUS_ORDER,
     WORK_STATUS_WORK,
+    MessageDrySetting,
     MessageE1Response,
     MessageLock,
     MessageOperator,
     MessagePower,
     MessageQuery,
     MessageStorage,
+    MessageStorageSetTime,
     MessageWork,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 MAX_DELAY_MINUTES = 24 * 60
+MAX_STORAGE_HOURS = 72
+# Scope the dryswitch and air_set_hour controls to the verified model/subtype.
+_DRY_STORAGE_SETTINGS_DEVICE = ("7600644C", 3)
 
 # Complete European program profile from the exact 760001EC Lua. Keep
 # established shared state values where their meaning is equivalent. Model
@@ -186,8 +191,10 @@ class DeviceAttributes(StrEnum):
     uv = "uv"
     dry = "dry"
     dry_status = "dry_status"
+    dry_setting = "dry_setting"
     storage = "storage"
     storage_status = "storage_status"
+    storage_set_time = "storage_set_time"
     time_remaining = "time_remaining"
     progress = "progress"
     storage_remaining = "storage_remaining"
@@ -319,6 +326,9 @@ class MideaE1Device(MideaDevice):
                 DeviceAttributes.light_strip_on: None,
             },
         )
+        if (self.model, self.subtype) == _DRY_STORAGE_SETTINGS_DEVICE:
+            self._attributes[DeviceAttributes.dry_setting] = None
+            self._attributes[DeviceAttributes.storage_set_time] = None
         self._modes = {
             0x00: "neutral_gear",  # BYTE_MODE_NEUTRAL_GEAR
             0x01: "auto_wash",  # BYTE_MODE_AUTO_WASH
@@ -749,8 +759,13 @@ class MideaE1Device(MideaDevice):
         and the ``*_setting`` wash parameters (``additional``, ``wash_region``,
         ``water_level``, ``water_strong_level``) are the readable settings for the
         next start (writing the plain names sets them too), while the plain names
-        report what the device last sent.
+        report what the device last sent. Supported appliances also accept
+        ``dry_setting`` and ``storage_set_time`` as immediate writes; their
+        readable values are updated only by device reports.
         """
+        if attr in (DeviceAttributes.dry_setting, DeviceAttributes.storage_set_time):
+            self._set_dry_storage_setting(DeviceAttributes(attr), value)
+            return
         if attr == DeviceAttributes.mode:
             self.set_work_mode(
                 self._resolve_profile_mode(value),
@@ -814,6 +829,32 @@ class MideaE1Device(MideaDevice):
             message = MessageStorage(self._message_protocol_version)
             message.storage = value
             self.build_send(message)
+
+    def _set_dry_storage_setting(
+        self,
+        attr: DeviceAttributes,
+        value: bool | float | str,
+    ) -> None:
+        """Send a supported setting without changing the last reported state."""
+        if attr not in self._attributes:
+            msg = f"[e1] {attr} is unsupported on this model/subtype"
+            raise ValueWrongType(msg)
+        if attr == DeviceAttributes.dry_setting:
+            if not isinstance(value, bool):
+                raise ValueWrongType("[e1] Expected bool for dry_setting")
+            self.build_send(
+                MessageDrySetting(self._message_protocol_version, enabled=value),
+            )
+            return
+        if (
+            isinstance(value, (bool, str))
+            or not 0 <= value <= MAX_STORAGE_HOURS
+            or int(value) != value
+        ):
+            msg = f"[e1] Expected whole storage hours from 0 to {MAX_STORAGE_HOURS}"
+            raise ValueWrongType(msg)
+        message = MessageStorageSetTime(self._message_protocol_version, int(value))
+        self.build_send(message)
 
 
 class MideaAppliance(MideaE1Device):

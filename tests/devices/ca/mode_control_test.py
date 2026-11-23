@@ -4,13 +4,17 @@ from unittest.mock import patch
 
 import pytest
 
-from midealan.const import ProtocolVersion
+from midealan.const import DeviceType, ProtocolVersion
 from midealan.devices.ca import (
     CAModeWritePendingError,
     DeviceAttributes,
     MideaCADevice,
 )
-from midealan.devices.ca.message import CA_MODE_BODY_LENGTH, build_ca_mode_body
+from midealan.devices.ca.message import (
+    CA_MODE_BODY_LENGTH,
+    MessageCAResponse,
+    build_ca_mode_body,
+)
 from midealan.message import ListTypes, MessageBase, MessageQuestCustom, MessageType
 
 
@@ -150,6 +154,55 @@ def test_status_received_before_set_does_not_clear_pending_guard() -> None:
         assert send.call_count == 1
 
 
+def test_status_received_before_dispatch_hook_cannot_clear_pending_guard() -> None:
+    """A receive reserved before SET keeps its pending guard after dispatch."""
+    device = _device()
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send") as send:
+        # Model recv() returning, then the receive callback being delayed while
+        # the caller sends a SET. The reserved order must remain older than SET.
+        device._message_receive_started()
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        device._message_received()
+        device.process_message(_status(0x00))
+        device._message_dispatch_complete()
+        with pytest.raises(CAModeWritePendingError):
+            device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 1
+
+
+def test_status_freshness_uses_receive_time_when_dispatch_is_delayed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A delayed dispatch cannot make an old received status fresh again."""
+    device = _device()
+    clock = [100.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+
+    device._message_received()
+    clock[0] += 121.0
+    device.process_message(_status(0x00))
+
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+    send.assert_not_called()
+
+
+def test_older_status_cannot_replace_newer_cached_status() -> None:
+    """Out-of-order status processing preserves the newest cached body."""
+    device = _device()
+    newer = MessageCAResponse(_status(0x02))
+    older = MessageCAResponse(_status(0x01))
+
+    with patch("midealan.devices.ca.time.monotonic", return_value=200.0):
+        device._remember_ca_mode_status(newer, event_order=2, received_at=200.0)
+        device._remember_ca_mode_status(older, event_order=1, received_at=100.0)
+
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.holiday_mode.value, True)
+    assert send.call_args.args[0].body[0] == 0x12
+
+
 def test_failed_send_does_not_publish_state_or_leave_pending() -> None:
     """A failed transport does not update state or consume the status."""
     device = _device()
@@ -169,7 +222,7 @@ def test_framing_has_body_only_and_valid_checksum() -> None:
     """The custom request is framed once by the existing Midea path."""
     body = bytes(range(CA_MODE_BODY_LENGTH))
     command = MessageQuestCustom(
-        0xCA,
+        DeviceType.CA,
         ProtocolVersion.V3,
         MessageType.set,
         bytearray(body),
@@ -188,4 +241,3 @@ def test_toshiba_path_does_not_cache_or_write() -> None:
     device._toshiba_protocol = True
     with pytest.raises(ValueError, match="hardware verification"):
         device.set_attribute(DeviceAttributes.holiday_mode.value, True)
-

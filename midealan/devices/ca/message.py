@@ -414,4 +414,3 @@ class MessageCAResponse(MessageResponse):
         ):
             self.set_body(CANotify01MessageBody(super().body))
         self.set_attr()
-

@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Unpack
 
 from midealan.const import DeviceType
-from midealan.device import MideaDevice, MideaDeviceInitKwargs
+from midealan.device import MessageResult, MideaDevice, MideaDeviceInitKwargs
 from midealan.exceptions import ValueWrongType
 from midealan.message import (
     ListTypes,
@@ -170,7 +170,9 @@ class MideaCADevice(MideaDevice):
         self._ca_mode_lock = threading.RLock()
         self._ca_mode_event_lock = threading.Lock()
         self._ca_mode_event_order = 0
+        self._ca_mode_receive_event_order: int | None = None
         self._ca_mode_received_event_order: int | None = None
+        self._ca_mode_received_at: float | None = None
         self._ca_mode_status: _CAModeStatus | None = None
         self._ca_mode_pending_generation: int | None = None
         self._ca_mode_pending_event_order: int | None = None
@@ -186,12 +188,16 @@ class MideaCADevice(MideaDevice):
         status = self.process_toshiba_message(msg)
         if status is not None:
             return status
-        event_order = self._ca_mode_received_event_order
+        with self._ca_mode_lock:
+            event_order = self._ca_mode_received_event_order
+            received_at = self._ca_mode_received_at
         if event_order is None:
             event_order = self._next_ca_mode_event_order()
+        if received_at is None:
+            received_at = time.monotonic()
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        self._remember_ca_mode_status(message, event_order)
+        self._remember_ca_mode_status(message, event_order, received_at)
         new_status = {}
         for attr in self._attributes:
             if hasattr(message, str(attr)):
@@ -227,13 +233,34 @@ class MideaCADevice(MideaDevice):
             new_status[DeviceAttributes.variable_mode] = mode
         return new_status
 
+    def parse_message(self, msg: bytes) -> MessageResult:
+        """Parse a frame and clear its CA receive marker after dispatch."""
+        try:
+            return super().parse_message(msg)
+        finally:
+            self._message_dispatch_complete()
+
+    def _message_receive_started(self) -> None:
+        """Reserve ordering before the socket read begins."""
+        event_order = self._next_ca_mode_event_order()
+        with self._ca_mode_lock:
+            self._ca_mode_receive_event_order = event_order
+
     def _message_received(self) -> None:
         """Record ordering when a socket frame arrives, before dispatch."""
-        self._ca_mode_received_event_order = self._next_ca_mode_event_order()
+        with self._ca_mode_lock:
+            event_order = self._ca_mode_receive_event_order
+            if event_order is None:
+                event_order = self._next_ca_mode_event_order()
+            self._ca_mode_received_event_order = event_order
+            self._ca_mode_received_at = time.monotonic()
 
     def _message_dispatch_complete(self) -> None:
         """Clear the receive marker after the decoded batch is dispatched."""
-        self._ca_mode_received_event_order = None
+        with self._ca_mode_lock:
+            self._ca_mode_receive_event_order = None
+            self._ca_mode_received_event_order = None
+            self._ca_mode_received_at = None
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
         """Decode and publish a Toshiba CA base status."""
@@ -291,6 +318,7 @@ class MideaCADevice(MideaDevice):
         self,
         message: MessageCAResponse,
         event_order: int,
+        received_at: float,
     ) -> None:
         """Store only a complete Midea general status body for later SETs."""
         if (
@@ -313,14 +341,13 @@ class MideaCADevice(MideaDevice):
             return
         raw_body = bytes(body[CA_MODE_BODY_OFFSET:end])
         with self._ca_mode_lock:
-            generation = (
-                1
-                if self._ca_mode_status is None
-                else self._ca_mode_status.generation + 1
-            )
+            current = self._ca_mode_status
+            if current is not None and event_order < current.event_order:
+                return
+            generation = 1 if current is None else current.generation + 1
             self._ca_mode_status = _CAModeStatus(
                 body=raw_body,
-                received_at=time.monotonic(),
+                received_at=received_at,
                 generation=generation,
                 event_order=event_order,
             )
@@ -349,4 +376,3 @@ class MideaCADevice(MideaDevice):
 
 class MideaAppliance(MideaCADevice):
     """Midea CA appliance."""
-

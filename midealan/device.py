@@ -807,6 +807,7 @@ class MideaDevice:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
+            self._message_receive_started()
             msg = await asyncio.wait_for(
                 self._reader.read(STREAM_READ_LIMIT),
                 timeout=remaining,
@@ -1329,11 +1330,9 @@ class MideaDevice:
         else:
             messages, self._buffer = self.fetch_v2_message(self._buffer + msg)
         if len(messages) == 0:
-            self._message_dispatch_complete()
             return MessageResult.PADDING
         for message in messages:
             if message == b"ERROR":
-                self._message_dispatch_complete()
                 return MessageResult.ERROR
             payload_len = message[4] + (message[5] << 8) - 56
             payload_type = message[2] + (message[3] << 8)
@@ -1408,7 +1407,6 @@ class MideaDevice:
                     payload_len,
                     len(message),
                 )
-        self._message_dispatch_complete()
         return MessageResult.SUCCESS
 
     def build_query(self) -> list:
@@ -1497,8 +1495,8 @@ class MideaDevice:
     def _message_received(self) -> None:
         """Record a socket receipt for devices that need ordering."""
 
-    def _message_dispatch_complete(self) -> None:
-        """Clear receive-time state for devices that track ordering."""
+    def _message_receive_started(self) -> None:
+        """Reserve ordering before a socket read for devices that need it."""
 
     def send_command(self, cmd_type: MessageType, cmd_body: bytearray) -> None:
         """Send command."""
@@ -1781,6 +1779,7 @@ class MideaDevice:
                     await self._check_refresh(now)
                     self._check_heartbeat(now)
                     # each read is bounded by SOCKET_TIMEOUT
+                    self._message_receive_started()
                     msg = await asyncio.wait_for(
                         self._reader.read(STREAM_READ_LIMIT),
                         timeout=SOCKET_TIMEOUT,

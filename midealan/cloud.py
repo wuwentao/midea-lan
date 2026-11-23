@@ -199,9 +199,36 @@ def _redact_data(data: str) -> str:
     # LAN credentials, so a raw getToken response must never reach the log in
     # full. Handles both JSON (``"token": "abc"``) and dict-repr (``'key': 'abc'``)
     # shapes that reach this function via ``str(raw)`` / ``str(data)``.
+    # Mask credential / PII field values first (before the pattern scan
+    # below): these carry LAN tokens, cloud session-key material, and the raw
+    # login account, so a request/response must never reach the log in full.
+    # Handles both JSON (``"token": "abc"``) and dict-repr (``'key': 'abc'``)
+    # shapes reaching this function via ``str(raw)`` / ``str(data)``.
+    # ``[A-Za-z]*(?:token|key)`` also covers ``accessToken`` / ``accessKey``;
+    # ``randomData`` is the login response's session IV material; and
+    # ``loginAccount`` is the raw email / phone / username, which the pattern
+    # scan below misses for plain (non-email, non-phone) usernames.
+    #
+    # The value's closing quote is matched to its opening quote via the ``\3``
+    # backreference, and the value body consumes escape units
+    # (``\\.``) or any non-closing, non-backslash char. A value that contains
+    # the opposite quote char (e.g. ``o'brien@x.com``, which ``str(dict)``
+    # wraps in double quotes) or an escaped same quote therefore no longer
+    # terminates the match early and leak its tail. ``\2`` does the same for
+    # the field-name quotes.
     data = re.sub(
-        r"(['\"](?:token|key)['\"]\s*:\s*['\"])([^'\"]+)(['\"])",
-        lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
+        r"((['\"])(?:[A-Za-z]*(?:token|key)|randomData|loginAccount)\2"
+        r"\s*:\s*(['\"]))((?:\\.|(?!\3)[^\\])*)\3",
+        lambda m: m.group(1) + _mask_token(m.group(4)) + m.group(3),
+        data,
+        flags=re.IGNORECASE,
+    )
+    # The account router sends the account name as reversible hex ciphertext
+    # under ``userName``; mask it in full (it matches none of the patterns
+    # below and carries no debug value). Same quote-matching rules as above.
+    data = re.sub(
+        r"((['\"])userName\2\s*:\s*(['\"]))((?:\\.|(?!\3)[^\\])*)\3",
+        lambda m: m.group(1) + block * len(m.group(4)) + m.group(3),
         data,
         flags=re.IGNORECASE,
     )
@@ -865,6 +892,10 @@ class MeijuCloud(MideaCloud):
 class SmartHomeCloud(MideaCloud):
     """MSmart Home Cloud."""
 
+    # Narrow the base ``CloudSecurity`` attribute so ``encrypt_account`` (used
+    # by ``_re_route``) resolves; the constructor always builds this subclass.
+    _security: MSmartCloudSecurity
+
     def __init__(
         self,
         cloud_name: str,
@@ -921,6 +952,30 @@ class SmartHomeCloud(MideaCloud):
         return await super()._api_request(endpoint, data, header)
 
     async def _re_route(self) -> None:
+        # Resolve the account's regional server first. The default host can
+        # only report a route for accounts it hosts, so an account homed on
+        # another cluster must be looked up through the account router, which
+        # takes the web-client fields and the encrypted account name.
+        data = self._make_general_data()
+        data.update(
+            {
+                "clientType": 8,
+                "clientSrc": 8,
+                "userType": "0",
+                "userName": self._security.encrypt_account(self._account),
+            },
+        )
+        if (
+            response := await self._api_request(
+                endpoint="/v1/unitcenter/router/user/name",
+                data=data,
+            )
+        ) and (api_url := response.get("masUrl")):
+            self._api_url = api_url
+            return
+
+        # Fall back to the legacy route endpoint for accounts the router does
+        # not resolve (preserves prior behavior).
         data = self._make_general_data()
         data.update({"userType": "0", "userName": f"{self._account}"})
         if (

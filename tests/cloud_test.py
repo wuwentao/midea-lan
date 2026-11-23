@@ -248,6 +248,36 @@ class CloudTest(IsolatedAsyncioTestCase):
         # Non-sensitive structure survives.
         assert '"code": 0' in redacted
 
+    def test_redact_data_masks_account_with_embedded_quote(self) -> None:
+        """Test _redact_data masks accounts that contain a quote character.
+
+        An account name may legitimately contain an apostrophe (e.g.
+        ``o'brien``). ``str(dict)`` then wraps the value in double quotes, so a
+        mask that stops at the first quote of either kind would capture only
+        the leading characters and leave the tail in the log. The value's
+        closing quote must be matched to its opening quote so the whole value
+        past the first five characters is masked.
+        """
+        # Plain username with an apostrophe: matches no PII fallback pattern,
+        # so only the field-name mask can redact it. ``str(dict)`` renders it
+        # with double quotes around the value.
+        raw = str({"loginAccount": "o'brien", "code": 0})
+        redacted = _redact_data(raw)
+        assert "brien" not in redacted
+        # First five characters (including the apostrophe) stay visible.
+        assert "o'bri" in redacted
+        assert "'code': 0" in redacted
+
+        # The field value past the first five chars is masked even when it
+        # carries the opposite quote char (JSON ``accessToken`` with a ``'``).
+        raw = '{"accessToken": "tok\'enTAILSECRET"}'
+        assert "enTAILSECRET" not in _redact_data(raw)
+
+        # The encrypted ``userName`` is masked in full even with an embedded
+        # quote (defensive; the ciphertext is hex in practice).
+        raw = str({"userName": "ab'cdTAILSECRET"})
+        assert "cdTAILSECRET" not in _redact_data(raw)
+
     async def test_get_cloud_servers(self) -> None:
         """Test get cloud servers."""
         servers = await MideaCloud.get_cloud_servers()

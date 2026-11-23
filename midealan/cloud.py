@@ -208,19 +208,27 @@ def _redact_data(data: str) -> str:
     # ``randomData`` is the login response's session IV material; and
     # ``loginAccount`` is the raw email / phone / username, which the pattern
     # scan below misses for plain (non-email, non-phone) usernames.
+    #
+    # The value's closing quote is matched to its opening quote via the ``\3``
+    # backreference, and the value body consumes escape units
+    # (``\\.``) or any non-closing, non-backslash char. A value that contains
+    # the opposite quote char (e.g. ``o'brien@x.com``, which ``str(dict)``
+    # wraps in double quotes) or an escaped same quote therefore no longer
+    # terminates the match early and leak its tail. ``\2`` does the same for
+    # the field-name quotes.
     data = re.sub(
-        r"(['\"](?:[A-Za-z]*(?:token|key)|randomData|loginAccount)['\"]"
-        r"\s*:\s*['\"])([^'\"]+)(['\"])",
-        lambda m: m.group(1) + _mask_token(m.group(2)) + m.group(3),
+        r"((['\"])(?:[A-Za-z]*(?:token|key)|randomData|loginAccount)\2"
+        r"\s*:\s*(['\"]))((?:\\.|(?!\3)[^\\])*)\3",
+        lambda m: m.group(1) + _mask_token(m.group(4)) + m.group(3),
         data,
         flags=re.IGNORECASE,
     )
     # The account router sends the account name as reversible hex ciphertext
     # under ``userName``; mask it in full (it matches none of the patterns
-    # below and carries no debug value).
+    # below and carries no debug value). Same quote-matching rules as above.
     data = re.sub(
-        r"(['\"]userName['\"]\s*:\s*['\"])([^'\"]+)(['\"])",
-        lambda m: m.group(1) + block * len(m.group(2)) + m.group(3),
+        r"((['\"])userName\2\s*:\s*(['\"]))((?:\\.|(?!\3)[^\\])*)\3",
+        lambda m: m.group(1) + block * len(m.group(4)) + m.group(3),
         data,
         flags=re.IGNORECASE,
     )

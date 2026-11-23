@@ -209,6 +209,45 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert "abcdefghij" not in redacted_repr
         assert "zyxwvutsrq" not in redacted_repr
 
+    def test_redact_data_masks_username(self) -> None:
+        """Test _redact_data masks the encrypted account in a router request.
+
+        The account-router payload logs ``userName`` as reversible hex
+        ciphertext that no plaintext pattern catches, so its value must be
+        masked in full while non-sensitive fields stay readable.
+        """
+        secret = "73fe41a2150d4b8fa13c30fa5ae6e5906a2174fa83dd6fdcbabe26719ad99022"
+        raw = f'{{"clientType": 8, "userName": "{secret}", "userType": "0"}}'
+        redacted = _redact_data(raw)
+        assert secret not in redacted
+        # Structure and non-sensitive fields are preserved.
+        assert '"clientType": 8' in redacted
+        assert '"userType": "0"' in redacted
+        # dict-repr shape (single quotes) is handled too.
+        repr_raw = f"{{'userName': '{secret}'}}"
+        assert secret not in _redact_data(repr_raw)
+
+    def test_redact_data_masks_session_and_account_fields(self) -> None:
+        """Test _redact_data masks session-key material and the raw account.
+
+        The login response carries ``accessToken`` / ``randomData`` (session
+        key material), and the login requests carry ``loginAccount`` (the raw
+        email / phone / plain username). A plain username matches none of the
+        PII patterns, so these must be masked by field name to keep an
+        uploaded debug log free of credentials and account identifiers.
+        """
+        raw = (
+            '{"accessToken": "ACCESSTOKENSECRET", '
+            '"randomData": "RANDOMDATASECRET", '
+            '"loginAccount": "myplainusername", "code": 0}'
+        )
+        redacted = _redact_data(raw)
+        assert "ACCESSTOKENSECRET" not in redacted
+        assert "RANDOMDATASECRET" not in redacted
+        assert "myplainusername" not in redacted
+        # Non-sensitive structure survives.
+        assert '"code": 0' in redacted
+
     async def test_get_cloud_servers(self) -> None:
         """Test get cloud servers."""
         servers = await MideaCloud.get_cloud_servers()
@@ -901,6 +940,104 @@ class CloudTest(IsolatedAsyncioTestCase):
         ):
             assert not await cloud.login()
         assert "SmartHome Cloud login failed" in logs.output[0]
+
+    async def test_msmartcloud_account_routing(self) -> None:
+        """Test login resolves the regional server via the account router.
+
+        The account router returns the account's regional ``masUrl``; the
+        request must carry the web-client fields and the encrypted (not raw)
+        account name, and the following login steps must target the resolved
+        host. The encrypted account must never reach the debug log.
+        """
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["msmartcloud_reroute.json"],
+                self.responses["cloud_login_id.json"],
+                self.responses["msmartcloud_login.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="user@example.com",
+            password="password",
+        )
+        # Narrow for the typed ``_security.encrypt_account`` access below.
+        assert isinstance(cloud, SmartHomeCloud)
+        with self.assertLogs("midealan.cloud", level="DEBUG") as logs:
+            assert await cloud.login()
+
+        # First request is the account router on the default host.
+        first_call = session.request.await_args_list[0]
+        first_url = (
+            first_call.args[1]
+            if len(first_call.args) > 1
+            else first_call.kwargs.get("url", "")
+        )
+        assert first_url.startswith(
+            "https://mp-prod.appsmb.com/mas/v5/app/proxy?alias=",
+        )
+        assert first_url.endswith("/v1/unitcenter/router/user/name")
+        payload = json.loads(first_call.kwargs["data"])
+        assert payload["clientType"] == 8
+        assert payload["clientSrc"] == 8
+        assert payload["userType"] == "0"
+        # Account name is encrypted: hex ciphertext, never the raw email.
+        assert payload["userName"] != "user@example.com"
+        assert "password" not in payload
+        # The encrypted ciphertext matches encrypt_account for this account.
+        expected_user = cloud._security.encrypt_account("user@example.com")
+        assert payload["userName"] == expected_user
+
+        # The login steps target the resolved regional host.
+        later_urls = [
+            (call.args[1] if len(call.args) > 1 else call.kwargs.get("url", ""))
+            for call in session.request.await_args_list[1:]
+        ]
+        assert later_urls
+        assert all(url.startswith("https://reroute.url/") for url in later_urls)
+
+        # Neither the encrypted account nor the raw email leaks to the log.
+        output = "\n".join(logs.output)
+        assert expected_user not in output
+        assert "user@example.com" not in output
+
+    async def test_msmartcloud_account_routing_falls_back(self) -> None:
+        """Test login falls back to the legacy route when the router is empty.
+
+        When the account router returns no ``masUrl`` (e.g. an account it does
+        not serve), the legacy ``/v1/multicloud/platform/user/route`` endpoint
+        is used and login still succeeds.
+        """
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["cloud_invalid_response.json"],
+                self.responses["msmartcloud_reroute.json"],
+                self.responses["cloud_login_id.json"],
+                self.responses["msmartcloud_login.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=session,
+            account="account",
+            password="password",
+        )
+        assert cloud is not None
+        assert await cloud.login()
+
+        request_urls = [
+            (call.args[1] if len(call.args) > 1 else call.kwargs.get("url", ""))
+            for call in session.request.await_args_list
+        ]
+        assert request_urls[0].endswith("/v1/unitcenter/router/user/name")
+        assert request_urls[1].endswith("/v1/multicloud/platform/user/route")
 
     async def test_get_keys_debug_log_redacts_token_material(self) -> None:
         """Test the inherited v1 get_cloud_keys never logs token/key material.

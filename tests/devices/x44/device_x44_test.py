@@ -1,146 +1,213 @@
-"""Test x44 device."""
+"""Test model selection and isolation at the 0x44 entry point."""
 
+from argparse import Namespace
+from typing import get_type_hints, override
 from unittest.mock import patch
 
 import pytest
 
+from midealan.cli import MideaCLI
 from midealan.const import DeviceType, ProtocolVersion
-from midealan.devices import device_selector
-from midealan.devices.x44 import DeviceAttributes, MideaX44Device
-from midealan.devices.x44.message import MessageQuery, MessageSetScreen
-from midealan.exceptions import ValueOutOfRange, ValueWrongType
-
-SCREEN_REPORT = bytes.fromhex(
-    "aa1f4400000000000003080201ff000101000000321700080015010004000023",
+from midealan.device import MideaDevice
+from midealan.devices import ac, x44
+from midealan.devices.x44 import MideaX44Device, X44ModelProfile, zkp_3inch01
+from midealan.devices.x44.util import DriverFactory
+from midealan.message import MessageType
+from tests.devices.x44 import (
+    AC_REPORT_VIA_90S,
+    ZKP_QUERY,
+    ZKP_REPORT,
+    identity,
+    select_device,
 )
 
 
-class TestMideaX44Device:
-    """Test Midea x44 device."""
+@pytest.mark.parametrize(
+    ("model", "subtype", "sn8"),
+    [
+        ("404M0001", 0, None),
+        ("404M0001", 747, "404M0001"),
+        ("404m0001", 747, "00000000"),
+        ("Unknown", 0, " 404M0001\x00"),
+        ("ZKP-3INCH01", 0, "404M0001"),
+    ],
+)
+def test_screen_identity(model: str, subtype: int, sn8: str | None) -> None:
+    """Stored, LAN and cloud identities select the screen without changing metadata."""
+    device = select_device(model, subtype, sn8)
+    assert isinstance(device, zkp_3inch01.ZKP3Inch01Device)
+    assert x44.resolve_profile(model, subtype, sn8) is device.profile
+    assert device.profile.name == "ZKP-3INCH01"
+    assert device.model == model
+    assert device.subtype == subtype
+    assert set(device.attributes) == set(zkp_3inch01.DeviceAttributes)
+    assert device.build_query()[0].serialize() == ZKP_QUERY
 
-    device: MideaX44Device
 
-    @pytest.fixture(autouse=True)
-    def _setup_device(self) -> None:
-        """Create a panel device."""
-        self.device = MideaX44Device(
-            name="panel",
-            device_id=212305753821233,
-            ip_address="192.168.30.23",
-            port=6444,
-            token="AA",
-            key="BB",
-            device_protocol=ProtocolVersion.V3,
-            model="404M0001",
-            subtype=0,
-            customize="",
-        )
+def test_independent_model_routes() -> None:
+    """Only the registered AC bridge routes out of the x44 family."""
+    screen = select_device("404M0001")
+    panel = select_device("115P0303")
+    assert type(screen) is zkp_3inch01.ZKP3Inch01Device
+    assert type(panel) is ac.MideaAppliance
+    assert x44.resolve_driver("404M0001") is zkp_3inch01.ZKP3Inch01Device
+    assert x44.resolve_driver("115P0303") is ac.MideaAppliance
+    assert screen.device_type == DeviceType.X44
+    assert panel.device_type == DeviceType.AC
+    assert screen.process_message(AC_REPORT_VIA_90S) == {}
+    assert screen.process_message(ZKP_REPORT)["voice_volume"] == 50
+    assert "voice_volume" not in panel.attributes
 
-    def test_selector_loads_x44(self) -> None:
-        """Test device_selector imports the x44 package."""
-        selected = device_selector(
-            name="panel",
-            device_id=1,
-            device_type=DeviceType.X44,
-            ip_address="192.168.30.23",
-            port=6444,
-            token="AA",
-            key="BB",
-            device_protocol=ProtocolVersion.V3,
-            model="404M0001",
-            subtype=0,
-            customize="",
-        )
-        assert isinstance(selected, MideaX44Device)
 
-    def test_build_query(self) -> None:
-        """Test the periodic query is the screen query."""
-        queries = self.device.build_query()
-        assert len(queries) == 1
-        assert isinstance(queries[0], MessageQuery)
+def test_driver_return_type_is_resolvable() -> None:
+    """Runtime introspection exposes the same factory contract as type checkers."""
+    assert get_type_hints(x44.resolve_driver)["return"] is DriverFactory
 
-    def test_process_message(self) -> None:
-        """Test a live report updates exposed attributes."""
-        status = self.device.process_message(SCREEN_REPORT)
-        assert status[DeviceAttributes.voice_volume] == 50
-        assert status[DeviceAttributes.sleep_start_hour] == 23
-        assert self.device.attributes[DeviceAttributes.error_code] == 0
-        assert DeviceAttributes.panel_status not in status
 
-    def test_process_message_ignores_other_body(self) -> None:
-        """Test an appliance response does not clear stored status."""
-        self.device.process_message(SCREEN_REPORT)
-        other = bytes.fromhex("aa0c44000000000000a00044eb0200000000ff")
-        assert self.device.process_message(other) == {}
-        assert self.device.attributes[DeviceAttributes.voice_volume] == 50
+@pytest.mark.parametrize(
+    ("model", "sn8", "device_id"),
+    [
+        ("TEST0001", None, 1),
+        ("", "00000000", 1),
+        ("404M0001", "TEST0001", 1),
+        ("404M0001", "115P0303", 1),
+        ("TEST0001", "404M0001", 1),
+        ("ZKP-3INCH01", None, 1),
+        ("KJR-90S", None, 1),
+        ("0000", None, 1),
+        ("0000", "TEST0001", 0),
+        ("TEST0001", None, 0),
+        ("404M0001", "115P0303", 0),
+    ],
+)
+def test_unregistered_model_is_inert(
+    model: str,
+    sn8: str | None,
+    device_id: int,
+) -> None:
+    """The object remains usable without enabling a model's commands or poller."""
+    device = select_device(model, sn8=sn8, device_id=device_id)
+    assert isinstance(device, MideaX44Device)
+    assert device.profile is None
+    assert x44.resolve_profile(model, sn8=sn8) is None
+    assert device.attributes == {}
+    assert device.build_query() == []
+    assert device.process_message(ZKP_REPORT) == {}
+    with (
+        patch.object(MideaDevice, "open") as start,
+        patch.object(MideaDevice, "connect") as connect,
+        patch.object(MideaDevice, "refresh_status") as refresh,
+        patch.object(MideaDevice, "build_send") as send,
+    ):
+        device.open()
+        assert not device.connect()
+        device.refresh_status(check_protocol=True)
+        device.set_attribute("brightness", 50)
+        device.send_command(MessageType.set, bytearray())
+        device.close()
+    start.assert_not_called()
+    connect.assert_not_called()
+    refresh.assert_not_called()
+    send.assert_not_called()
 
-    def test_set_voice_volume(self) -> None:
-        """Test setting voice volume sends one screen command."""
-        with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.voice_volume, 40)
-        message = mock_build_send.call_args[0][0]
-        assert isinstance(message, MessageSetScreen)
-        assert message.values == {DeviceAttributes.voice_volume: 40}
 
-    def test_set_flag(self) -> None:
-        """Test a boolean flag is encoded as 0 or 1."""
-        with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.voice_control, False)
-        message = mock_build_send.call_args[0][0]
-        assert message.values[DeviceAttributes.voice_control] == 0
+class _TestSensor(MideaX44Device):
+    """Minimal third driver registered by subtype in the routing tests."""
 
-    def test_set_read_only_is_ignored(self) -> None:
-        """Test read-only fields are not sent."""
-        with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.error_code, 1)
-        mock_build_send.assert_not_called()
+    profile = X44ModelProfile(name="Test sensor", attributes=("level",))
 
-    def test_set_wrong_type(self) -> None:
-        """Test a fractional value is rejected."""
-        with pytest.raises(ValueWrongType):
-            self.device.set_attribute(DeviceAttributes.voice_volume, 1.5)
+    @override
+    def process_message(self, msg: bytes) -> dict[str, int]:
+        self._attributes["level"] = msg[0]
+        return {"level": msg[0]}
 
-    def test_set_whole_float(self) -> None:
-        """Test a whole-number float is sent as that integer."""
-        with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.voice_volume, 40.0)
-        message = mock_build_send.call_args[0][0]
-        assert message.values[DeviceAttributes.voice_volume] == 40
 
-    def test_set_number_rejects_bool_and_text(self) -> None:
-        """Test a number field does not accept a switch value or text."""
-        with pytest.raises(ValueWrongType):
-            self.device.set_attribute(DeviceAttributes.voice_volume, True)
-        with pytest.raises(ValueWrongType):
-            self.device.set_attribute(DeviceAttributes.voice_volume, "40")
+def test_new_driver_per_device(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A newly registered model owns a separate attribute store per device."""
+    monkeypatch.setitem(x44._MODEL_DRIVERS, ("TEST0001", 1), _TestSensor)
+    first = select_device("TEST0001", 1, device_id=1)
+    second = select_device("TEST0001", 1, device_id=2)
+    assert isinstance(first, _TestSensor)
+    assert isinstance(second, _TestSensor)
+    assert first.process_message(bytes([7])) == {"level": 7}
+    assert second.attributes == {"level": None}
+    assert second.process_message(bytes([3])) == {"level": 3}
+    assert first.attributes == {"level": 7}
 
-    def test_set_out_of_range(self) -> None:
-        """Test an hour outside 0-23 is rejected."""
-        with pytest.raises(ValueOutOfRange):
-            self.device.set_attribute(DeviceAttributes.sleep_start_hour, 24)
-        with pytest.raises(ValueOutOfRange):
-            self.device.set_attribute(DeviceAttributes.sleep_start_hour, 24.0)
 
-    def test_process_message_skips_unknown_names(self) -> None:
-        """Test names outside the attribute map are ignored."""
-        with patch(
-            "midealan.devices.x44.MessageX44Response",
-        ) as mock_response:
-            mock_response.return_value.attributes = {
-                "not_a_field": 1,
-                DeviceAttributes.voice_volume: 9,
-            }
-            status = self.device.process_message(b"")
-        assert status == {DeviceAttributes.voice_volume: 9}
+def test_subtype_driver_overrides_model_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exact subtype overrides only that subtype of an already registered model."""
+    monkeypatch.setitem(x44._MODEL_DRIVERS, ("TEST0001", 1), _TestSensor)
+    monkeypatch.setitem(x44._MODEL_DRIVERS, ("404M0001", 7), _TestSensor)
+    assert x44.resolve_profile("TEST0001", 2) is None
+    assert isinstance(select_device("404M0001", 7), _TestSensor)
+    assert x44.resolve_profile("404M0001", 7) is _TestSensor.profile
+    screen = select_device("404M0001", 747)
+    assert isinstance(screen.build_query()[0], zkp_3inch01.message.MessageQuery)
+    assert (
+        screen.process_message(ZKP_REPORT)[zkp_3inch01.DeviceAttributes.voice_volume]
+        == 50
+    )
 
-    def test_set_flag_out_of_set(self) -> None:
-        """Test a flag value other than 0 or 1 is rejected."""
-        with pytest.raises(ValueWrongType):
-            self.device.set_attribute(DeviceAttributes.left_button, 2)
 
-    def test_set_flag_number(self) -> None:
-        """Test a flag also accepts the integer 1."""
-        with patch.object(self.device, "build_send") as mock_build_send:
-            self.device.set_attribute(DeviceAttributes.left_button, 1)
-        message = mock_build_send.call_args[0][0]
-        assert message.values[DeviceAttributes.left_button] == 1
+def test_read_only_driver() -> None:
+    """A directly constructed model can inherit read-only behavior."""
+    sensor = _TestSensor(customize="", **identity("TEST0001"))
+    assert sensor.build_query() == []
+    with patch.object(sensor, "build_send") as send:
+        sensor.set_attribute("level", 4)
+    send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cli_discovery_with_an_unknown_model() -> None:
+    """Discovery only connects to the registered model."""
+    cli = MideaCLI()
+    cli.namespace = Namespace(host=None)
+    row = {
+        "type": DeviceType.X44,
+        "protocol": ProtocolVersion.V2,
+        "ip_address": "192.0.2.1",
+        "port": 6444,
+        "mac": None,
+        "sn": "",
+        "support": "supported",
+    }
+    devices = {
+        1: {**row, "device_id": 1, "model": "TEST0001"},
+        2: {**row, "device_id": 2, "model": "404M0001"},
+    }
+    with (
+        patch("midealan.cli.discover", return_value=devices),
+        patch.object(MideaDevice, "connect", return_value=True) as connect,
+        patch.object(MideaDevice, "refresh_status") as refresh,
+    ):
+        assert [device.model for device in await cli.discover()] == ["404M0001"]
+    connect.assert_called_once()
+    refresh.assert_called_once()
+
+
+@pytest.mark.parametrize("report", [ZKP_REPORT, AC_REPORT_VIA_90S])
+def test_cli_decodes_only_screen_captures(
+    report: bytes,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The model-less CLI decodes a known screen report and ignores other layouts."""
+    expected = select_device("404M0001").process_message(report)
+    cli = MideaCLI()
+    cli.namespace = Namespace(message=report)
+    with caplog.at_level("INFO"):
+        cli.message()
+    assert caplog.messages == [f"Parsed message: {expected}"]
+
+
+def test_decoding_a_capture_keeps_the_device_unconfigured() -> None:
+    """Reading a bare frame leaves the model, state and poller untouched."""
+    device = select_device("0000", device_id=0)
+    assert device.process_message(ZKP_REPORT)["voice_volume"] == 50
+    assert device.model == "0000"
+    assert device.attributes == {}
+    assert device.build_query() == []
+    assert not device.connect()

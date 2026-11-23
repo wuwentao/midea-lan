@@ -170,6 +170,7 @@ class MideaCADevice(MideaDevice):
         self._ca_mode_lock = threading.RLock()
         self._ca_mode_event_lock = threading.Lock()
         self._ca_mode_event_order = 0
+        self._ca_mode_received_event_order: int | None = None
         self._ca_mode_status: _CAModeStatus | None = None
         self._ca_mode_pending_generation: int | None = None
         self._ca_mode_pending_event_order: int | None = None
@@ -185,7 +186,9 @@ class MideaCADevice(MideaDevice):
         status = self.process_toshiba_message(msg)
         if status is not None:
             return status
-        event_order = self._next_ca_mode_event_order()
+        event_order = self._ca_mode_received_event_order
+        if event_order is None:
+            event_order = self._next_ca_mode_event_order()
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         self._remember_ca_mode_status(message, event_order)
@@ -223,6 +226,14 @@ class MideaCADevice(MideaDevice):
             self._attributes[DeviceAttributes.variable_mode] = mode
             new_status[DeviceAttributes.variable_mode] = mode
         return new_status
+
+    def _message_received(self) -> None:
+        """Record ordering when a socket frame arrives, before dispatch."""
+        self._ca_mode_received_event_order = self._next_ca_mode_event_order()
+
+    def _message_dispatch_complete(self) -> None:
+        """Clear the receive marker after the decoded batch is dispatched."""
+        self._ca_mode_received_event_order = None
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
         """Decode and publish a Toshiba CA base status."""

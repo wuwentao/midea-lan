@@ -813,6 +813,7 @@ class MideaDevice:
             )
             if len(msg) == 0:
                 raise ConnectionResetError("Connection closed by peer.")
+            self._message_received()
             result = self.parse_message(msg)
             if self._query_reply_ready(result):
                 break
@@ -1328,9 +1329,11 @@ class MideaDevice:
         else:
             messages, self._buffer = self.fetch_v2_message(self._buffer + msg)
         if len(messages) == 0:
+            self._message_dispatch_complete()
             return MessageResult.PADDING
         for message in messages:
             if message == b"ERROR":
+                self._message_dispatch_complete()
                 return MessageResult.ERROR
             payload_len = message[4] + (message[5] << 8) - 56
             payload_type = message[2] + (message[3] << 8)
@@ -1405,6 +1408,7 @@ class MideaDevice:
                     payload_len,
                     len(message),
                 )
+        self._message_dispatch_complete()
         return MessageResult.SUCCESS
 
     def build_query(self) -> list:
@@ -1489,6 +1493,12 @@ class MideaDevice:
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Process message."""
         raise NotImplementedError
+
+    def _message_received(self) -> None:
+        """Record a socket receipt for devices that need ordering."""
+
+    def _message_dispatch_complete(self) -> None:
+        """Clear receive-time state for devices that track ordering."""
 
     def send_command(self, cmd_type: MessageType, cmd_body: bytearray) -> None:
         """Send command."""
@@ -1777,6 +1787,7 @@ class MideaDevice:
                     )
                     if len(msg) == 0:
                         raise ConnectionResetError("Connection closed by peer")  # noqa: TRY301
+                    self._message_received()
                     # parse msg and update latest status
                     result = self.parse_message(msg)
                     if result == MessageResult.SUCCESS:

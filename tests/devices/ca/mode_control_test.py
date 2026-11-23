@@ -10,11 +10,7 @@ from midealan.devices.ca import (
     DeviceAttributes,
     MideaCADevice,
 )
-from midealan.devices.ca.message import (
-    CA_MODE_BODY_LENGTH,
-    MessageCAResponse,
-    build_ca_mode_body,
-)
+from midealan.devices.ca.message import CA_MODE_BODY_LENGTH, build_ca_mode_body
 from midealan.message import ListTypes, MessageBase, MessageQuestCustom, MessageType
 
 
@@ -146,11 +142,9 @@ def test_status_received_before_set_does_not_clear_pending_guard() -> None:
     device = _device()
     device.process_message(_status(0x00))
     with patch.object(device, "build_send") as send:
+        device._message_received()
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
-        device._remember_ca_mode_status(
-            MessageCAResponse(_status(0x00)),
-            1,
-        )
+        device.process_message(_status(0x00))
         with pytest.raises(CAModeWritePendingError):
             device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 1

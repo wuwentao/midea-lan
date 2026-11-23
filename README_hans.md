@@ -259,9 +259,11 @@ cd midea-lan
 [中文版 CONTRIBUTING](.github/CONTRIBUTING.zh.md)
 
 提交 PR 时请按仓库模板填写协议来源、关联 Issue、测试、100% 增量覆盖率及 CodeRabbit
-评审处理情况。会影响 Home Assistant 集成的改动应同时提交并链接 `midea_ac_lan` PR，
-但不要修改其 `manifest.json` 中的依赖版本。合并后不会立即发版；维护者会积累一定数量的
-PR 后定期手工发布，并在发布后统一同步依赖版本。
+评审处理情况。会影响 Home Assistant 集成的改动应同时提交并链接 `midea_ac_lan` PR。
+库 PR 尚未合并时，该集成 PR 可以把 `manifest.json` 指向贡献者 fork/分支，以便运行 CI
+和端到端测试；库 PR 合并后必须改为 `wuwentao/midea-lan@main`（若已指向则无需修改）。
+集成 PR 只能在依赖指向上游 `main` 或正式发布版本时合并，因此无需等待库发布。维护者会
+定期发布 `midea-lan`；发布集成时，再把上游 `main` 替换为最新发布版本。
 
 ### 新增设备支持
 

@@ -273,9 +273,13 @@ guide for the full workflow and per-OS uv install instructions.
 
 Pull requests use the repository template to record protocol sources, related issues,
 tests, 100% patch coverage, and CodeRabbit review resolution. Changes that affect the
-Home Assistant integration should include a linked `midea_ac_lan` pull request without
-changing its `manifest.json` dependency version. Merged changes are accumulated for
-periodic manual releases; maintainers synchronize the dependency version after release.
+Home Assistant integration should include a linked `midea_ac_lan` pull request. While
+the library PR is unmerged, that integration PR may point `manifest.json` at the
+contributor fork/branch for CI and end-to-end testing. After the library PR merges, it
+must use `wuwentao/midea-lan@main` (unless it already does), and it may merge only with
+upstream `main` or a released version. This avoids waiting for a library release.
+Maintainers periodically publish `midea-lan`; when releasing the integration, they
+replace upstream `main` with the latest released version.
 
 ### Adding a new device
 

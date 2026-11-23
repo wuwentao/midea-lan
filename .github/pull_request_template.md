@@ -10,9 +10,14 @@
 
 <!--
 For changes that affect Home Assistant behavior or device support, open the
-midea_ac_lan PR at the same time and link it back to this PR. Do not update the
-midea-lan version in midea_ac_lan/custom_components/midea_ac_lan/manifest.json.
-Maintainers will update that dependency centrally after a midea-lan release.
+midea_ac_lan PR at the same time and link it back to this PR. While this library
+PR is unmerged, that integration PR may point manifest.json at this fork/branch
+so its feature and CI can be verified. After this PR merges, the integration PR
+must switch to "midea-lan @ git+https://github.com/wuwentao/midea-lan.git@main"
+unless it already uses upstream main. The integration PR may merge only when its
+requirement references upstream main or a released midea-lan version, never a
+contributor fork/branch. Integration release maintainers later replace upstream
+main with the latest released library version.
 -->
 
 ## Protocol source
@@ -44,9 +49,12 @@ before merge.
 - [ ] I linked the device Lua protocol in [`midea-lua`](https://github.com/wuwentao/midea-lua), or explained why no protocol source applies.
 - [ ] I linked the related [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, or explained why none applies.
 - [ ] I opened and linked the matching [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) PR, or explained why none applies.
+- [ ] I verified the matching integration PR will use `wuwentao/midea-lan@main` or a released version, not a contributor fork/branch, before it merges.
 
 ## Release note
 
-Merging this PR does not trigger an immediate release. Maintainers accumulate a
-set of merged PRs, publish `midea-lan` manually on a periodic basis, and then
-update/synchronize `midea_ac_lan` centrally.
+Merging this PR does not trigger an immediate library release. The matching
+`midea_ac_lan` PR can validate against this fork/branch before merge and upstream
+`main` afterward, so it does not need to wait for a release. Maintainers
+periodically publish `midea-lan`; when publishing the integration, they replace
+its upstream-main requirement with the latest released library version.

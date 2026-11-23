@@ -521,15 +521,19 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
 - **Lua 收录**：如果所需 Lua 尚未收录到 `midea-lua`，请按照该仓库 README 下载并
   先向该仓库提交 PR，然后在 `midea-lan` PR 中链接它。
 - **Home Assistant PR**：同时提交对应的 `midea_ac_lan` PR，并在其中链接当前 PR。
-  不要修改其 `custom_components/midea_ac_lan/manifest.json` 中的 `midea-lan`
-  版本；维护者会在发布后统一处理。不区分改动类型，应链接任何相关的
-  `midea_ac_lan` Issue；不适用时请说明原因。
+  当前库 PR 尚未合并时，集成 PR 可以把
+  `custom_components/midea_ac_lan/manifest.json` 指向你的 fork/分支，让 CI 和
+  端到端测试使用尚未发布的代码。当前 PR 合并后，把集成依赖切换到
+  `wuwentao/midea-lan@main`；如果已经指向上游 `main`，则保持不变。集成 PR 只能在
+  依赖指向上游 `main` 或正式发布版本时合并，绝不能保留你的 fork/分支。不区分改动
+  类型，应链接任何相关的 `midea_ac_lan` Issue；不适用时请说明原因。
 - **CodeRabbit**：该 AI 评审会跳过草稿 PR。要让草稿获得评审，评论
   `@coderabbitai review`。逐条处理所有意见，并在对应线程中回复，说明修复方式与
   覆盖它的测试，然后 resolve 对话。
 
-PR 合并后不会立即发布新版本。维护者会积累一批已合并变更后定期手工发布
-`midea-lan`，再统一同步 `midea_ac_lan`。
+PR 合并后不会立即发布库版本，但集成 PR 无需等待：合并前基于 fork/分支验证，库 PR
+合并后基于上游 `main` 验证即可。维护者会定期发布 `midea-lan`；发布
+`midea_ac_lan` 时，再把上游 `main` 替换为最新发布的库版本。
 
 可参照的范例 PR：
 
@@ -754,7 +758,8 @@ if self.message_type == MessageType.set:
 
 `midea-lan` 是协议库；Home Assistant 集成
 [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) 消费它。库支持该设备
-后，再在 HA 中暴露它（通常是一个依赖库版本发布的独立 PR）：
+后，用一个独立且相互链接的 PR 在 HA 中暴露它。当前库 PR 尚未合并时，该 PR 可依赖
+fork/分支；合并后改用上游 `main`，无需等待库发布：
 
 - **`custom_components/midea_ac_lan/midea_devices.py`**：导入该设备的
   `DeviceAttributes`，并注册一个 `0x<TYPE>:` 条目，包含 `name` 与 `entities`
@@ -786,7 +791,9 @@ D9 对应的集成参见
 - [ ] `uv run prek run --all-files` 通过。
 - [ ] 在特性分支上提 PR，标题为 Conventional Commit，链接 Lua，回复 CodeRabbit
       意见并 resolve 全部对话。
-- [ ] 链接相关的 `midea_ac_lan` Issue 和对应 PR，且不修改 manifest 依赖版本；
-      任一链接不适用时说明原因。
+- [ ] 链接相关的 `midea_ac_lan` Issue 和对应 PR；当前库 PR 尚未合并时，其 manifest
+      可使用 fork/分支运行 CI。
+- [ ] 集成 PR 合并前，其 manifest 使用 `wuwentao/midea-lan@main` 或正式发布版本，
+      绝不保留贡献者 fork/分支。
 - [ ] （若在 HA 中暴露）更新 `midea_ac_lan` 的设备条目、翻译、文档与 README。
 </content>

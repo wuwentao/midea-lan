@@ -185,18 +185,25 @@ persist these in your shell profile.
      of the PR title or change type. If there is no related issue, explain why.
    - PRs should link a matching `midea_ac_lan` PR when the change affects
      Home Assistant behavior or device support. Otherwise, explain why none is
-     needed. Do not change the `midea-lan` version in
-     `custom_components/midea_ac_lan/manifest.json`; maintainers update it after
-     the library release.
+     needed. While the library PR is unmerged, the integration PR may point
+     `custom_components/midea_ac_lan/manifest.json` at the contributor fork and
+     branch/commit so integration CI and end-to-end tests can run. After the
+     library PR merges, change that requirement to
+     `midea-lan @ git+https://github.com/wuwentao/midea-lan.git@main`, unless it
+     already uses upstream `main`. Before the integration PR merges, it must use
+     upstream `main` or a released `midea-lan` version, never a contributor
+     fork/branch.
 
 6. After GitHub Actions finish, confirm that Codecov reports 100% patch coverage.
    Wait for the automatic CodeRabbit review (or comment `@coderabbitai review` if
    it did not start). Address every actionable finding, reply in its thread with
    the fix and test evidence, and click **Resolve conversation**.
 
-Merging a PR does not publish an immediate release. Maintainers accumulate a set
-of changes, release `midea-lan` manually on a periodic basis, and then synchronize
-the dependency version in `midea_ac_lan` centrally.
+Merging a PR does not publish an immediate library release. The integration PR
+can validate against the fork/branch before merge and upstream `main` afterward,
+so it need not wait for a release. Maintainers publish `midea-lan` periodically;
+when releasing `midea_ac_lan`, they replace its upstream-main requirement with
+the latest released library version in a separate PR.
 
 ---
 

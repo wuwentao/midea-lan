@@ -97,13 +97,17 @@ user-facing harnesses.
   [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, regardless of
   its title or change type; explain when no related issue exists.
 - PRs should link a matching `midea_ac_lan` PR when they affect Home Assistant
-  behavior or device support; explain when no integration PR is needed. Do not
-  update the `midea-lan` version in
-  `midea_ac_lan/custom_components/midea_ac_lan/manifest.json`; maintainers update
-  it centrally after release.
-- A merge does not trigger an immediate release. Maintainers accumulate changes,
-  publish `midea-lan` manually on a periodic basis, and then synchronize
-  `midea_ac_lan`.
+  behavior or device support; explain when no integration PR is needed. While
+  the library PR is unmerged, the integration PR may point its `manifest.json`
+  requirement at the contributor fork/branch for CI and end-to-end testing.
+  After the library PR merges, the integration PR must use
+  `wuwentao/midea-lan@main` unless it already does. Before the integration PR
+  merges, its requirement must reference upstream `main` or a released version,
+  never a contributor fork/branch.
+- A merge does not trigger an immediate library release, and the integration PR
+  does not need to wait for one. Maintainers publish `midea-lan` periodically;
+  when publishing `midea_ac_lan`, they replace its upstream-main requirement with
+  the latest released library version.
 - After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
   automatic CodeRabbit review. Address each actionable comment, reply in its
   thread with the fix and test evidence, and resolve the conversation before merge.

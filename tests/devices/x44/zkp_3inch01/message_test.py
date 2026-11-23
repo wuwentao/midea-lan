@@ -3,14 +3,12 @@
 import pytest
 
 from midealan.devices.x44.zkp_3inch01.message import (
-    BUTTON_BYTE,
     FUNC_BYTE,
     LEFT_BUTTON,
     SCREEN_FUNC,
     SCREEN_PAYLOAD_LENGTH,
     UNCHANGED,
     VOICE_VOLUME,
-    VOICE_VOLUME_BYTE,
     MessageQuery,
     MessageSetScreen,
     ScreenRequest,
@@ -50,19 +48,30 @@ class TestMessageSetScreen:
         assert payload[FUNC_BYTE - 1] == SCREEN_FUNC
         assert payload[1:] == bytearray([UNCHANGED] * (SCREEN_PAYLOAD_LENGTH - 1))
 
-    def test_voice_volume(self) -> None:
-        """Test one numeric field is written and the rest stay unchanged."""
-        message = MessageSetScreen(0)
-        message.values[VOICE_VOLUME] = 50
-        payload = message._body
-        assert payload[VOICE_VOLUME_BYTE - 1] == 50
-        assert payload[BUTTON_BYTE - 1] == UNCHANGED
-
-    def test_left_button_on(self) -> None:
-        """Test one flag is encoded and the other pairs stay ignored."""
-        message = MessageSetScreen(0)
-        message.values[LEFT_BUTTON] = 1
-        assert message._body[BUTTON_BYTE - 1] == 0xFD
+    @pytest.mark.parametrize(
+        ("attribute", "value", "expected"),
+        [
+            (
+                VOICE_VOLUME,
+                50,
+                "aa1f44000000000000020802ffffffffffffffff32ffffffffffffffffffff71",
+            ),
+            (
+                LEFT_BUTTON,
+                True,
+                "aa1f44000000000000020802fffffffdffffffffffffffffffffffffffffffa6",
+            ),
+            (
+                LEFT_BUTTON,
+                False,
+                "aa1f44000000000000020802fffffffcffffffffffffffffffffffffffffffa7",
+            ),
+        ],
+    )
+    def test_serialize_set(self, attribute: str, value: int, expected: str) -> None:
+        """Check the full set frame, including ignored fields and checksum."""
+        message = MessageSetScreen.for_attribute(0, attribute, value)
+        assert message.serialize() == bytes.fromhex(expected)
 
 
 class TestParseScreen:
@@ -118,12 +127,6 @@ class TestParseScreen:
         body = bytearray([0x08, 0x02, 0xFF, 0xFF, 0xFF, 0x03])
         assert "left_button" not in parse_screen(body)
 
-    def test_flag_off_keeps_other_pairs_ignored(self) -> None:
-        """Test encoding 0 does not set the on bit."""
-        message = MessageSetScreen(0)
-        message.values[LEFT_BUTTON] = 0
-        assert message._body[BUTTON_BYTE - 1] == 0xFC
-
 
 class TestScreenResponse:
     """Test response gating."""
@@ -155,7 +158,7 @@ class TestScreenResponse:
 
     def test_unrelated_message_type_is_ignored(self) -> None:
         """Test an appliance response is not parsed as screen status."""
-        message = ScreenResponse(frame(0xA0, b"\x00\x44"))
+        message = ScreenResponse(frame(MessageType.query_appliance, ZKP_REPORT[10:-1]))
         assert message.attributes == {}
 
     def test_short_message_raises(self) -> None:

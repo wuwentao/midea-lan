@@ -108,6 +108,77 @@ class TestMideaACDevice:
         assert DeviceAttributes.compressor_frequency in self.device.attributes
         assert not self.device.fresh_air_exhaust_fan_speeds
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "00000Q11",
+            "00000Q13",
+            "00000Q14",
+            "00000Q15",
+            "00000Q17",
+            "00000Q18",
+            "00000Q19",
+            "00000Q1B",
+            "00000Q1C",
+            "00000Q1E",
+            "00000Q1F",
+            "24",
+            "20601026",
+        ],
+    )
+    def test_lua_fahrenheit_setpoint_models(self, model: str) -> None:
+        """Apply the vendor lookup to every AC model with a matching profile."""
+        device = self._make_device(model, 0)
+        device._attributes[DeviceAttributes.temp_fahrenheit] = True
+
+        assert device.uses_fahrenheit_setpoint
+        assert device.target_temperature_for_display(16.5) == 61.0
+        assert device.target_temperature_from_display(65) == 18.5
+
+    def test_lua_fahrenheit_reverse_table_and_limits(self) -> None:
+        """Honor explicit duplicate mappings and reported Celsius limits."""
+        device = self._make_device("00000Q15", 0)
+        device._attributes[DeviceAttributes.temp_fahrenheit] = True
+
+        assert device.target_temperature_from_display(54) == 12.0
+        assert device.target_temperature_from_display(59) == 15.0
+        assert device.target_temperature_from_display(73) == 23.0
+        assert device.target_temperature_from_display(82) == 28.0
+
+        device._attributes[DeviceAttributes.min_temperature] = 16.5
+        device._attributes[DeviceAttributes.max_temperature] = 27.5
+        assert device.target_temperature_from_display(60) == 16.5
+        assert device.target_temperature_from_display(82) == 27.5
+
+        device._attributes[DeviceAttributes.max_temperature] = 28.0
+        assert device.target_temperature_from_display(82) == 28.0
+
+    def test_lua_fahrenheit_fallbacks_and_model_gate(self) -> None:
+        """Use arithmetic fallbacks and leave unrelated profiles unchanged."""
+        device = self._make_device("00000Q15", 0)
+        device._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert device.target_temperature_for_display(32.0) == pytest.approx(89.6)
+        assert device.target_temperature_from_display(100) == 31.5
+
+        short_profile = self._make_device("24", 0)
+        short_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert short_profile.target_temperature_from_display(54) == 16.0
+
+        extended_profile = self._make_device("20601026", 0)
+        extended_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert extended_profile.target_temperature_from_display(46) == 8.0
+
+        device._attributes[DeviceAttributes.temp_fahrenheit] = False
+        assert not device.uses_fahrenheit_setpoint
+        assert device.target_temperature_for_display(20.0) == 20.0
+        assert device.target_temperature_from_display(68.0) == 68.0
+
+        unrelated = self._make_device("22259015", 0)
+        unrelated._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert not unrelated.uses_fahrenheit_setpoint
+        assert unrelated.target_temperature_for_display(20.0) == 20.0
+        assert unrelated.target_temperature_from_display(68.0) == 68.0
+
     @staticmethod
     def _make_device(model: str, subtype: int) -> MideaACDevice:
         """Create a model-specific AC device."""

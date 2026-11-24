@@ -235,6 +235,125 @@ AC_MODEL_CAPABILITIES = {
 # https://github.com/wuwentao/midea_ac_lan/issues/893
 NEW_PROTOCOL_TEMPERATURE_MODELS = frozenset({"22013279"})
 
+# These AC Lua profiles use lookup tables instead of arithmetic conversion for
+# target temperatures when their Fahrenheit flag is active. The identifiers
+# are the model/SN8 variants from the corresponding midea-lua filenames.
+_LUA_FAHRENHEIT_MIN_CELSIUS = {
+    "00000Q11": 10.0,
+    "00000Q13": 10.0,
+    "00000Q14": 10.0,
+    "00000Q15": 10.0,
+    "00000Q17": 10.0,
+    "00000Q18": 10.0,
+    "00000Q19": 10.0,
+    "00000Q1B": 10.0,
+    "00000Q1C": 10.0,
+    "00000Q1E": 10.0,
+    "00000Q1F": 10.0,
+    "24": 16.0,
+    "20601026": 8.0,
+}
+_LUA_FAHRENHEIT_MAX_CELSIUS = 31.5
+_LUA_CELSIUS_TO_FAHRENHEIT = {
+    8.0: 46,
+    8.5: 47,
+    9.0: 48,
+    9.5: 49,
+    10.0: 50,
+    10.5: 51,
+    11.0: 52,
+    11.5: 53,
+    12.0: 54,
+    12.5: 54,
+    13.0: 55,
+    13.5: 56,
+    14.0: 57,
+    14.5: 58,
+    15.0: 59,
+    15.5: 59,
+    16.0: 60,
+    16.5: 61,
+    17.0: 62,
+    17.5: 63,
+    18.0: 64,
+    18.5: 65,
+    19.0: 66,
+    19.5: 67,
+    20.0: 68,
+    20.5: 69,
+    21.0: 70,
+    21.5: 71,
+    22.0: 72,
+    22.5: 73,
+    23.0: 73,
+    23.5: 74,
+    24.0: 75,
+    24.5: 76,
+    25.0: 77,
+    25.5: 78,
+    26.0: 79,
+    26.5: 80,
+    27.0: 81,
+    27.5: 82,
+    28.0: 82,
+    28.5: 83,
+    29.0: 84,
+    29.5: 85,
+    30.0: 86,
+    30.5: 87,
+    31.0: 88,
+    31.5: 89,
+}
+# Keep the vendor reverse table explicit because duplicate forward values do
+# not consistently select the last Celsius entry (for example, 54 F maps to
+# 12 C, while 82 F maps to 28 C).
+_LUA_FAHRENHEIT_TO_CELSIUS = {
+    46: 8.0,
+    47: 8.5,
+    48: 9.0,
+    49: 9.5,
+    50: 10.0,
+    51: 10.5,
+    52: 11.0,
+    53: 11.5,
+    54: 12.0,
+    55: 13.0,
+    56: 13.5,
+    57: 14.0,
+    58: 14.5,
+    59: 15.0,
+    60: 16.0,
+    61: 16.5,
+    62: 17.0,
+    63: 17.5,
+    64: 18.0,
+    65: 18.5,
+    66: 19.0,
+    67: 19.5,
+    68: 20.0,
+    69: 20.5,
+    70: 21.0,
+    71: 21.5,
+    72: 22.0,
+    73: 23.0,
+    74: 23.5,
+    75: 24.0,
+    76: 24.5,
+    77: 25.0,
+    78: 25.5,
+    79: 26.0,
+    80: 26.5,
+    81: 27.0,
+    82: 28.0,
+    83: 28.5,
+    84: 29.0,
+    85: 29.5,
+    86: 30.0,
+    87: 30.5,
+    88: 31.0,
+    89: 31.5,
+}
+
 STALE_C0_TEMPERATURE_ATTRIBUTES = (
     DeviceAttributes.target_temperature,
     DeviceAttributes.indoor_temperature,
@@ -469,6 +588,68 @@ class MideaACDevice(MideaDevice):
     def temperature_step(self) -> float | None:
         """Midea AC device temperature step."""
         return self._temperature_step
+
+    @property
+    def uses_fahrenheit_setpoint(self) -> bool:
+        """Whether the active model profile presents setpoints in Fahrenheit."""
+        return str(self.model) in _LUA_FAHRENHEIT_MIN_CELSIUS and bool(
+            self._attributes[DeviceAttributes.temp_fahrenheit],
+        )
+
+    def target_temperature_for_display(self, celsius: float) -> float:
+        """Convert a Celsius setpoint to the model's displayed unit.
+
+        Returns:
+            The vendor-mapped Fahrenheit value when the matching profile and
+            live Fahrenheit flag are active; otherwise the unchanged value.
+
+        """
+        if not self.uses_fahrenheit_setpoint:
+            return celsius
+        normalized = round(float(celsius) * 2) / 2
+        profile_minimum = _LUA_FAHRENHEIT_MIN_CELSIUS[str(self.model)]
+        mapped = (
+            _LUA_CELSIUS_TO_FAHRENHEIT.get(normalized)
+            if profile_minimum <= normalized <= _LUA_FAHRENHEIT_MAX_CELSIUS
+            else None
+        )
+        if mapped is not None:
+            return float(mapped)
+        return self.celsius_to_fahrenheit(normalized, is_fahrenheit=True)
+
+    def target_temperature_from_display(self, temperature: float) -> float:
+        """Convert a displayed setpoint to the device's Celsius value.
+
+        Returns:
+            The vendor-mapped Celsius value constrained to the device's
+            reported Celsius setpoint limits, or the unchanged value when the
+            matching profile and live Fahrenheit flag are not active.
+
+        """
+        if not self.uses_fahrenheit_setpoint:
+            return temperature
+        profile_minimum = _LUA_FAHRENHEIT_MIN_CELSIUS[str(self.model)]
+        mapped = _LUA_FAHRENHEIT_TO_CELSIUS.get(round(float(temperature)))
+        if mapped is not None and not (
+            profile_minimum <= mapped <= _LUA_FAHRENHEIT_MAX_CELSIUS
+        ):
+            mapped = None
+        celsius = (
+            float(mapped)
+            if mapped is not None
+            else self.fahrenheit_to_celsius(temperature, is_fahrenheit=True)
+        )
+        celsius = max(
+            profile_minimum,
+            min(_LUA_FAHRENHEIT_MAX_CELSIUS, celsius),
+        )
+        minimum = self._attributes[DeviceAttributes.min_temperature]
+        maximum = self._attributes[DeviceAttributes.max_temperature]
+        if isinstance(minimum, (int, float)):
+            celsius = max(float(minimum), celsius)
+        if isinstance(maximum, (int, float)):
+            celsius = min(float(maximum), celsius)
+        return celsius
 
     @property
     def fresh_air_fan_speeds(self) -> list[str]:

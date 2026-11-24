@@ -272,17 +272,18 @@ guide for the full workflow and per-OS uv install instructions.
 [中文版CONTRIBUTING](.github/CONTRIBUTING.zh.md)
 
 Pull requests use the repository template to record protocol sources, related issues,
-tests, 100% patch coverage, and CodeRabbit review resolution. Changes that affect the
-Home Assistant integration should include a linked `midea_ac_lan` pull request. While
-the library PR is unmerged, that integration PR may point `manifest.json` at the
-contributor fork/branch for CI and end-to-end testing. The integration repository's
-lint/type-check CI also reads `pyproject.toml` with `uv sync --locked`, so its dependency
-and `uv.lock` must use the same fork/ref. After the library PR merges, all three must use
-`wuwentao/midea-lan@main` (unless they already do), and the integration may merge only with
-upstream `main` or a released version. This avoids waiting for a library release.
-Maintainers periodically publish `midea-lan`; when releasing the integration, they
-first confirm a released library version contains the merged changes, then replace
-upstream `main` with that version.
+tests, 100% patch coverage, and CodeRabbit review resolution. The integration manifest
+is the sole source of its `midea-lan` runtime requirement; CI and
+local setup install from `manifest.json`, while its `pyproject.toml` and `uv.lock` contain
+development/test dependencies only. Before this library PR merges, the integration
+manifest may point at the contributor fork/branch for CI and end-to-end testing. After
+the library PR merges, switch only the manifest to `wuwentao/midea-lan@main` unless it
+already points there. The integration PR may merge only when its manifest uses upstream
+`main` or a released version, never a contributor fork. This avoids waiting for a library
+release. Before publishing the integration, maintainers confirm a released library version
+contains the merged changes and update the manifest to that version in a PR. The Manual
+Release workflow accepts the integration version and opens a changelog/version PR;
+merging it triggers tag/GitHub Release creation, followed by zip build and upload.
 
 ### Adding a new device
 

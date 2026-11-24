@@ -261,12 +261,13 @@ cd midea-lan
 提交 PR 时请按仓库模板填写协议来源、关联 Issue、测试、100% 增量覆盖率及 CodeRabbit
 评审处理情况。会影响 Home Assistant 集成的改动应同时提交并链接 `midea_ac_lan` PR。
 库 PR 尚未合并时，该集成 PR 可以把 `manifest.json` 指向贡献者 fork/分支，以便运行 CI
-和端到端测试。集成仓库的 lint/type-check CI 还会通过 `pyproject.toml` 和
-`uv sync --locked` 安装库，因此该依赖和 `uv.lock` 也必须指向相同的 fork/ref；库 PR 合并后，
-三处依赖都必须改为 `wuwentao/midea-lan@main`（若已指向则无需修改）。集成 PR 只能在依赖
-指向上游 `main` 或正式发布版本时合并，因此无需等待库发布。维护者会
-定期发布 `midea-lan`；发布集成时，先确认正式发布的库版本已包含合并后的改动，再把上游
-`main` 替换为该版本。
+和端到端测试。集成仓库的 CI 与本地开发环境直接从 `manifest.json` 安装运行时依赖；其
+`pyproject.toml` 与 `uv.lock` 只包含开发和测试依赖，不包含 `midea-lan`。库 PR 合并后，只需
+将 manifest 改为 `wuwentao/midea-lan@main`（若已指向则无需修改）。集成 PR 只能在 manifest
+指向上游 `main` 或正式发布版本时合并，因此无需等待库发布。发布集成前，维护者先确认某个
+正式发布的库版本已包含所需改动，并通过独立 PR 将 manifest 中的上游 `main` 替换为该版本。
+随后手工触发 Manual Release workflow 并输入集成版本号；该 workflow 会生成 changelog、更新
+manifest 版本并创建 PR。合并该 PR 后会自动打 tag、创建 GitHub Release、构建 zip 并上传。
 
 ### 新增设备支持
 

@@ -100,20 +100,21 @@ user-facing harnesses.
   behavior or device support; explain when no integration PR is needed. While
   the library PR is unmerged, the integration PR may point its `manifest.json`
   requirement at the contributor fork/branch for CI and end-to-end testing.
-  The integration repository's lint/type-check CI also reads its own
-  `pyproject.toml` with `uv sync --locked`, so the matching integration PR must
-  update that dependency and its `uv.lock` to the same fork/ref. After the
-  library PR merges, the integration PR must use `wuwentao/midea-lan@main`
-  unless it already does. Before the integration PR merges, its manifest,
-  `pyproject.toml`, and `uv.lock` must reference upstream `main` or a released
-  version, never a contributor fork/branch. The library repository's own
-  `uv.lock` must remain independent; it does not encode the integration's
-  runtime dependency.
+  The integration manifest is the sole source of its `midea-lan` runtime
+  requirement; CI and local setup install from it. Its `pyproject.toml` and
+  `uv.lock` contain development/test dependencies only and must not include
+  `midea-lan`. After the library PR merges, the integration PR switches only
+  its manifest to `wuwentao/midea-lan@main` unless it already does. Before the
+  integration PR merges, its manifest must reference upstream `main` or a
+  released version, never a contributor fork/branch. The library repository's
+  own `uv.lock` remains independent of the integration requirement.
 - A merge does not trigger an immediate library release, and the integration PR
   does not need to wait for one. Maintainers publish `midea-lan` periodically;
-  when publishing `midea_ac_lan`, they first confirm a released library version
-  contains the merged changes, then replace its upstream-main requirement with
-  that version.
+  before publishing `midea_ac_lan`, they first confirm a released library
+  version contains the merged changes, then replace the manifest's upstream
+  `main` requirement with that version in a PR. The integration Manual Release
+  workflow accepts its version and opens a changelog/version PR; merging it
+  triggers tag/GitHub Release creation, followed by zip build and upload.
 - After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
   automatic CodeRabbit review. Address each actionable comment, reply in its
   thread with the fix and test evidence, and resolve the conversation before merge.

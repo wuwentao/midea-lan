@@ -564,10 +564,10 @@ Follow the repository conventions (see
 - **Home Assistant PR**: open the matching `midea_ac_lan` PR at the same time and
   link it back to the current PR. While this library PR is unmerged, that PR may
   point `custom_components/midea_ac_lan/manifest.json` at your fork/branch so its
-  CI and end-to-end tests use the unreleased code. Its lint/type-check CI also
-  reads the integration repository's `pyproject.toml` with `uv sync --locked`,
-  so update that dependency and `uv.lock` to the same fork/ref. After this PR
-  merges, switch all integration dependency declarations to
+  CI and end-to-end tests use the unreleased code. The integration CI and local
+  setup install runtime requirements directly from that manifest; its
+  `pyproject.toml` and `uv.lock` contain development/test dependencies only and
+  must not include `midea-lan`. After this PR merges, switch only the manifest to
   `wuwentao/midea-lan@main`; if they already use upstream `main`, leave them
   unchanged. The integration PR may merge only with upstream `main` or a released
   version, never your fork/branch. Do not change this repository's `uv.lock` for
@@ -579,9 +579,12 @@ Follow the repository conventions (see
 
 Merging the PR does not publish an immediate library release, but the integration
 PR does not need to wait for one: validate against the fork/branch before merge
-and upstream `main` afterward. Maintainers publish `midea-lan` periodically;
-when releasing `midea_ac_lan`, they first confirm a released library version
-contains the merged changes, then replace upstream `main` with that version.
+and upstream `main` afterward. Before publishing `midea_ac_lan`, maintainers first
+confirm a released library version contains the required changes and replace
+upstream `main` in its manifest with that version in a separate PR. They then run
+the integration's Manual Release workflow with the target integration version;
+it opens a changelog/manifest-version PR. Merging that PR triggers tag and GitHub
+Release creation, followed by the integration zip build and upload.
 
 Reference worked examples to model your PR on:
 

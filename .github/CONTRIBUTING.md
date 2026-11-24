@@ -188,10 +188,10 @@ persist these in your shell profile.
      needed. While the library PR is unmerged, the integration PR may point
      `custom_components/midea_ac_lan/manifest.json` at the contributor fork and
      branch/commit so integration CI and end-to-end tests can run. The integration
-     repository's lint/type-check CI installs `midea-lan` from its `pyproject.toml`
-     with `uv sync --locked`, so update that dependency and its `uv.lock` to the
-     same fork/ref while testing unreleased code. After the library PR merges,
-     change all integration dependency declarations to
+     repository's CI and local setup install runtime requirements directly from its
+     manifest; its `pyproject.toml` and `uv.lock` contain development/test
+     dependencies only and must not include `midea-lan`. After the library PR merges,
+     change only the integration manifest requirement to
      `midea-lan@git+https://github.com/wuwentao/midea-lan.git@main`, unless it
      already uses upstream `main`. Before the integration PR merges, it must use
      upstream `main` or a released `midea-lan` version, never a contributor
@@ -205,10 +205,12 @@ persist these in your shell profile.
 
 Merging a PR does not publish an immediate library release. The integration PR
 can validate against the fork/branch before merge and upstream `main` afterward,
-so it need not wait for a release. Maintainers publish `midea-lan` periodically;
-when releasing `midea_ac_lan`, they first confirm a released library version
-contains the merged changes, then replace upstream `main` with that version in
-a separate PR.
+so it need not wait for a release. Before publishing `midea_ac_lan`, maintainers
+first confirm a released library version contains the required changes and replace
+upstream `main` in its manifest with that version in a separate PR. They then run
+the integration's Manual Release workflow with the target integration version;
+it opens a changelog/manifest-version PR. Merging that PR triggers tag and GitHub
+Release creation, followed by the integration zip build and upload.
 
 ---
 

@@ -143,6 +143,7 @@ class TestMideaACDevice:
         assert device.target_temperature_from_display(59) == 15.0
         assert device.target_temperature_from_display(73) == 23.0
         assert device.target_temperature_from_display(82) == 28.0
+        assert device.target_temperature_from_display(46) == 10.0
 
         device._attributes[DeviceAttributes.min_temperature] = 16.5
         device._attributes[DeviceAttributes.max_temperature] = 27.5
@@ -174,6 +175,13 @@ class TestMideaACDevice:
         extended_profile = self._make_device("20601026", 0)
         extended_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
         assert extended_profile.target_temperature_from_display(46) == 8.0
+        extended_profile._attributes[DeviceAttributes.min_temperature] = None
+        extended_profile._attributes[DeviceAttributes.max_temperature] = None
+        assert extended_profile.target_temperature_from_display(46) == 8.0
+
+        standard_profile = self._make_device("00000Q15", 0)
+        standard_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert standard_profile.target_temperature_from_display(46) == 10.0
 
         # Filename suffixes are Lua versions, not subtypes; the model alone
         # gates this behavior.

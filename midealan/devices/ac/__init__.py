@@ -639,17 +639,24 @@ class MideaACDevice(MideaDevice):
             if mapped is not None
             else self.fahrenheit_to_celsius(temperature, is_fahrenheit=True)
         )
-        celsius = max(
-            profile_minimum,
-            min(_LUA_FAHRENHEIT_MAX_CELSIUS, celsius),
-        )
         minimum = self._attributes[DeviceAttributes.min_temperature]
         maximum = self._attributes[DeviceAttributes.max_temperature]
-        if isinstance(minimum, (int, float)):
-            celsius = max(float(minimum), celsius)
-        if isinstance(maximum, (int, float)):
-            celsius = min(float(maximum), celsius)
-        return celsius
+        profile_maximum = _LUA_FAHRENHEIT_MAX_CELSIUS
+        reported_minimum = (
+            float(minimum) if isinstance(minimum, (int, float)) else profile_minimum
+        )
+        reported_maximum = (
+            float(maximum) if isinstance(maximum, (int, float)) else profile_maximum
+        )
+        effective_minimum = max(profile_minimum, reported_minimum)
+        effective_maximum = min(profile_maximum, reported_maximum)
+        if effective_minimum > effective_maximum:
+            # A customized/device range can be wholly outside the verified Lua
+            # profile. Prefer the protocol range so conversion never emits an
+            # invalid Lua setpoint; the conflicting range is ignored here.
+            effective_minimum = profile_minimum
+            effective_maximum = profile_maximum
+        return max(effective_minimum, min(effective_maximum, celsius))
 
     @property
     def fresh_air_fan_speeds(self) -> list[str]:
@@ -1467,6 +1474,16 @@ class MideaACDevice(MideaDevice):
             changed[DeviceAttributes.max_temperature.value] = maximum
         return changed
 
+    def _refresh_temperature_limits_after_mode_change(
+        self,
+        previous_mode: bool | float | str,
+        new_mode: bool | float | str,
+    ) -> dict[str, Any]:
+        """Refresh limits only when the mode actually changes."""
+        if previous_mode == new_mode:
+            return {}
+        return self._refresh_temperature_limits()
+
     def make_message_set(self) -> StateSet:
         """Midea AC device make message set."""
         message = StateSet(self._message_protocol_version)
@@ -1915,6 +1932,7 @@ class MideaACDevice(MideaDevice):
             | None
         ) = None
         optimistic_self_clean: bool | None = None
+        temperature_limit_updates: dict[str, Any] = {}
         # Resync the electric aux-heat cache from the outgoing frame after a
         # successful send; force_heat mirrors the power/mode forced by the
         # aux_heat_mode control but not by the plain aux_heating switch.
@@ -2008,6 +2026,7 @@ class MideaACDevice(MideaDevice):
                 aux_heat_cache_sync = self._apply_legacy_aux_heating(message, attr)
                 self._clear_timers_on_power_change(message, attr, value)
                 if attr == DeviceAttributes.mode:
+                    previous_mode = self._attributes[DeviceAttributes.mode]
                     setattr(message, str(DeviceAttributes.power.value), True)
                     # Reset dry flag when changing mode to avoid conflicts
                     # The dry flag (byte 9, bit 0x04) can block mode changes
@@ -2025,8 +2044,16 @@ class MideaACDevice(MideaDevice):
                     # https://github.com/midea-lan/midea-local/issues/495
                     self._attributes[DeviceAttributes.power] = True
                     self._attributes[DeviceAttributes.mode] = value
+                    temperature_limit_updates = (
+                        self._refresh_temperature_limits_after_mode_change(
+                            previous_mode,
+                            value,
+                        )
+                    )
         if message is not None:
             self.build_send(message)
+            if temperature_limit_updates:
+                self.update_all(temperature_limit_updates)
             if aux_heat_cache_sync and isinstance(
                 message,
                 MessageSubProtocolSet | StateSet,

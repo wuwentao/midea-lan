@@ -153,6 +153,12 @@ class TestMideaACDevice:
         device._attributes[DeviceAttributes.max_temperature] = 28.0
         assert device.target_temperature_from_display(82) == 28.0
 
+        # A reported/customized range that does not overlap the Lua profile
+        # must not push the converted value outside the vendor range.
+        device._attributes[DeviceAttributes.min_temperature] = 40.0
+        device._attributes[DeviceAttributes.max_temperature] = 45.0
+        assert device.target_temperature_from_display(68) == 20.0
+
     def test_lua_fahrenheit_fallbacks_and_model_gate(self) -> None:
         """Use arithmetic fallbacks and leave unrelated profiles unchanged."""
         device = self._make_device("00000Q15", 0)
@@ -616,6 +622,38 @@ class TestMideaACDevice:
             assert message.power is True
             assert message.dry is False
             assert message.fan_speed == 102
+
+    def test_set_attribute_mode_change_refreshes_temperature_limits(self) -> None:
+        """Refresh mode-dependent limits before a follow-up temperature write."""
+        self.device._attributes[DeviceAttributes.mode] = 2  # cool
+        self.device._capabilities["temperature"] = {
+            "cool": {"min": 16, "max": 30},
+            "heat": {"min": 20, "max": 26},
+        }
+        self.device._refresh_temperature_limits()
+        assert self.device.attributes[DeviceAttributes.min_temperature] == 16
+        assert self.device.attributes[DeviceAttributes.max_temperature] == 30
+
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(DeviceAttributes.mode.value, 4)
+
+        assert self.device.attributes[DeviceAttributes.min_temperature] == 20
+        assert self.device.attributes[DeviceAttributes.max_temperature] == 26
+
+    def test_set_attribute_same_mode_preserves_temperature_limits(self) -> None:
+        """Do not refresh mode limits when the requested mode is unchanged."""
+        self.device._attributes[DeviceAttributes.mode] = 2
+        self.device._attributes[DeviceAttributes.min_temperature] = 17
+        self.device._attributes[DeviceAttributes.max_temperature] = 28
+        self.device._capabilities["temperature"] = {
+            "cool": {"min": 16, "max": 30},
+        }
+
+        with patch.object(self.device, "build_send"):
+            self.device.set_attribute(DeviceAttributes.mode.value, 2)
+
+        assert self.device.attributes[DeviceAttributes.min_temperature] == 17
+        assert self.device.attributes[DeviceAttributes.max_temperature] == 28
 
     def test_set_mode_then_temperature_keeps_unit_on(self) -> None:
         """A mode change followed immediately by a temperature write stays on.

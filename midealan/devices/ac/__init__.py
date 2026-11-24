@@ -236,8 +236,11 @@ AC_MODEL_CAPABILITIES = {
 NEW_PROTOCOL_TEMPERATURE_MODELS = frozenset({"22013279"})
 
 # These AC Lua profiles use lookup tables instead of arithmetic conversion for
-# target temperatures when their Fahrenheit flag is active. The identifiers
-# are the model/SN8 variants from the corresponding midea-lua filenames.
+# target temperatures when their Fahrenheit flag is active. Match only the
+# device model/SN8 field; the following filename component is a version/date,
+# not an AC subtype. T_0000_AC_24.lua has no model field, so it stays disabled
+# until an issue identifies a matching device:
+# https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_24.lua
 _LUA_FAHRENHEIT_MIN_CELSIUS = {
     "00000Q11": 10.0,
     "00000Q13": 10.0,
@@ -250,7 +253,6 @@ _LUA_FAHRENHEIT_MIN_CELSIUS = {
     "00000Q1C": 10.0,
     "00000Q1E": 10.0,
     "00000Q1F": 10.0,
-    "24": 16.0,
     "20601026": 8.0,
 }
 _LUA_FAHRENHEIT_MAX_CELSIUS = 31.5

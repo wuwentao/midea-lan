@@ -122,7 +122,6 @@ class TestMideaACDevice:
             "00000Q1C",
             "00000Q1E",
             "00000Q1F",
-            "24",
             "20601026",
         ],
     )
@@ -166,13 +165,22 @@ class TestMideaACDevice:
         assert device.target_temperature_for_display(32.0) == pytest.approx(89.6)
         assert device.target_temperature_from_display(100) == 31.5
 
-        short_profile = self._make_device("24", 0)
-        short_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
-        assert short_profile.target_temperature_from_display(54) == 16.0
+        # T_0000_AC_24.lua has no model/SN8 field and must not enable a lookup.
+        variant_only_profile = self._make_device("24", 0)
+        variant_only_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert not variant_only_profile.uses_fahrenheit_setpoint
+        assert variant_only_profile.target_temperature_from_display(54) == 54
 
         extended_profile = self._make_device("20601026", 0)
         extended_profile._attributes[DeviceAttributes.temp_fahrenheit] = True
         assert extended_profile.target_temperature_from_display(46) == 8.0
+
+        # Filename suffixes are Lua versions, not subtypes; the model alone
+        # gates this behavior.
+        other_subtype = self._make_device("00000Q15", 1234)
+        other_subtype._attributes[DeviceAttributes.temp_fahrenheit] = True
+        assert other_subtype.uses_fahrenheit_setpoint
+        assert other_subtype.target_temperature_from_display(65) == 18.5
 
         device._attributes[DeviceAttributes.temp_fahrenheit] = False
         assert not device.uses_fahrenheit_setpoint

@@ -561,30 +561,29 @@ Follow the repository conventions (see
 - **Lua availability**: if the required Lua is not already in `midea-lua`, follow
   that repository's README to download it and submit it there first. Link that PR
   from the `midea-lan` PR.
-- **Home Assistant PR**: open the matching `midea_ac_lan` PR at the same time and
-  link it back to the current PR. While this library PR is unmerged, that PR may
-  point `custom_components/midea_ac_lan/manifest.json` at your fork/branch so its
+- **Home Assistant PR**: open the matching `midea_ac_lan` integration PR at the same time and
+  link it back to the current `midea-lan` lib PR. While this lib PR is unmerged,
+  the integration PR may point the `midea-lan` requirement in
+  `custom_components/midea_ac_lan/manifest.json` at your fork/branch so its
   CI and end-to-end tests use the unreleased code. The integration CI and local
   setup install runtime requirements directly from that manifest; its
   `pyproject.toml` and `uv.lock` contain development/test dependencies only and
   must not include `midea-lan`. After this PR merges, switch only the manifest to
   `wuwentao/midea-lan@main`; if they already use upstream `main`, leave them
   unchanged. The integration PR may merge only with upstream `main` or a released
-  version, never your fork/branch. Do not change this repository's `uv.lock` for
+  version; it must not retain your fork/branch. Do not change this repository's `uv.lock` for
   the integration dependency. Link any related `midea_ac_lan` issue regardless
   of the change type, or explain why none applies.
 - **CodeRabbit**: the AI reviewer skips draft PRs. To get a review on a draft,
   comment `@coderabbitai review`. Address every finding and reply in-thread
   documenting the fix and the covering test, then resolve the conversation.
 
-Merging the PR does not publish an immediate library release, but the integration
-PR does not need to wait for one: validate against the fork/branch before merge
-and upstream `main` afterward. Before publishing `midea_ac_lan`, maintainers first
-confirm a released library version contains the required changes and replace
-upstream `main` in its manifest with that version in a separate PR. They then run
-the integration's Manual Release workflow with the target integration version;
-it opens a changelog/manifest-version PR. Merging that PR triggers tag and GitHub
-Release creation, followed by the integration zip build and upload.
+Merging the lib PR does not publish an immediate library release, but the
+corresponding integration PR does not need to wait for one: validate against the
+fork/branch before the lib PR merges and upstream `main` afterward. Maintainers
+periodically publish `midea-lan` and `midea_ac_lan` based on merged PRs: they
+generate the changelog, update the integration manifest to a released library
+version containing the required changes, and publish the integration release.
 
 Reference worked examples to model your PR on:
 
@@ -868,7 +867,7 @@ for the matching D9 integration.
 - [ ] Related `midea_ac_lan` issue and matching PR linked; while this PR is
       unmerged, its manifest may use the fork/branch for CI.
 - [ ] Before the integration PR merges, its manifest uses `wuwentao/midea-lan@main`
-      or a released version, never a contributor fork/branch.
+      or a released version; it must not retain a contributor fork/branch.
 - [ ] (If exposing in HA) `midea_ac_lan` device entry, translations, docs, and
     README updated.
 </content>

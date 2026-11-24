@@ -521,23 +521,22 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
 - **Lua 收录**：如果所需 Lua 尚未收录到 `midea-lua`，请按照该仓库 README 下载并
   先向该仓库提交 PR，然后在 `midea-lan` PR 中链接它。
 - **Home Assistant PR**：同时提交对应的 `midea_ac_lan` PR，并在其中链接当前 PR。
-  当前库 PR 尚未合并时，集成 PR 可以把
+  当前 `midea-lan` lib PR 尚未合并时，对应的 `midea_ac_lan` 集成 PR 可以把
   `custom_components/midea_ac_lan/manifest.json` 指向你的 fork/分支，让 CI 和
   端到端测试使用尚未发布的代码。集成仓库的 CI 与本地开发环境直接从 manifest 安装
   运行时依赖；其 `pyproject.toml` 与 `uv.lock` 只包含开发和测试依赖，不包含
   `midea-lan`。当前 PR 合并后，只需将 manifest 切换到 `wuwentao/midea-lan@main`；如果
   已经指向上游 `main`，则保持不变。集成 PR 只能在
-  依赖指向上游 `main` 或正式发布版本时合并，绝不能保留你的 fork/分支。不区分改动
+  依赖指向上游 `main` 或正式发布版本时合并，不能保留贡献者fork分支。不区分改动
   类型，应链接任何相关的 `midea_ac_lan` Issue；不适用时请说明原因。
 - **CodeRabbit**：该 AI 评审会跳过草稿 PR。要让草稿获得评审，评论
   `@coderabbitai review`。逐条处理所有意见，并在对应线程中回复，说明修复方式与
   覆盖它的测试，然后 resolve 对话。
 
-PR 合并后不会立即发布库版本，但集成 PR 无需等待：合并前基于 fork/分支验证，库 PR
-合并后基于上游 `main` 验证即可。发布 `midea_ac_lan` 前，维护者先确认正式发布的库版本
-已包含所需改动，并通过独立 PR 把 manifest 中的上游 `main` 替换为该版本；然后手工触发
-集成仓库的 Manual Release workflow 并输入集成版本号。该 workflow 会生成 changelog、更新
-manifest 版本并创建 PR；合并后会自动打 tag、创建 GitHub Release、构建 zip 并上传。
+lib PR 合并后不会立即发布库版本，但对应的集成 PR 无需等待：合并前基于 fork/分支验证，
+合并后基于上游 `main` 验证即可。维护者会根据已合并的 PR 定期发布 `midea-lan` 和
+`midea_ac_lan`：生成 changelog，将集成 manifest 更新为包含所需库改动的正式版本，并发布
+集成 release。
 
 可参照的范例 PR：
 
@@ -798,6 +797,6 @@ D9 对应的集成参见
 - [ ] 链接相关的 `midea_ac_lan` Issue 和对应 PR；当前库 PR 尚未合并时，其 manifest
       可使用 fork/分支运行 CI。
 - [ ] 集成 PR 合并前，其 manifest 使用 `wuwentao/midea-lan@main` 或正式发布版本，
-      绝不保留贡献者 fork/分支。
+      不能保留贡献者fork分支。
 - [ ] （若在 HA 中暴露）更新 `midea_ac_lan` 的设备条目、翻译、文档与 README。
 </content>

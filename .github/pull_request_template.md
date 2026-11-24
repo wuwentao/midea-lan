@@ -10,18 +10,20 @@
 
 <!--
 For changes that affect Home Assistant behavior or device support, open the
-midea_ac_lan PR at the same time and link it back to this PR. While this library
-PR is unmerged, that integration PR may point only manifest.json at this
-fork/branch so its feature and CI can be verified. The integration manifest is
+midea_ac_lan integration PR at the same time and link it back to this lib PR.
+While this library PR is unmerged, that integration PR may point the midea-lan
+requirement in manifest.json at this fork/branch so its feature and CI can be verified. The integration manifest is
 the sole runtime dependency source; its CI and local setup install from it.
 `pyproject.toml` and `uv.lock` in the integration repository contain only
-development/test dependencies and must not include this library. After this PR
-merges, the integration PR must switch its manifest to
+development/test dependencies and must not include this library. After this lib
+PR merges, the integration PR must switch its manifest to
 "midea-lan@git+https://github.com/wuwentao/midea-lan.git@main" unless it already
 uses upstream main. It may merge only when the manifest references upstream main
-or a released midea-lan version, never a contributor fork/branch. Before an
-integration release, maintainers replace upstream main in the manifest with a
-released library version containing the merged changes.
+or a released midea-lan version; it must not retain a contributor fork/branch.
+Library PR merge does not trigger an immediate release, and the integration PR
+does not need to wait for one. Maintainers periodically publish midea-lan and
+then midea_ac_lan based on merged PRs, generating the changelog and updating the
+integration manifest to the released library version containing the merged changes.
 -->
 
 ## Protocol source
@@ -53,7 +55,6 @@ before merge.
 - [ ] I linked the device Lua protocol in [`midea-lua`](https://github.com/wuwentao/midea-lua), or explained why no protocol source applies.
 - [ ] I linked the related [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, or explained why none applies.
 - [ ] I opened and linked the matching [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) PR, or explained why none applies.
-- [ ] I verified the matching integration PR will use `wuwentao/midea-lan@main` or a released version, not a contributor fork/branch, before it merges.
 
 ## Release note
 

@@ -273,17 +273,17 @@ guide for the full workflow and per-OS uv install instructions.
 
 Pull requests use the repository template to record protocol sources, related issues,
 tests, 100% patch coverage, and CodeRabbit review resolution. The integration manifest
-is the sole source of its `midea-lan` runtime requirement; CI and
-local setup install from `manifest.json`, while its `pyproject.toml` and `uv.lock` contain
-development/test dependencies only. Before this library PR merges, the integration
-manifest may point at the contributor fork/branch for CI and end-to-end testing. After
-the library PR merges, switch only the manifest to `wuwentao/midea-lan@main` unless it
-already points there. The integration PR may merge only when its manifest uses upstream
-`main` or a released version, never a contributor fork. This avoids waiting for a library
-release. Before publishing the integration, maintainers confirm a released library version
-contains the merged changes and update the manifest to that version in a PR. The Manual
-Release workflow accepts the integration version and opens a changelog/version PR;
-merging it triggers tag/GitHub Release creation, followed by zip build and upload.
+is the sole source of its `midea-lan` runtime requirement; CI and local setup install
+from `manifest.json`, while its `pyproject.toml` and `uv.lock` contain development/test
+dependencies only. Before this `midea-lan` lib PR merges, the corresponding
+`midea_ac_lan` integration PR may point the `midea-lan` requirement in its manifest at
+the contributor fork/branch for CI and end-to-end testing. After the lib PR merges,
+switch only the integration manifest to `wuwentao/midea-lan@main` unless it already
+points there. The integration PR may merge only when its manifest uses upstream `main`
+or a released version; it must not retain a contributor fork/branch. This avoids waiting
+for a library release. Maintainers periodically publish `midea-lan` and `midea_ac_lan`
+based on merged PRs: they generate the changelog, update the integration manifest to
+the released library version containing the merged changes, and publish the integration release.
 
 ### Adding a new device
 

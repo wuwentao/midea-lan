@@ -12,12 +12,17 @@
 For changes that affect Home Assistant behavior or device support, open the
 midea_ac_lan PR at the same time and link it back to this PR. While this library
 PR is unmerged, that integration PR may point manifest.json at this fork/branch
-so its feature and CI can be verified. After this PR merges, the integration PR
-must switch to "midea-lan @ git+https://github.com/wuwentao/midea-lan.git@main"
-unless it already uses upstream main. The integration PR may merge only when its
-requirement references upstream main or a released midea-lan version, never a
-contributor fork/branch. Integration release maintainers later replace upstream
-main with the latest released library version.
+so its feature and CI can be verified. Its lint/type-check CI also installs this
+dependency from the integration repository's `pyproject.toml` with
+`uv sync --locked`, so that file and its `uv.lock` must use the same fork/ref.
+After this PR merges, the integration PR must switch all three dependency
+declarations to "midea-lan@git+https://github.com/wuwentao/midea-lan.git@main"
+unless they already use upstream main. The integration PR may merge only when
+its manifest, `pyproject.toml`, and `uv.lock` reference upstream main or a
+released midea-lan version, never a contributor fork/branch. Do not change this
+repository's `uv.lock` for the integration dependency. Integration release
+maintainers later replace upstream main with a released library version that
+contains the merged changes.
 -->
 
 ## Protocol source
@@ -56,5 +61,6 @@ before merge.
 Merging this PR does not trigger an immediate library release. The matching
 `midea_ac_lan` PR can validate against this fork/branch before merge and upstream
 `main` afterward, so it does not need to wait for a release. Maintainers
-periodically publish `midea-lan`; when publishing the integration, they replace
-its upstream-main requirement with the latest released library version.
+periodically publish `midea-lan`; when publishing the integration, they first
+confirm a released library version contains the merged changes, then replace
+its upstream-main requirement with that version.

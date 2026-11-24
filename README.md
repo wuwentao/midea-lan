@@ -275,11 +275,14 @@ Pull requests use the repository template to record protocol sources, related is
 tests, 100% patch coverage, and CodeRabbit review resolution. Changes that affect the
 Home Assistant integration should include a linked `midea_ac_lan` pull request. While
 the library PR is unmerged, that integration PR may point `manifest.json` at the
-contributor fork/branch for CI and end-to-end testing. After the library PR merges, it
-must use `wuwentao/midea-lan@main` (unless it already does), and it may merge only with
+contributor fork/branch for CI and end-to-end testing. The integration repository's
+lint/type-check CI also reads `pyproject.toml` with `uv sync --locked`, so its dependency
+and `uv.lock` must use the same fork/ref. After the library PR merges, all three must use
+`wuwentao/midea-lan@main` (unless they already do), and the integration may merge only with
 upstream `main` or a released version. This avoids waiting for a library release.
 Maintainers periodically publish `midea-lan`; when releasing the integration, they
-replace upstream `main` with the latest released version.
+first confirm a released library version contains the merged changes, then replace
+upstream `main` with that version.
 
 ### Adding a new device
 

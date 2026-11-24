@@ -100,14 +100,20 @@ user-facing harnesses.
   behavior or device support; explain when no integration PR is needed. While
   the library PR is unmerged, the integration PR may point its `manifest.json`
   requirement at the contributor fork/branch for CI and end-to-end testing.
-  After the library PR merges, the integration PR must use
-  `wuwentao/midea-lan@main` unless it already does. Before the integration PR
-  merges, its requirement must reference upstream `main` or a released version,
-  never a contributor fork/branch.
+  The integration repository's lint/type-check CI also reads its own
+  `pyproject.toml` with `uv sync --locked`, so the matching integration PR must
+  update that dependency and its `uv.lock` to the same fork/ref. After the
+  library PR merges, the integration PR must use `wuwentao/midea-lan@main`
+  unless it already does. Before the integration PR merges, its manifest,
+  `pyproject.toml`, and `uv.lock` must reference upstream `main` or a released
+  version, never a contributor fork/branch. The library repository's own
+  `uv.lock` must remain independent; it does not encode the integration's
+  runtime dependency.
 - A merge does not trigger an immediate library release, and the integration PR
   does not need to wait for one. Maintainers publish `midea-lan` periodically;
-  when publishing `midea_ac_lan`, they replace its upstream-main requirement with
-  the latest released library version.
+  when publishing `midea_ac_lan`, they first confirm a released library version
+  contains the merged changes, then replace its upstream-main requirement with
+  that version.
 - After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
   automatic CodeRabbit review. Address each actionable comment, reply in its
   thread with the fix and test evidence, and resolve the conversation before merge.

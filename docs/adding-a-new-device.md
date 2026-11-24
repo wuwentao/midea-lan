@@ -564,11 +564,15 @@ Follow the repository conventions (see
 - **Home Assistant PR**: open the matching `midea_ac_lan` PR at the same time and
   link it back to the current PR. While this library PR is unmerged, that PR may
   point `custom_components/midea_ac_lan/manifest.json` at your fork/branch so its
-  CI and end-to-end tests use the unreleased code. After this PR merges, switch
-  the integration requirement to `wuwentao/midea-lan@main`; if it already uses
-  upstream `main`, leave it unchanged. The integration PR may merge only with
-  upstream `main` or a released version, never your fork/branch. Link any related
-  `midea_ac_lan` issue regardless of the change type, or explain why none applies.
+  CI and end-to-end tests use the unreleased code. Its lint/type-check CI also
+  reads the integration repository's `pyproject.toml` with `uv sync --locked`,
+  so update that dependency and `uv.lock` to the same fork/ref. After this PR
+  merges, switch all integration dependency declarations to
+  `wuwentao/midea-lan@main`; if they already use upstream `main`, leave them
+  unchanged. The integration PR may merge only with upstream `main` or a released
+  version, never your fork/branch. Do not change this repository's `uv.lock` for
+  the integration dependency. Link any related `midea_ac_lan` issue regardless
+  of the change type, or explain why none applies.
 - **CodeRabbit**: the AI reviewer skips draft PRs. To get a review on a draft,
   comment `@coderabbitai review`. Address every finding and reply in-thread
   documenting the fix and the covering test, then resolve the conversation.
@@ -576,8 +580,8 @@ Follow the repository conventions (see
 Merging the PR does not publish an immediate library release, but the integration
 PR does not need to wait for one: validate against the fork/branch before merge
 and upstream `main` afterward. Maintainers publish `midea-lan` periodically;
-when releasing `midea_ac_lan`, they replace upstream `main` with the latest
-released library version.
+when releasing `midea_ac_lan`, they first confirm a released library version
+contains the merged changes, then replace upstream `main` with that version.
 
 Reference worked examples to model your PR on:
 

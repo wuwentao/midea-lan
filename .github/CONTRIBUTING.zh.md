@@ -181,10 +181,13 @@ export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral
    - 改动会影响 Home Assistant 行为或设备支持时，PR 应链接对应的
      `midea_ac_lan` PR；如果不需要，请说明原因。库 PR 尚未合并时，集成 PR 可以把
      `custom_components/midea_ac_lan/manifest.json` 指向贡献者的 fork 与分支/提交，
-     以便运行集成 CI 和端到端测试。库 PR 合并后，将依赖改为
-     `midea-lan @ git+https://github.com/wuwentao/midea-lan.git@main`；如果已经指向
+     以便运行集成 CI 和端到端测试。集成仓库的 lint/type-check CI 会通过其
+     `pyproject.toml` 和 `uv sync --locked` 安装 `midea-lan`，因此测试尚未发布的代码时，
+     还要把该依赖和 `uv.lock` 指向相同的 fork/ref。库 PR 合并后，将集成侧所有依赖声明改为
+     `midea-lan@git+https://github.com/wuwentao/midea-lan.git@main`；如果已经指向
      上游 `main`，则无需修改。集成 PR 合并前，依赖必须是上游 `main` 或正式发布的
-     `midea-lan` 版本，绝不能保留贡献者 fork/分支。
+     `midea-lan` 版本，绝不能保留贡献者 fork/分支。不要修改本仓库的 `uv.lock` 来承载集成
+     依赖；它与集成仓库的运行时锁定无关。
 
 6. GitHub Actions 执行完毕后，确认 Codecov 增量覆盖率为 100%。等待 CodeRabbit
    自动评审（若未触发则评论 `@coderabbitai review`）。逐条修复可执行的意见，
@@ -192,7 +195,8 @@ export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral
 
 PR 合并后不会立即发布库版本。集成 PR 可以在合并前基于 fork/分支验证，在库 PR
 合并后基于上游 `main` 验证，因此无需等待发布。维护者会定期发布 `midea-lan`；发布
-`midea_ac_lan` 时，再通过独立 PR 把上游 `main` 替换为最新发布的库版本。
+`midea_ac_lan` 时，维护者先确认正式发布的库版本已包含合并后的改动，再通过独立 PR
+把上游 `main` 替换为该版本。
 
 ---
 

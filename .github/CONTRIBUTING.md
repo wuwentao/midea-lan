@@ -187,12 +187,16 @@ persist these in your shell profile.
      Home Assistant behavior or device support. Otherwise, explain why none is
      needed. While the library PR is unmerged, the integration PR may point
      `custom_components/midea_ac_lan/manifest.json` at the contributor fork and
-     branch/commit so integration CI and end-to-end tests can run. After the
-     library PR merges, change that requirement to
-     `midea-lan @ git+https://github.com/wuwentao/midea-lan.git@main`, unless it
+     branch/commit so integration CI and end-to-end tests can run. The integration
+     repository's lint/type-check CI installs `midea-lan` from its `pyproject.toml`
+     with `uv sync --locked`, so update that dependency and its `uv.lock` to the
+     same fork/ref while testing unreleased code. After the library PR merges,
+     change all integration dependency declarations to
+     `midea-lan@git+https://github.com/wuwentao/midea-lan.git@main`, unless it
      already uses upstream `main`. Before the integration PR merges, it must use
      upstream `main` or a released `midea-lan` version, never a contributor
-     fork/branch.
+     fork/branch. Do not update this repository's `uv.lock` for the integration
+     dependency; it is independent of the integration project's runtime lock.
 
 6. After GitHub Actions finish, confirm that Codecov reports 100% patch coverage.
    Wait for the automatic CodeRabbit review (or comment `@coderabbitai review` if
@@ -202,8 +206,9 @@ persist these in your shell profile.
 Merging a PR does not publish an immediate library release. The integration PR
 can validate against the fork/branch before merge and upstream `main` afterward,
 so it need not wait for a release. Maintainers publish `midea-lan` periodically;
-when releasing `midea_ac_lan`, they replace its upstream-main requirement with
-the latest released library version in a separate PR.
+when releasing `midea_ac_lan`, they first confirm a released library version
+contains the merged changes, then replace upstream `main` with that version in
+a separate PR.
 
 ---
 

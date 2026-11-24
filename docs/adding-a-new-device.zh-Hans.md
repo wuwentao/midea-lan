@@ -523,8 +523,10 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
 - **Home Assistant PR**：同时提交对应的 `midea_ac_lan` PR，并在其中链接当前 PR。
   当前库 PR 尚未合并时，集成 PR 可以把
   `custom_components/midea_ac_lan/manifest.json` 指向你的 fork/分支，让 CI 和
-  端到端测试使用尚未发布的代码。当前 PR 合并后，把集成依赖切换到
-  `wuwentao/midea-lan@main`；如果已经指向上游 `main`，则保持不变。集成 PR 只能在
+  端到端测试使用尚未发布的代码。集成仓库的 lint/type-check CI 还会通过其
+  `pyproject.toml` 和 `uv sync --locked` 安装库，因此也要把该依赖和 `uv.lock` 指向相同
+  的 fork/ref。当前 PR 合并后，把集成侧三处依赖切换到 `wuwentao/midea-lan@main`；如果
+  已经指向上游 `main`，则保持不变。集成 PR 只能在
   依赖指向上游 `main` 或正式发布版本时合并，绝不能保留你的 fork/分支。不区分改动
   类型，应链接任何相关的 `midea_ac_lan` Issue；不适用时请说明原因。
 - **CodeRabbit**：该 AI 评审会跳过草稿 PR。要让草稿获得评审，评论
@@ -533,7 +535,7 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
 
 PR 合并后不会立即发布库版本，但集成 PR 无需等待：合并前基于 fork/分支验证，库 PR
 合并后基于上游 `main` 验证即可。维护者会定期发布 `midea-lan`；发布
-`midea_ac_lan` 时，再把上游 `main` 替换为最新发布的库版本。
+`midea_ac_lan` 时，先确认正式发布的库版本已包含合并后的改动，再把上游 `main` 替换为该版本。
 
 可参照的范例 PR：
 

@@ -571,7 +571,8 @@ Follow the repository conventions (see
   must not include `midea-lan`. After this PR merges, switch only the manifest to
   `wuwentao/midea-lan@main`; if they already use upstream `main`, leave them
   unchanged. The integration PR may merge only with upstream `main` or a released
-  version; it must not retain your fork/branch. Do not change this repository's `uv.lock` for
+  version containing the library changes this integration PR depends on; it must
+  not retain your fork/branch. Do not change this repository's `uv.lock` for
   the integration dependency. Link any related `midea_ac_lan` issue regardless
   of the change type, or explain why none applies.
 - **CodeRabbit**: the AI reviewer skips draft PRs. To get a review on a draft,
@@ -867,7 +868,8 @@ for the matching D9 integration.
 - [ ] Related `midea_ac_lan` issue and matching PR linked; while this PR is
       unmerged, its manifest may use the fork/branch for CI.
 - [ ] Before the integration PR merges, its manifest uses `wuwentao/midea-lan@main`
-      or a released version; it must not retain a contributor fork/branch.
+      or a released version containing all required library changes; it must not
+      retain a contributor fork/branch.
 - [ ] (If exposing in HA) `midea_ac_lan` device entry, translations, docs, and
     README updated.
 </content>

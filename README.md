@@ -280,7 +280,8 @@ dependencies only. Before this `midea-lan` lib PR merges, the corresponding
 the contributor fork/branch for CI and end-to-end testing. After the lib PR merges,
 switch only the integration manifest to `wuwentao/midea-lan@main` unless it already
 points there. The integration PR may merge only when its manifest uses upstream `main`
-or a released version; it must not retain a contributor fork/branch. This avoids waiting
+or a released version containing all library changes it depends on; it must not
+retain a contributor fork/branch. This avoids waiting
 for a library release. Maintainers periodically publish `midea-lan` and `midea_ac_lan`
 based on merged PRs: they generate the changelog, update the integration manifest to
 the released library version containing the merged changes, and publish the integration release.

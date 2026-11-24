@@ -186,8 +186,8 @@ export UV_PYTHON_INSTALL_MIRROR="https://mirror.nju.edu.cn/github-release/astral
      运行时依赖；其 `pyproject.toml` 与 `uv.lock` 只包含开发和测试依赖，不包含
      `midea-lan`。库 PR 合并后，只需将集成侧 manifest 依赖改为
      `midea-lan@git+https://github.com/wuwentao/midea-lan.git@main`；如果已经指向
-     上游 `main`，则无需修改。集成 PR 合并前，依赖必须是上游 `main` 或正式发布的
-     `midea-lan` 版本，不能保留贡献者fork分支。不要修改本仓库的 `uv.lock` 来承载集成
+     上游 `main`，则无需修改。集成 PR 合并前，依赖必须是上游 `main`，或包含集成 PR
+     所依赖全部库改动的正式发布 `midea-lan` 版本，不能保留贡献者fork分支。不要修改本仓库的 `uv.lock` 来承载集成
      依赖；它与集成仓库的运行时锁定无关。
 
 6. GitHub Actions 执行完毕后，确认 Codecov 增量覆盖率为 100%。等待 CodeRabbit

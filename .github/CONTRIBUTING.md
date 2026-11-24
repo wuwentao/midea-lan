@@ -195,8 +195,9 @@ persist these in your shell profile.
      change only the integration manifest requirement to
      `midea-lan@git+https://github.com/wuwentao/midea-lan.git@main`, unless it
      already uses upstream `main`. Before the integration PR merges, it must use
-     upstream `main` or a released `midea-lan` version; it must not retain a
-     contributor fork/branch. Do not update this repository's `uv.lock` for the integration
+     upstream `main` or a released `midea-lan` version that contains all library
+     changes the integration PR depends on; it must not retain a contributor
+     fork/branch. Do not update this repository's `uv.lock` for the integration
      dependency; it is independent of the integration project's runtime lock.
 
 6. After GitHub Actions finish, confirm that Codecov reports 100% patch coverage.

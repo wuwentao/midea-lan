@@ -107,7 +107,8 @@ user-facing harnesses.
   `midea-lan`. After the library PR merges, the integration PR switches only
   its manifest to `wuwentao/midea-lan@main` unless it already does. Before the
   integration PR merges, its manifest must reference upstream `main` or a
-  released version; it must not retain a contributor fork/branch. The library repository's
+  released version containing all library changes it depends on; it must not
+  retain a contributor fork/branch. The library repository's
   own `uv.lock` remains independent of the integration requirement.
 - A merge does not trigger an immediate library release, and the integration PR
   does not need to wait for one. Maintainers periodically publish `midea-lan`

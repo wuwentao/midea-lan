@@ -264,8 +264,7 @@ cd midea-lan
 和端到端测试。集成仓库的 CI 与本地开发环境直接从 `manifest.json` 安装运行时依赖；其
 `pyproject.toml` 与 `uv.lock` 只包含开发和测试依赖，不包含 `midea-lan`。库 PR 合并后，只需
 将 manifest 改为 `wuwentao/midea-lan@main`（若已指向则无需修改）。集成 PR 只能在 manifest
-指向上游 `main` 或正式发布版本时合并，因此无需等待库发布。lib PR 合并后不会立即发布库版本，集成 PR 可切换到上游 `main` 继续验证。发布集成前，维护者先确认某个
-库 PR 合并后不会立即发布库版本，但集成 PR 无需等待：将 manifest 切换到上游 `main` 后即可继续验证。维护者会根据已合并的 PR 定期发布集成版本：生成 changelog，将 manifest 中的 `midea-lan` 更新为包含所需库改动的正式发布版本，并发布 `midea_ac_lan` release。
+指向上游 `main` 或包含集成 PR 所依赖全部库改动的正式发布版本时才能合并，因此无需等待库发布。lib PR 合并后不会立即发布库版本，但集成 PR 无需等待：将 manifest 切换到上游 `main` 后即可继续验证。维护者会根据已合并的 PR 定期发布集成版本：生成 changelog，将 manifest 中的 `midea-lan` 更新为包含所需库改动的正式发布版本，并发布 `midea_ac_lan` release。
 
 ### 新增设备支持
 

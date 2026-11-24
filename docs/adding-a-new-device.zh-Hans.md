@@ -527,7 +527,7 @@ CI 会在多 OS/Python 矩阵（Python 3.12–3.14）上运行完整的 `prek` �
   运行时依赖；其 `pyproject.toml` 与 `uv.lock` 只包含开发和测试依赖，不包含
   `midea-lan`。当前 PR 合并后，只需将 manifest 切换到 `wuwentao/midea-lan@main`；如果
   已经指向上游 `main`，则保持不变。集成 PR 只能在
-  依赖指向上游 `main` 或正式发布版本时合并，不能保留贡献者fork分支。不区分改动
+  依赖指向上游 `main` 或包含所需全部库改动的正式发布版本时合并，不能保留贡献者fork分支。不区分改动
   类型，应链接任何相关的 `midea_ac_lan` Issue；不适用时请说明原因。
 - **CodeRabbit**：该 AI 评审会跳过草稿 PR。要让草稿获得评审，评论
   `@coderabbitai review`。逐条处理所有意见，并在对应线程中回复，说明修复方式与
@@ -796,7 +796,7 @@ D9 对应的集成参见
       意见并 resolve 全部对话。
 - [ ] 链接相关的 `midea_ac_lan` Issue 和对应 PR；当前库 PR 尚未合并时，其 manifest
       可使用 fork/分支运行 CI。
-- [ ] 集成 PR 合并前，其 manifest 使用 `wuwentao/midea-lan@main` 或正式发布版本，
-      不能保留贡献者fork分支。
+- [ ] 集成 PR 合并前，其 manifest 使用 `wuwentao/midea-lan@main` 或包含所需全部库改动的
+      正式发布版本，不能保留贡献者fork分支。
 - [ ] （若在 HA 中暴露）更新 `midea_ac_lan` 的设备条目、翻译、文档与 README。
 </content>

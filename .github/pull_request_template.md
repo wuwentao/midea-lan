@@ -19,7 +19,8 @@ development/test dependencies and must not include this library. After this lib
 PR merges, the integration PR must switch its manifest to
 "midea-lan@git+https://github.com/wuwentao/midea-lan.git@main" unless it already
 uses upstream main. It may merge only when the manifest references upstream main
-or a released midea-lan version; it must not retain a contributor fork/branch.
+or a released `midea-lan` version containing all library changes this integration
+PR depends on; it must not retain a contributor fork/branch.
 Library PR merge does not trigger an immediate release, and the integration PR
 does not need to wait for one. Maintainers periodically publish midea-lan and
 then midea_ac_lan based on merged PRs, generating the changelog and updating the

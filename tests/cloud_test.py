@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from collections.abc import Callable
 from copy import deepcopy
 from hashlib import md5, sha256
@@ -2244,6 +2245,23 @@ async def test_meiju_e1_filter_wash_time(
     }
     assert call.kwargs["headers"]["accessToken"] == "test-user-session"
     assert call.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_meiju_e1_filter_wash_time_rejects_oversized_digits() -> None:
+    """A digit string above the int limit is invalid, not a fallback value."""
+    session = DayReportTest._session(
+        {"retCode": "0", "result": {"time": "1" * 641}},
+    )
+    cloud = MeijuCloud("美的美居", session, "test-account", "test-password")
+    cloud.set_access_token("test-user-session")
+
+    previous = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    try:
+        assert await cloud.get_e1_filter_wash_time(100) is None
+    finally:
+        sys.set_int_max_str_digits(previous)
 
 
 @pytest.mark.asyncio

@@ -713,20 +713,20 @@ class MideaE1Device(MideaDevice):
 
     def _supports_dry_storage_settings(self) -> bool:
         """Whether this model's vendor protocol exposes both extra settings."""
-        verified_model, verified_subtype, _ = _DRY_STORAGE_SETTINGS_VERIFIED_DEVICE
-        return self.model in _DRY_STORAGE_SETTINGS_MODELS or (
-            self.model == verified_model and self.subtype == verified_subtype
-        )
+        return self._dry_settings_fill_end() is not None
 
-    def _dry_settings_fill_end(self) -> int:
-        """Return the model's 0xFF fill end for the dryswitch command."""
-        verified_model, _, verified_fill_end = _DRY_STORAGE_SETTINGS_VERIFIED_DEVICE
+    def _dry_settings_fill_end(self) -> int | None:
+        """Return the model's 0xFF fill end, or None for unsupported models."""
         if self.model in _DRY_STORAGE_SETTINGS_MODELS:
             return _DRY_STORAGE_SETTINGS_MODELS[self.model]
-        if self.model == verified_model:
+        (
+            verified_model,
+            verified_subtype,
+            verified_fill_end,
+        ) = _DRY_STORAGE_SETTINGS_VERIFIED_DEVICE
+        if self.model == verified_model and self.subtype == verified_subtype:
             return verified_fill_end
-        msg = f"[e1] {self.model} has no verified dryswitch fill range"
-        raise ValueWrongType(msg)
+        return None
 
     def _selected_mode(self) -> int:
         """Return the program to start: the selected one, else the reported mode."""
@@ -863,7 +863,8 @@ class MideaE1Device(MideaDevice):
         value: bool | float | str,
     ) -> None:
         """Send a supported setting without changing the last reported state."""
-        if attr not in self._attributes:
+        fill_end = self._dry_settings_fill_end()
+        if attr not in self._attributes or fill_end is None:
             msg = f"[e1] {attr} is unsupported on this model/subtype"
             raise ValueWrongType(msg)
         if attr == DeviceAttributes.dry_setting:
@@ -873,7 +874,7 @@ class MideaE1Device(MideaDevice):
                 MessageDrySetting(
                     self._message_protocol_version,
                     enabled=value,
-                    fill_end=self._dry_settings_fill_end(),
+                    fill_end=fill_end,
                 ),
             )
             return

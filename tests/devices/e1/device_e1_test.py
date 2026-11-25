@@ -782,6 +782,57 @@ class TestMideaE1Device:
         )
         assert device.get_attribute(attr) is None
 
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("76000228", 3), ("7600024L", 1), ("7600644C", 1)],
+    )
+    def test_dry_and_storage_settings_not_exposed_on_unverified_device(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Do not expose or send the model-specific controls on other units."""
+        device = self._make_device(model, subtype)
+        update = device.process_message(
+            self._message(MessageType.query, bytearray(40)),
+        )
+        with patch.object(device, "build_send") as send:
+            for attr, value in (
+                (DeviceAttributes.dry_setting, True),
+                (DeviceAttributes.storage_set_time, 48),
+            ):
+                assert attr not in device.attributes
+                assert attr not in update
+                with pytest.raises(ValueWrongType, match="unsupported"):
+                    device.set_attribute(attr, value)
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            (DeviceAttributes.dry_setting, 1),
+            (DeviceAttributes.dry_setting, "on"),
+            (DeviceAttributes.storage_set_time, True),
+            (DeviceAttributes.storage_set_time, "48"),
+            (DeviceAttributes.storage_set_time, -1),
+            (DeviceAttributes.storage_set_time, 73),
+            (DeviceAttributes.storage_set_time, 36.5),
+        ],
+    )
+    def test_invalid_dry_or_storage_settings_do_not_send(
+        self,
+        attr: DeviceAttributes,
+        value: bool | float | str,
+    ) -> None:
+        """Reject invalid types, fractions and out-of-range hours before sending."""
+        device = self._make_device("7600644C", 3)
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueWrongType, match="Expected"),
+        ):
+            device.set_attribute(attr, value)
+        send.assert_not_called()
+
     def test_set_attribute_unknown_attribute_is_noop(self) -> None:
         """Test set attribute with an unsupported attribute sends nothing."""
         with patch.object(self.device, "build_send") as mock_build_send:

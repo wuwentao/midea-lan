@@ -918,6 +918,7 @@ class SmartHomeCloud(MideaCloud):
             password=password,
             api_url=cloud_data["api_url"],
         )
+        self._configured_api_url = self._api_url
         self._auth_base = base64.b64encode(
             f"{self._app_key}:{cloud_data['iot_key']}".encode(
                 "ascii",
@@ -952,6 +953,9 @@ class SmartHomeCloud(MideaCloud):
         return await super()._api_request(endpoint, data, header)
 
     async def _re_route(self) -> None:
+        # Always resolve from the configured host. ``login`` retains the last
+        # region separately and uses it only as the final login-ID candidate.
+        self._api_url = self._configured_api_url
         # Resolve the account's regional server first. The default host can
         # only report a route for accounts it hosts, so an account homed on
         # another cluster must be looked up through the account router, which
@@ -988,8 +992,24 @@ class SmartHomeCloud(MideaCloud):
 
     async def login(self) -> bool:
         """Authenticate to MSmart Cloud."""
+        configured_url = self._configured_api_url
+        previous_url = self._api_url
         await self._re_route()
-        if login_id := await self._get_login_id():
+        candidate_urls = list(
+            dict.fromkeys((self._api_url, configured_url, previous_url)),
+        )
+        login_id: str | None = None
+        for index, api_url in enumerate(candidate_urls):
+            self._api_url = api_url
+            if login_id := await self._get_login_id():
+                break
+            if index + 1 < len(candidate_urls):
+                _LOGGER.debug(
+                    "Server %s did not return a login ID, retrying on %s",
+                    api_url,
+                    candidate_urls[index + 1],
+                )
+        if login_id:
             self._login_id = login_id
             iot_data = self._make_general_data()
             iot_data.pop("uid")

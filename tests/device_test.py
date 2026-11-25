@@ -800,6 +800,258 @@ class TestMideaDevice:
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["query"] is True
 
+    def test_set_cloud_send_factory(self) -> None:
+        """set_cloud_send_factory stores the coroutine factory."""
+        assert self.device._cloud_send_factory is None
+        factory = MagicMock()
+        self.device.set_cloud_send_factory(factory)
+        assert self.device._cloud_send_factory is factory
+
+    def test_build_send_cloud_off_loop_raises(self) -> None:
+        """Off-loop with no socket: build_send rejects the cloud send explicitly.
+
+        A device with no open socket has no stream loop either -- connect() and
+        close_socket() set and clear _reader and _stream_loop together -- so an
+        off-loop caller (e.g. set_attribute from an executor thread) has no event
+        loop to run the cloud coroutine on. build_send must raise rather than
+        create a coroutine it cannot await (the socketless cloud-only run mode is
+        a follow-up PR). The factory must never be called, so no un-awaited
+        coroutine is left behind and no command is silently dropped.
+        """
+        cmd = MagicMock()
+        cmd.serialize.return_value = bytearray([0xAA, 0x0C])
+        factory = MagicMock()
+        self.device.set_cloud_send_factory(factory)
+        # _reader is None (default) -> cloud branch; _running_loop None -> off-loop.
+        with (
+            patch("midealan.device._running_loop", return_value=None),
+            patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock,
+            pytest.raises(SocketException),
+        ):
+            self.device.build_send(cmd)
+        factory.assert_not_called()
+        dispatch_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_build_send_cloud_on_loop(self) -> None:
+        """On-loop: build_send fires a task, dispatches the reply, resolves future.
+
+        On the device event loop (the refresh_status path) a running loop exists
+        even with no socket, so the cloud send runs as a fire-and-forget task
+        that dispatches the decoded reply and resolves _cloud_reply_future -- no
+        dependency on _stream_loop (which is None without a socket).
+        """
+        cmd = MagicMock()
+        cmd.serialize.return_value = bytearray([0xAA, 0x0C])
+        reply = bytes([0xAA, 0x1E])
+        factory = AsyncMock(return_value=reply)
+        self.device.set_cloud_send_factory(factory)
+        # _reader is None (default) -> cloud path; _available is irrelevant.
+        with (
+            patch.object(self.device, "send_message") as send_mock,
+            patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock,
+        ):
+            self.device.build_send(cmd)
+            # The future must exist before we yield so _await_query_reply can
+            # pick it up synchronously.
+            future = self.device._cloud_reply_future
+            assert future is not None
+            # Yield inside the patch context so the task runs while
+            # _dispatch_decoded_message is still mocked.
+            await asyncio.sleep(0)
+            factory.assert_called_once_with(bytes([0xAA, 0x0C]))
+            dispatch_mock.assert_called_once_with(reply)
+            assert future.result() == reply
+            send_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_send_and_dispatch_reply(self) -> None:
+        """Helper dispatches a reply frame and resolves the future with it."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        reply = bytes([0xAA, 0x1E])
+
+        async def _coro() -> bytes | None:
+            return reply
+
+        with patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock:
+            await self.device._run_cloud_send_and_dispatch(_coro(), future)
+        dispatch_mock.assert_called_once_with(reply)
+        assert future.result() == reply
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_send_and_dispatch_none(self) -> None:
+        """A None reply dispatches nothing and resolves the future with None."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+
+        async def _coro() -> bytes | None:
+            return None
+
+        with patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock:
+            await self.device._run_cloud_send_and_dispatch(_coro(), future)
+        dispatch_mock.assert_not_called()
+        assert future.result() is None
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_send_and_dispatch_error(self) -> None:
+        """A sender error is swallowed, logged, and resolves the future with None.
+
+        The task is fire-and-forget: an exception must not propagate off it (it
+        would otherwise surface as an unretrieved task exception), and the
+        waiter must see the None outcome as an unanswered reply.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+
+        async def _coro() -> bytes | None:
+            error_message = "cloud boom"
+            raise RuntimeError(error_message)
+
+        with patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock:
+            await self.device._run_cloud_send_and_dispatch(_coro(), future)
+        dispatch_mock.assert_not_called()
+        assert future.result() is None
+
+    @pytest.mark.asyncio
+    async def test_run_cloud_send_and_dispatch_future_already_done(self) -> None:
+        """A reply arriving after the waiter cancelled the future is handled safely.
+
+        When a probe attempt times out, _await_query_reply cancels the future.
+        A stale task that finishes afterwards must not raise InvalidStateError
+        trying to resolve an already-done future.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        future.cancel()  # waiter already gave up (wait_for timed out)
+        reply = bytes([0xAA, 0x1E])
+
+        async def _coro() -> bytes | None:
+            return reply
+
+        with patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock:
+            # Must not raise on the already-cancelled future.
+            await self.device._run_cloud_send_and_dispatch(_coro(), future)
+        dispatch_mock.assert_called_once_with(reply)
+        assert future.cancelled()
+
+    def test_build_send_prefers_lan_when_reader_set(self) -> None:
+        """A device with an open socket uses LAN even if _available is False."""
+        cmd = MagicMock()
+        cmd.serialize.return_value = bytearray([0xAA, 0x0C])
+        factory = MagicMock()
+        self.device.set_cloud_send_factory(factory)
+        # Simulate a socket that is open but check_protocol has not finished yet.
+        self.device._reader = MagicMock()
+        self.device._available = False
+        with patch.object(self.device, "send_message") as send_mock:
+            self.device.build_send(cmd)
+        factory.assert_not_called()
+        send_mock.assert_called_once()
+
+    def test_build_send_prefers_lan_when_available(self) -> None:
+        """A LAN-reachable device with an open socket ignores the cloud factory."""
+        cmd = MagicMock()
+        cmd.serialize.return_value = bytearray([0xAA, 0x0C])
+        factory = MagicMock()
+        self.device.set_cloud_send_factory(factory)
+        # Both _reader set and _available True: unambiguously LAN-reachable.
+        self.device._reader = MagicMock()
+        self.device._available = True
+        with patch.object(self.device, "send_message") as send_mock:
+            self.device.build_send(cmd)
+        factory.assert_not_called()
+        send_mock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_await_query_reply_cloud_future_reply(self) -> None:
+        """_await_query_reply returns when the cloud future delivers a reply."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        self.device._reader = None
+        self.device._cloud_reply_future = future
+        # The dispatch task already delivered a reply before the waiter runs.
+        future.set_result(bytes([0xAA, 0x1E]))
+        # Returns normally (a real reply arrived): not SocketException/TimeoutError.
+        await self.device._await_query_reply()
+        # Future consumed; slot cleared.
+        assert self.device._cloud_reply_future is None
+
+    @pytest.mark.asyncio
+    async def test_await_query_reply_cloud_future_none_is_timeout(self) -> None:
+        """A None cloud outcome is treated as a timed-out (unanswered) reply.
+
+        A failed or answer-less cloud send resolves the future with None; the
+        waiter must raise TimeoutError so the probe records the command as
+        unsupported instead of as answered.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        self.device._reader = None
+        self.device._cloud_reply_future = future
+        # Sent, but the cloud held no synchronous answer (or the send failed).
+        future.set_result(None)
+        with pytest.raises(TimeoutError):
+            await self.device._await_query_reply()
+
+    @pytest.mark.asyncio
+    async def test_await_query_reply_cloud_future_timeout(self) -> None:
+        """_await_query_reply raises TimeoutError when the future never resolves."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        self.device._reader = None
+        self.device._cloud_reply_future = future
+        with (
+            patch("midealan.device.QUERY_TIMEOUT", 0.001),
+            pytest.raises(TimeoutError),
+        ):
+            await self.device._await_query_reply()
+        # wait_for cancels the pending future on timeout.
+        assert future.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_await_query_reply_cloud_future_already_expired(self) -> None:
+        """Cloud-future path raises TimeoutError when the deadline is already past."""
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bytes | None] = loop.create_future()
+        self.device._reader = None
+        self.device._cloud_reply_future = future
+        # Make monotonic() return a value past the deadline on the second call.
+        with patch("midealan.device.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            with pytest.raises(TimeoutError):
+                await self.device._await_query_reply()
+        # The already-expired branch cancels the future before raising.
+        assert future.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_await_query_reply_lan_deadline_already_expired(self) -> None:
+        """LAN loop raises TimeoutError when the deadline is past before the read."""
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])])
+        self.device._reader = reader
+        self.device._writer = writer
+        # First monotonic() call sets deadline; second returns a value past it.
+        with patch("midealan.device.time") as mock_time:
+            mock_time.monotonic.side_effect = [0.0, 999.0]
+            with pytest.raises(TimeoutError):
+                await self.device._await_query_reply()
+
+    @pytest.mark.asyncio
+    async def test_build_send_cloud_on_loop_no_reply(self) -> None:
+        """On-loop cloud path, None reply: future resolves None, nothing dispatched."""
+        cmd = MagicMock()
+        cmd.serialize.return_value = bytearray([0xAA, 0x0C])
+        factory = AsyncMock(return_value=None)
+        self.device.set_cloud_send_factory(factory)
+        with patch.object(self.device, "_dispatch_decoded_message") as dispatch_mock:
+            self.device.build_send(cmd)
+            future = self.device._cloud_reply_future
+            assert future is not None
+            # Run the task while the dispatch patch is still active.
+            await asyncio.sleep(0)
+            dispatch_mock.assert_not_called()
+            assert future.result() is None
+
     @pytest.mark.asyncio
     async def test_refresh_status(self) -> None:
         """Test refresh status."""

@@ -54,6 +54,10 @@ class MideaCLI:
 
     session: aiohttp.ClientSession
     namespace: Namespace
+    # The last successfully logged-in user cloud, captured during key/cert
+    # provisioning so discover() can build a cloud transparent-control fallback
+    # sender without a second login. None until a user login succeeds.
+    _cloud: MideaCloud | None = None
 
     def _has_user_credentials(self) -> bool:
         """Return whether the user supplied their own cloud account.
@@ -100,6 +104,9 @@ class MideaCLI:
                 "Failed to authenticate to the cloud. Using only default keys.",
             )
             return default_keys
+        # Login succeeded: keep this cloud so discover() can reuse it to build a
+        # cloud transparent-control fallback sender (no second login).
+        self._cloud = cloud
         cloud_keys = await cloud.get_cloud_keys(device_id)
 
         return {**cloud_keys, **default_keys}
@@ -123,6 +130,9 @@ class MideaCLI:
         if not await cloud.login():
             _LOGGER.warning("Failed to authenticate to the cloud for cert apply.")
             return None
+        # Login succeeded: keep this cloud so discover() can reuse it to build a
+        # cloud transparent-control fallback sender (no second login).
+        self._cloud = cloud
         return await cloud.apply_cert()
 
     async def discover(self) -> list[MideaDevice]:
@@ -203,6 +213,23 @@ class MideaCLI:
                     else await self._get_keys(device["device_id"])
                 )
 
+            # When the user is logged in, install a cloud transparent-control
+            # coroutine factory bound to this appliance. build_send only uses it
+            # when the LAN socket is unavailable, so LAN-reachable devices are
+            # unaffected.
+            _cloud = self._cloud
+            cloud_send_factory = (
+                (
+                    lambda frame, _id=device["device_id"], _c=_cloud: (
+                        _c.send_transparent(
+                            _id,
+                            frame,
+                        )
+                    )
+                )
+                if _cloud is not None
+                else None
+            )
             for key in keys.values():
                 dev = device_selector(
                     name=device["device_id"],
@@ -223,6 +250,7 @@ class MideaCLI:
                     serial_number=device["sn"],
                     cloud_name=getattr(self.namespace, "cloud_name", None),
                     cert_bundle=cert_bundle,
+                    cloud_send_factory=cloud_send_factory,
                 )
                 _LOGGER.debug("Opening socket for device.")
                 if await dev.connect():
@@ -693,7 +721,11 @@ class MideaCLI:
                 device_list[0].device_id,
                 device_list[0].device_type,
             )
-            device_list[0].set_attribute(
+            # set_attribute is synchronous; run it off the event loop so the
+            # cloud coro factory can bridge back via run_coroutine_threadsafe
+            # without occupying the loop thread (which would deadlock).
+            await asyncio.to_thread(
+                device_list[0].set_attribute,
                 self.namespace.attribute,
                 self._cast_attr_value(),
             )

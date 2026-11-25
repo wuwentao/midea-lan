@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from enum import IntEnum, StrEnum
 from threading import Lock
 from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
@@ -269,6 +269,42 @@ class MideaDevice:
         self._cert_bundle: CertBundle | None = None
         self._tls_enabled = False
         self._tls_codec: MSDatagram | None = None
+        # Optional cloud control fallback: when the LAN socket is unavailable
+        # (e.g. a udp_version>=4 "TLS" device whose data channel never answers),
+        # ``device_selector`` can inject a coroutine factory via
+        # ``set_cloud_send_factory``.  Calling the factory with a serialized
+        # appliance frame returns a coroutine that posts the frame to the Midea
+        # cloud transparent proxy and resolves to the decoded reply (or None).
+        # ``build_send`` schedules that coroutine on the device event loop as a
+        # fire-and-forget task; an off-loop caller with no socket has no loop to
+        # marshal onto and is rejected explicitly (the socketless cloud-only run
+        # mode is a follow-up PR, so no device reaches that path here).
+        self._cloud_send_factory: (
+            Callable[[bytes], Coroutine[Any, Any, bytes | None]] | None
+        ) = None
+        # Set by build_send (on-loop cloud path) so _await_query_reply can wait
+        # for the fire-and-forget task's outcome. The task resolves it with the
+        # decoded reply frame, or with None when the cloud held no synchronous
+        # answer or the send failed -- so _await_query_reply never mistakes an
+        # unanswered or errored send for a received probe reply.
+        self._cloud_reply_future: asyncio.Future[bytes | None] | None = None
+
+    def set_cloud_send_factory(
+        self,
+        factory: Callable[[bytes], Coroutine[Any, Any, bytes | None]] | None,
+    ) -> None:
+        """Install the cloud transparent-control coroutine factory.
+
+        ``device_selector`` calls this right after construction (next to
+        ``apply_cert_bundle``).  The factory takes one serialized appliance
+        frame and returns a coroutine that posts the frame to the Midea cloud
+        transparent proxy, resolving to the decoded reply frame (or None when
+        the cloud held no synchronous answer).
+
+        ``build_send`` uses it only as a fallback when the LAN socket is
+        unavailable, so a LAN-reachable device is completely unaffected.
+        """
+        self._cloud_send_factory = factory
 
     def apply_cert_bundle(self, cert_bundle: CertBundle | None) -> None:
         """Provision the udp_version>=4 "TLS" certificate bundle.
@@ -766,6 +802,42 @@ class MideaDevice:
         """Serialize and send."""
         data = cmd.serialize()
         _LOGGER.debug("[%s] Sending: %s, query is %s", self._device_id, cmd, query)
+        # LAN-first fallback: use cloud only when there is genuinely no open
+        # socket.  A connected device (self._reader is not None) always uses
+        # the socket paths below, regardless of self._available, so a brief
+        # window between connect() and check_protocol completing never
+        # spuriously diverts a live connection to the cloud.
+        if self._cloud_send_factory is not None and self._reader is None:
+            # Pick the loop that will run the cloud coroutine *before* creating
+            # it, so no un-awaited coroutine is left behind on any early exit.
+            # The cloud branch is only reached with no socket, and connect()/
+            # close_socket() set and clear _reader and _stream_loop together, so
+            # _stream_loop is always None here; the live event loop is whatever
+            # is running this call (refresh_status awaits build_send on the
+            # device loop). An off-loop caller (set_attribute from an executor
+            # thread) with no socket has no loop to marshal the send onto -- that
+            # socketless cloud-only run mode is a follow-up PR -- so reject it
+            # explicitly instead of dropping the command. A LAN-reachable device
+            # never enters this branch (self._reader is not None).
+            loop = _running_loop()
+            if loop is None:
+                _LOGGER.debug(
+                    "[%s] cloud send requested off the event loop with no "
+                    "socket; cloud-only control is not supported yet",
+                    self._device_id,
+                )
+                raise SocketException
+            # On the device event loop (e.g. refresh_status -> _run_refresh).
+            # Fire-and-forget: the task dispatches any reply and resolves
+            # _cloud_reply_future so _await_query_reply can wait for the cloud
+            # answer instead of immediately failing with SocketException.
+            reply_future: asyncio.Future[bytes | None] = loop.create_future()
+            self._cloud_reply_future = reply_future
+            coro = self._cloud_send_factory(bytes(data))
+            loop.create_task(
+                self._run_cloud_send_and_dispatch(coro, reply_future),
+            )
+            return
         if self._tls_enabled:
             # The TLS transport CCM-wraps the bare appliance frame directly; it
             # does not use the ``5a5a0111`` V1 transport envelope (that wrapper
@@ -774,6 +846,41 @@ class MideaDevice:
             return
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
+
+    async def _run_cloud_send_and_dispatch(
+        self,
+        coro: Coroutine[Any, Any, bytes | None],
+        reply_future: asyncio.Future[bytes | None],
+    ) -> None:
+        """Await the cloud-send coroutine, dispatch any reply, resolve the future.
+
+        Run as a fire-and-forget task by ``build_send`` on the device event
+        loop. ``reply_future`` is resolved with the decoded reply frame, or with
+        ``None`` when the cloud returned no synchronous answer or the send
+        raised, so ``_await_query_reply`` can tell a genuine reply from an
+        unanswered or failed send and never records the latter as a received
+        probe reply. The future is resolved exactly once; a resend after a probe
+        timeout installs a fresh future, and the stale task's result is dropped
+        (the future it holds is already done), so overlapping attempts cannot
+        cross-contaminate.
+        """
+        reply: bytes | None = None
+        try:
+            reply = await coro
+            if reply:
+                self._dispatch_decoded_message(reply)
+        except Exception:
+            # A cloud transport/decode error must surface to the waiter as "no
+            # reply" (handled like a LAN timeout), not propagate off the
+            # detached task where no one retrieves it.
+            _LOGGER.exception(
+                "[%s] cloud transparent send failed",
+                self._device_id,
+            )
+            reply = None
+        finally:
+            if not reply_future.done():
+                reply_future.set_result(reply)
 
     def _query_reply_ready(self, result: MessageResult) -> bool:
         """Return whether the current query's awaited reply has arrived.
@@ -797,13 +904,38 @@ class MideaDevice:
         raises ResponseException. A missing stream or a closed peer raises to
         the connect/main loop. A timeout propagates to the caller, which records
         the query as unsupported.
+
+        When no LAN socket is present but a cloud send is in flight
+        (``_cloud_reply_future`` is set), waits for that future instead of the
+        socket. The cloud dispatch task resolves it with the decoded reply, or
+        with None when the cloud held no synchronous answer or the send failed;
+        a None outcome is treated as a timed-out reply (raises TimeoutError), so
+        a failed or empty cloud send is never recorded as a received reply.
         """
         deadline = time.monotonic() + QUERY_TIMEOUT
+        # Cloud-only path: no open socket, but build_send fired a cloud task.
+        if not self._reader:
+            future = self._cloud_reply_future
+            if future is not None:
+                self._cloud_reply_future = None
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    future.cancel()
+                    raise TimeoutError
+                # wait_for cancels the future on timeout; a stale task's late
+                # result then has nowhere to land (its future is already done),
+                # so it cannot satisfy a later probe attempt waiting on a fresh
+                # future.
+                reply = await asyncio.wait_for(future, timeout=remaining)
+                if not reply:
+                    # Sent, but no synchronous answer (offline/async) or the
+                    # send failed: same signal as a LAN probe that never replied.
+                    raise TimeoutError
+                return
+            _LOGGER.debug("[%s] device socket is none", self._device_id)
+            # raise exception to connect/main loop
+            raise SocketException
         while True:
-            if not self._reader:
-                _LOGGER.debug("[%s] device socket is none", self._device_id)
-                # raise exception to connect/main loop
-                raise SocketException
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError

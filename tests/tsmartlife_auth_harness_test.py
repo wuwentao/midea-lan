@@ -273,6 +273,36 @@ class TestTSmartLifeAuthHarness(IsolatedAsyncioTestCase):
         assert urls[4] == f"{home_url}/mj/user/login"
         assert cloud._api_url == home_url
 
+    async def test_login_retains_previous_region_when_routing_fails(self) -> None:
+        """Try the previous region after routing and configured host fail."""
+        session, cloud = self._make_cloud()
+        configured_url = cloud._api_url
+        previous_url = "https://previous-route.example/"
+        cloud._api_url = previous_url
+        response = Mock()
+        response.read = AsyncMock(
+            side_effect=[
+                self.responses["cloud_invalid_response.json"],
+                self.responses["cloud_invalid_response.json"],
+                b'{"code": 3102, "msg": "account not exist"}',
+                self.responses["cloud_login_id.json"],
+                self.responses["tsmartlife_synthetic_login.json"],
+            ],
+        )
+        session.request = AsyncMock(return_value=response)
+
+        assert await cloud.login() is True
+
+        urls = [call.args[1] for call in session.request.await_args_list]
+        assert urls[0].startswith(configured_url)
+        assert urls[0].endswith("/v1/unitcenter/router/user/name")
+        assert urls[1].startswith(configured_url)
+        assert urls[1].endswith("/v1/multicloud/platform/user/route")
+        assert urls[2] == f"{configured_url}/v1/user/login/id/get"
+        assert urls[3] == f"{previous_url}/v1/user/login/id/get"
+        assert urls[4] == f"{previous_url}/mj/user/login"
+        assert cloud._api_url == previous_url
+
     # ------------------------------------------------------------------
     # Stage 3: get_cloud_keys() -- v1 (inherited, pre-fix) path
     # ------------------------------------------------------------------

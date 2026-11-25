@@ -994,20 +994,22 @@ class SmartHomeCloud(MideaCloud):
     async def login(self) -> bool:
         """Authenticate to MSmart Cloud."""
         configured_url = self._configured_api_url
+        previous_url = self._api_url
         await self._re_route()
-        login_id = await self._get_login_id()
-        if not login_id and self._api_url != configured_url:
-            # Retry the configured host when the routed request fails or the
-            # routed region does not hold this account. A TSmartLife account
-            # routed from mp-jp-prod to mp-us-prod got 3102 there and logs in
-            # on mp-jp-prod.
-            _LOGGER.debug(
-                "Routed server %s did not return a login ID, retrying on %s",
-                self._api_url,
-                configured_url,
-            )
-            self._api_url = configured_url
-            login_id = await self._get_login_id()
+        candidate_urls = list(
+            dict.fromkeys((self._api_url, configured_url, previous_url)),
+        )
+        login_id: str | None = None
+        for index, api_url in enumerate(candidate_urls):
+            self._api_url = api_url
+            if login_id := await self._get_login_id():
+                break
+            if index + 1 < len(candidate_urls):
+                _LOGGER.debug(
+                    "Server %s did not return a login ID, retrying on %s",
+                    api_url,
+                    candidate_urls[index + 1],
+                )
         if login_id:
             self._login_id = login_id
             iot_data = self._make_general_data()

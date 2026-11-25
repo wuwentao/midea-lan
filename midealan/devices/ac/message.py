@@ -760,7 +760,7 @@ class GroupSevenQuery(GroupDataQuery):
 class ToggleDisplay(MessageACBase):
     """AC message toggle display."""
 
-    def __init__(self, protocol_version: int) -> None:
+    def __init__(self, protocol_version: int, *, lua_toggle: bool = False) -> None:
         """Initialize AC message toggle display."""
         super().__init__(
             protocol_version=protocol_version,
@@ -768,13 +768,19 @@ class ToggleDisplay(MessageACBase):
             body_type=ListTypes.X41,
         )
         self.prompt_tone = False
+        self.lua_toggle = lua_toggle
 
     @property
     def _body(self) -> bytearray:
-        # Q13/Q15 Lua sends 0x61 followed by this fixed 20-byte body.
+        command = (
+            TOGGLE_DISPLAY_COMMAND
+            if self.lua_toggle
+            else 0x02 | (0x40 if self.prompt_tone else 0)
+        )
+        reserved_length = TOGGLE_DISPLAY_RESERVED_LENGTH if self.lua_toggle else 13
         return bytearray(
-            [TOGGLE_DISPLAY_COMMAND, 0x00, 0xFF, 0x02, 0x00, 0x02],
-        ) + bytearray(TOGGLE_DISPLAY_RESERVED_LENGTH)
+            [command, 0x00, 0xFF, 0x02, 0x00, 0x02],
+        ) + bytearray(reserved_length)
 
 
 # Module-level shared constants for B1 query splitting.

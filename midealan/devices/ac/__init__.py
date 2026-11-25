@@ -211,6 +211,25 @@ class ACModelCapabilities:
 
 
 DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
+# These Lua models use the dedicated 0x41/0x61 display-toggle body. Other AC
+# models retain the legacy display command until their control path is verified.
+LUA_DISPLAY_TOGGLE_MODELS = frozenset(
+    {
+        "00000Q11",
+        "00000Q13",
+        "00000Q14",
+        "00000Q15",
+        "00000Q17",
+        "00000Q18",
+        "00000Q19",
+        "00000Q1B",
+        "00000Q1C",
+        "00000Q1E",
+        "00000Q1F",
+        "20601026",
+        "24",
+    },
+)
 # These BB fields use model-specific offsets and command payloads observed on
 # exact model/subtype pairs. Keep unrelated devices hidden from attributes and
 # commands whose bytes may have a different meaning on other firmware.
@@ -1777,7 +1796,10 @@ class MideaACDevice(MideaDevice):
                 if bool(value) != bool(
                     self._attributes[DeviceAttributes.screen_display],
                 ):
-                    message = ToggleDisplay(self._message_protocol_version)
+                    message = ToggleDisplay(
+                        self._message_protocol_version,
+                        lua_toggle=str(self.model) in LUA_DISPLAY_TOGGLE_MODELS,
+                    )
                     message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
             elif self._model_capabilities.has_bb_fresh_air and attr in {
                 DeviceAttributes.fresh_air_power,

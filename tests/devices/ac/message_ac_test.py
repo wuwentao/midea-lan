@@ -224,7 +224,7 @@ class TestToggleDisplay:
 
     def test_toggle_disply_body(self) -> None:
         """Test toggle display body."""
-        msg = ToggleDisplay(protocol_version=ProtocolVersion.V1)
+        msg = ToggleDisplay(protocol_version=ProtocolVersion.V1, lua_toggle=True)
         expected_body = bytearray(
             [
                 0x41,
@@ -254,6 +254,26 @@ class TestToggleDisplay:
         msg.prompt_tone = True
         # The Q13/Q15 Lua protocol uses the same toggle frame regardless of
         # the public prompt_tone setting.
+        assert msg.body[:-2] == expected_body
+
+    def test_toggle_display_legacy_body(self) -> None:
+        """Unverified AC models retain the legacy toggle command and tone bit."""
+        msg = ToggleDisplay(protocol_version=ProtocolVersion.V1)
+        expected_body = bytearray(
+            [
+                0x41,
+                0x02,
+                0x00,
+                0xFF,
+                0x02,
+                0x00,
+                0x02,
+                *([0x00] * 13),
+            ],
+        )
+        assert msg.body[:-2] == expected_body
+        msg.prompt_tone = True
+        expected_body[1] = 0x42
         assert msg.body[:-2] == expected_body
 
 

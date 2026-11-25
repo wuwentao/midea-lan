@@ -346,6 +346,17 @@ class TestMideaACDevice:
             self.device.set_attribute(DeviceAttributes.screen_display.value, False)
             mock_build_send.assert_called_once()
             assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
+            assert mock_build_send.call_args[0][0].lua_toggle is False
+
+    def test_set_screen_display_uses_lua_frame_for_q13(self) -> None:
+        """Models with a verified Lua toggle use its dedicated body."""
+        self.device._model = "00000Q13"
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device._attributes[DeviceAttributes.screen_display] = False
+            self.device.set_attribute(DeviceAttributes.screen_display.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, ToggleDisplay)
+            assert message.lua_toggle is True
 
     def test_set_attribute_eco_mode_resets_exclusive_modes(self) -> None:
         """Test eco mode set resets comfort and frost protect on general set."""

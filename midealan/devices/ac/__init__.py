@@ -230,6 +230,17 @@ LUA_DISPLAY_TOGGLE_MODELS = frozenset(
         "24",
     },
 )
+# This exact Q1B subtype ignores both the Lua 0x41/0x61 toggle and B0 property
+# 0x0017, and its C0 display bit does not follow the physical remote. Do not
+# send controls that the appliance cannot execute.
+# https://github.com/wuwentao/midea_ac_lan/issues/1093
+UNSUPPORTED_DISPLAY_CONTROL_DEVICES = frozenset({("00000Q1B", 44204)})
+DISPLAY_CONTROL_ATTRIBUTES = frozenset(
+    {
+        DeviceAttributes.screen_display,
+        DeviceAttributes.screen_display_alternate,
+    },
+)
 # These BB fields use model-specific offsets and command payloads observed on
 # exact model/subtype pairs. Keep unrelated devices hidden from attributes and
 # commands whose bytes may have a different meaning on other firmware.
@@ -1743,6 +1754,17 @@ class MideaACDevice(MideaDevice):
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
         self.reject_toshiba_write()
+        if (
+            attr in DISPLAY_CONTROL_ATTRIBUTES
+            and self._model_key in UNSUPPORTED_DISPLAY_CONTROL_DEVICES
+        ):
+            _LOGGER.debug(
+                "[%s] Display control is unsupported by model %s subtype %s",
+                self.device_id,
+                self.model,
+                self.subtype,
+            )
+            return
         # if nat a sensor
         message: (
             ToggleDisplay

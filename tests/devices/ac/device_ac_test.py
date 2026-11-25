@@ -358,6 +358,23 @@ class TestMideaACDevice:
             assert isinstance(message, ToggleDisplay)
             assert message.lua_toggle is True
 
+    @pytest.mark.parametrize(
+        "attribute",
+        [
+            DeviceAttributes.screen_display,
+            DeviceAttributes.screen_display_alternate,
+        ],
+    )
+    def test_q1b_44204_display_control_is_unsupported(
+        self,
+        attribute: DeviceAttributes,
+    ) -> None:
+        """Ignore display writes that Q1B subtype 44204 cannot execute."""
+        self.device._model_key = ("00000Q1B", 44204)
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device.set_attribute(attribute.value, True)
+        mock_build_send.assert_not_called()
+
     def test_set_attribute_eco_mode_resets_exclusive_modes(self) -> None:
         """Test eco mode set resets comfort and frost protect on general set."""
         with patch.object(self.device, "build_send") as mock_build_send:
@@ -2101,8 +2118,11 @@ class TestMideaACDevice:
         assert b1[DeviceAttributes.screen_display_alternate.value]
         with patch.object(device, "build_send") as mock_build_send:
             device.set_attribute(DeviceAttributes.screen_display.value, True)
-            mock_build_send.assert_called_once()
-            assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
+            if model == "00000Q1B":
+                mock_build_send.assert_not_called()
+            else:
+                mock_build_send.assert_called_once()
+                assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
 
         with patch(
             "midealan.devices.ac.MessageACResponse",

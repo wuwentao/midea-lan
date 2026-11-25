@@ -228,12 +228,13 @@ class TestToggleDisplay:
         expected_body = bytearray(
             [
                 0x41,
-                0x02,
+                0x61,
                 0x00,
                 0xFF,
                 0x02,
                 0x00,
                 0x02,
+                0x00,
                 0x00,
                 0x00,
                 0x00,
@@ -251,30 +252,8 @@ class TestToggleDisplay:
         )
         assert msg.body[:-2] == expected_body
         msg.prompt_tone = True
-        expected_body = bytearray(
-            [
-                0x41,
-                0x02 | 0x40,
-                0x00,
-                0xFF,
-                0x02,
-                0x00,
-                0x02,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-            ],
-        )
+        # The Q13/Q15 Lua protocol uses the same toggle frame regardless of
+        # the public prompt_tone setting.
         assert msg.body[:-2] == expected_body
 
 

@@ -99,6 +99,8 @@ WIND_STRAIGHT_ON_VALUE = 0x01
 OUT_SILENT_OFF_VALUE = 0x00
 POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
+TOGGLE_DISPLAY_COMMAND = 0x61
+TOGGLE_DISPLAY_RESERVED_LENGTH = 14
 # Electric auxiliary heat (PTC) bit masks.
 #   - aux_heating / PTCValue: the ordinary electric aux-heat flag, byte 9 bit
 #     0x08 on both the set body and the A0/C0 status bodies. Vendor lua
@@ -769,30 +771,10 @@ class ToggleDisplay(MessageACBase):
 
     @property
     def _body(self) -> bytearray:
-        prompt_tone = 0x40 if self.prompt_tone else 0
+        # Q13/Q15 Lua sends 0x61 followed by this fixed 20-byte body.
         return bytearray(
-            [
-                0x02 | prompt_tone,
-                0x00,
-                0xFF,
-                0x02,
-                0x00,
-                0x02,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-                0x00,
-            ],
-        )
+            [TOGGLE_DISPLAY_COMMAND, 0x00, 0xFF, 0x02, 0x00, 0x02],
+        ) + bytearray(TOGGLE_DISPLAY_RESERVED_LENGTH)
 
 
 # Module-level shared constants for B1 query splitting.

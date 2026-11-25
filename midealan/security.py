@@ -69,6 +69,16 @@ class CloudSecurity:
         self._fixed_key = format(fixed_key, "x").encode("ascii") if fixed_key else None
         self._fixed_iv = format(fixed_iv, "x").encode("ascii") if fixed_iv else None
 
+    @property
+    def session_key(self) -> bytes | None:
+        """Return the per-session AES key, or ``None`` before login.
+
+        The key is set by :meth:`set_aes_keys` during login; for first-party
+        OBM accounts it doubles as the ECB key that decrypts the AP private key
+        value (MSmartPrivateKeyVerify's non-open path).
+        """
+        return getattr(self, "_aes_key", None)
+
     def sign(self, url: str, data: dict[str, Any] | str, random: str) -> str | None:  # noqa: ARG002
         """Sign cloud data."""
         msg: str = self._iot_key or ""

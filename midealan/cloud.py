@@ -953,9 +953,8 @@ class SmartHomeCloud(MideaCloud):
         return await super()._api_request(endpoint, data, header)
 
     async def _re_route(self) -> None:
-        # Always resolve from the configured host. ``_api_url`` retains the
-        # last resolved region, so reconnecting must not use a stale route as
-        # the account-router origin or as the eventual login fallback.
+        # Always resolve from the configured host. ``login`` retains the last
+        # region separately and uses it only as the final login-ID candidate.
         self._api_url = self._configured_api_url
         # Resolve the account's regional server first. The default host can
         # only report a route for accounts it hosts, so an account homed on

@@ -10,6 +10,7 @@ from midealan.device import MideaDevice, MideaDeviceInitKwargs
 from .message import (
     FD_LUA_25_AUTO_FAN_SPEED,
     FD_LUA_25_FAN_SPEEDS,
+    FD_LUA_25_LIGHT_COLORS,
     FD_LUA_25_MODE_AUTO,
     FD_LUA_25_MODE_MANUAL,
     FD_LUA_25_SCREEN_DISPLAYS,
@@ -43,6 +44,7 @@ class DeviceAttributes(StrEnum):
     screen_display = "screen_display"
     disinfect = "disinfect"
     wet_pad_dry = "wet_pad_dry"
+    light_color = "light_color"
 
 
 class MideaFDDevice(MideaDevice):
@@ -98,6 +100,7 @@ class MideaFDDevice(MideaDevice):
                 DeviceAttributes.screen_display: None,
                 DeviceAttributes.disinfect: None,
                 DeviceAttributes.wet_pad_dry: None,
+                DeviceAttributes.light_color: None,
             },
         )
         self._configure_lua_protocol(FD_LUA_PROTOCOL_DEFAULT)
@@ -108,15 +111,19 @@ class MideaFDDevice(MideaDevice):
         if lua_protocol == FD_LUA_PROTOCOL_25:
             self._speeds = FD_LUA_25_FAN_SPEEDS
             self._screen_display_values = FD_LUA_25_SCREEN_DISPLAYS
+            self._light_color_values = FD_LUA_25_LIGHT_COLORS
         elif lua_protocol == FD_LUA_PROTOCOL_2024110101:
             self._speeds = FD_LUA_2024110101_FAN_SPEEDS
             self._screen_display_values = FD_LUA_2024110101_SCREEN_DISPLAYS
+            self._light_color_values = {}
         elif self.subtype > MAX_SUBTYPE_OLD_SPEEDS:
             self._speeds = MideaFDDevice._speeds_new
             self._screen_display_values = MideaFDDevice._screen_displays
+            self._light_color_values = {}
         else:
             self._speeds = MideaFDDevice._speeds_old
             self._screen_display_values = MideaFDDevice._screen_displays
+            self._light_color_values = {}
         self._mode_values = (
             FD_LUA_2024110101_MODES
             if lua_protocol == FD_LUA_PROTOCOL_2024110101
@@ -137,6 +144,11 @@ class MideaFDDevice(MideaDevice):
     def screen_displays(self) -> list[str]:
         """Midea FD device screen displays."""
         return list(self._screen_display_values.values())
+
+    @property
+    def light_colors(self) -> list[str]:
+        """Midea FD device light-ring colors."""
+        return list(self._light_color_values.values())
 
     @property
     def detect_modes(self) -> list[str]:
@@ -177,6 +189,8 @@ class MideaFDDevice(MideaDevice):
                         )
                     else:
                         self._attributes[status] = None
+                elif status == DeviceAttributes.light_color:
+                    self._attributes[status] = self._light_color_values.get(value)
                 else:
                     self._attributes[status] = value
                 new_status[str(status)] = self._attributes[status]
@@ -259,6 +273,11 @@ class MideaFDDevice(MideaDevice):
                     )[list(self._screen_display_values.values()).index(str(value))]
                 elif not value:
                     message.screen_display = 7
+            elif attr == DeviceAttributes.light_color:
+                if value in self._light_color_values.values():
+                    message.light_color = list(self._light_color_values.keys())[
+                        list(self._light_color_values.values()).index(str(value))
+                    ]
             else:
                 setattr(message, str(attr), value)
             self.build_send(message)

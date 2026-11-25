@@ -29,6 +29,18 @@ FD_LUA_25_FAN_SPEEDS = {
     80: "high",
     101: "auto",
 }
+FD_LUA_25_LIGHT_COLOR_SET_INDEX = 11
+FD_LUA_25_LIGHT_COLOR_STATUS_INDEX = 14
+FD_LUA_25_LIGHT_COLORS = {
+    1: "off",
+    2: "red",
+    7: "orange",
+    9: "yellow",
+    3: "green",
+    8: "cyan",
+    4: "blue",
+    6: "pink",
+}
 FD_LUA_25_MANUAL_FAN_SPEEDS = frozenset({1, 39, 59, 80})
 FD_LUA_25_MODE_AUTO = 0x02
 FD_LUA_25_MODE_MANUAL = 0x01
@@ -204,6 +216,7 @@ class MessageSet(MessageFDBase):
         self.mode = 0x01
         self.disinfect: bool | None = None
         self.wet_pad_dry: bool | None = None
+        self.light_color: int | None = None
         self._lua_protocol = lua_protocol
 
     @property
@@ -233,6 +246,8 @@ class MessageSet(MessageFDBase):
             body[FD_LUA_25_FAN_SPEED_SET_INDEX] = fan_speed
             body[FD_LUA_25_TARGET_HUMIDITY_SET_INDEX] = self.target_humidity
             body[FD_LUA_25_MODE_SET_INDEX] = self.mode
+            if self.light_color is not None:
+                body[FD_LUA_25_LIGHT_COLOR_SET_INDEX] = self.light_color
             body[FD_LUA_25_DISPLAY_SET_INDEX] = screen_display
             return body
         if self._lua_protocol == FD_LUA_PROTOCOL_2024110101:
@@ -302,6 +317,7 @@ class FDC8MessageBody(MessageBody):
             and len(body) > FD_LUA_25_DISPLAY_STATUS_INDEX
         ):
             self.mode = body[FD_LUA_25_MODE_STATUS_INDEX]
+            self.light_color = body[FD_LUA_25_LIGHT_COLOR_STATUS_INDEX]
             if self.mode == FD_LUA_25_MODE_AUTO:
                 self.fan_speed = FD_LUA_25_AUTO_FAN_SPEED
             display = body[FD_LUA_25_DISPLAY_STATUS_INDEX]

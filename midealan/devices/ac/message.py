@@ -101,6 +101,9 @@ POWER_SAVING_VALUE = 0x08
 SCREEN_DISPLAY_BYTE_CHECK = 0x07
 TOGGLE_DISPLAY_COMMAND = 0x61
 TOGGLE_DISPLAY_RESERVED_LENGTH = 14
+LEGACY_TOGGLE_DISPLAY_COMMAND = 0x02
+LEGACY_TOGGLE_DISPLAY_TONE_MASK = 0x40
+LEGACY_TOGGLE_DISPLAY_RESERVED_LENGTH = 13
 # Electric auxiliary heat (PTC) bit masks.
 #   - aux_heating / PTCValue: the ordinary electric aux-heat flag, byte 9 bit
 #     0x08 on both the set body and the A0/C0 status bodies. Vendor lua
@@ -775,9 +778,14 @@ class ToggleDisplay(MessageACBase):
         command = (
             TOGGLE_DISPLAY_COMMAND
             if self.lua_toggle
-            else 0x02 | (0x40 if self.prompt_tone else 0)
+            else LEGACY_TOGGLE_DISPLAY_COMMAND
+            | (LEGACY_TOGGLE_DISPLAY_TONE_MASK if self.prompt_tone else 0)
         )
-        reserved_length = TOGGLE_DISPLAY_RESERVED_LENGTH if self.lua_toggle else 13
+        reserved_length = (
+            TOGGLE_DISPLAY_RESERVED_LENGTH
+            if self.lua_toggle
+            else LEGACY_TOGGLE_DISPLAY_RESERVED_LENGTH
+        )
         return bytearray(
             [command, 0x00, 0xFF, 0x02, 0x00, 0x02],
         ) + bytearray(reserved_length)

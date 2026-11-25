@@ -348,9 +348,18 @@ class TestMideaACDevice:
             assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
             assert mock_build_send.call_args[0][0].lua_toggle is False
 
-    def test_set_screen_display_uses_lua_frame_for_q13(self) -> None:
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("00000Q13", None), ("marketing-name", "00000Q13")],
+    )
+    def test_set_screen_display_uses_lua_frame_for_q13(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
         """Models with a verified Lua toggle use its dedicated body."""
-        self.device._model = "00000Q13"
+        self.device._model = model
+        self.device._sn8 = sn8
         with patch.object(self.device, "build_send") as mock_build_send:
             self.device._attributes[DeviceAttributes.screen_display] = False
             self.device.set_attribute(DeviceAttributes.screen_display.value, True)
@@ -371,7 +380,10 @@ class TestMideaACDevice:
     ) -> None:
         """Ignore display writes that Q1B subtype 44204 cannot execute."""
         self.device._model_key = ("00000Q1B", 44204)
-        with patch.object(self.device, "build_send") as mock_build_send:
+        with (
+            patch.object(self.device, "build_send") as mock_build_send,
+            pytest.raises(ValueError, match="Display control is unsupported"),
+        ):
             self.device.set_attribute(attribute.value, True)
         mock_build_send.assert_not_called()
 
@@ -2117,10 +2129,15 @@ class TestMideaACDevice:
         assert stale_a0[DeviceAttributes.target_temperature.value] == 25.0
         assert b1[DeviceAttributes.screen_display_alternate.value]
         with patch.object(device, "build_send") as mock_build_send:
-            device.set_attribute(DeviceAttributes.screen_display.value, True)
             if model == "00000Q1B":
+                with pytest.raises(
+                    ValueError,
+                    match="Display control is unsupported",
+                ):
+                    device.set_attribute(DeviceAttributes.screen_display.value, True)
                 mock_build_send.assert_not_called()
             else:
+                device.set_attribute(DeviceAttributes.screen_display.value, True)
                 mock_build_send.assert_called_once()
                 assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
 
@@ -2133,7 +2150,14 @@ class TestMideaACDevice:
         assert c0_on[DeviceAttributes.screen_display.value]
         assert device.attributes[DeviceAttributes.screen_display]
         with patch.object(device, "build_send") as mock_build_send:
-            device.set_attribute(DeviceAttributes.screen_display.value, True)
+            if model == "00000Q1B":
+                with pytest.raises(
+                    ValueError,
+                    match="Display control is unsupported",
+                ):
+                    device.set_attribute(DeviceAttributes.screen_display.value, True)
+            else:
+                device.set_attribute(DeviceAttributes.screen_display.value, True)
             mock_build_send.assert_not_called()
 
     @pytest.mark.parametrize(

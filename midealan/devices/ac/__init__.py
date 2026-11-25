@@ -1758,13 +1758,11 @@ class MideaACDevice(MideaDevice):
             attr in DISPLAY_CONTROL_ATTRIBUTES
             and self._model_key in UNSUPPORTED_DISPLAY_CONTROL_DEVICES
         ):
-            _LOGGER.debug(
-                "[%s] Display control is unsupported by model %s subtype %s",
-                self.device_id,
-                self.model,
-                self.subtype,
+            msg = (
+                f"Display control is unsupported by model {self.model} "
+                f"subtype {self.subtype}"
             )
-            return
+            raise ValueError(msg)
         # if nat a sensor
         message: (
             ToggleDisplay
@@ -1820,7 +1818,10 @@ class MideaACDevice(MideaDevice):
                 ):
                     message = ToggleDisplay(
                         self._message_protocol_version,
-                        lua_toggle=str(self.model) in LUA_DISPLAY_TOGGLE_MODELS,
+                        lua_toggle=(
+                            str(self.model) in LUA_DISPLAY_TOGGLE_MODELS
+                            or self.sn8 in LUA_DISPLAY_TOGGLE_MODELS
+                        ),
                     )
                     message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
             elif self._model_capabilities.has_bb_fresh_air and attr in {

@@ -167,6 +167,9 @@ class MideaCDDevice(MideaDevice):
     _old_current_temperature_models: ClassVar[frozenset[str]] = frozenset(
         _forced_temperature_models | {"RSJRAC05"},
     )
+    _old_outdoor_temperature_models: ClassVar[frozenset[str]] = frozenset(
+        {"RSJRAC05"},
+    )
     _mixed_temperature_models: ClassVar[set[str]] = {"RSJ000CB"}
     _negative_temperature_models: ClassVar[frozenset[str]] = frozenset(
         {"RSJRAC08", "2530001N"},
@@ -624,8 +627,14 @@ class MideaCDDevice(MideaDevice):
                             and is_outdoor_temp
                         ),
                         force_old=(
-                            self.model in self._old_current_temperature_models
-                            and is_current_temp
+                            (
+                                self.model in self._old_current_temperature_models
+                                and is_current_temp
+                            )
+                            or (
+                                self.model in self._old_outdoor_temperature_models
+                                and is_outdoor_temp
+                            )
                         ),
                     )
                     # Defensive: ignore invalid zeros for min/max/target/current

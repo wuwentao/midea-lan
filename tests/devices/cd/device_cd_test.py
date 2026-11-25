@@ -768,33 +768,34 @@ class TestMideaCDDevice:
         assert status[DeviceAttributes.current_temperature.value] == expected_current
 
     def test_process_message_rsjrac05_real_status_frame(self) -> None:
-        """Decode the mixed RSJRAC05 temperatures reported in issue #1261."""
+        """Decode RSJRAC05 mixed temperatures from issue #1261's retest."""
         device = _make_device(model="RSJRAC05")
         assert device._lua_protocol == LuaProtocol.new
         body = bytearray.fromhex(
-            "010103377a2c2d09363646262a1e2a1e2a1e2a1e11260000000000088708"
+            "01010332822f310d380d41262a1e2a1e2a1e2a1e11f40000000000008708"
             "00000000780000003f3f3f3f3f3f0317000000000000000101004641463c"
             "3c00000000",
         )
 
         status = device.process_message(_build_message(MessageType.query, body))
 
-        assert status[DeviceAttributes.max_temperature.value] == 70.0
+        assert status[DeviceAttributes.max_temperature.value] == 65.0
         assert status[DeviceAttributes.min_temperature.value] == 38.0
-        assert status[DeviceAttributes.target_temperature.value] == 55.0
-        assert status[DeviceAttributes.current_temperature.value] == 46.0
-        assert status[DeviceAttributes.outdoor_temperature.value] == 54.0
-        assert status[DeviceAttributes.condenser_temperature.value] == 9.0
-        assert status[DeviceAttributes.top_temperature.value] == 44.0
-        assert status[DeviceAttributes.bottom_temperature.value] == 45.0
+        assert status[DeviceAttributes.target_temperature.value] == 50.0
+        assert status[DeviceAttributes.current_temperature.value] == 50.0
+        assert status[DeviceAttributes.outdoor_temperature.value] == 13.0
+        assert status[DeviceAttributes.condenser_temperature.value] == 13.0
+        assert status[DeviceAttributes.compressor_temperature.value] == 13.0
+        assert status[DeviceAttributes.top_temperature.value] == 47.0
+        assert status[DeviceAttributes.bottom_temperature.value] == 49.0
 
         with patch.object(device, "build_send") as mock_send:
-            device.set_attribute(DeviceAttributes.target_temperature.value, 56.0)
+            device.set_attribute(DeviceAttributes.target_temperature.value, 51.0)
 
         message = mock_send.call_args.args[0]
         assert message.use_old_protocol is False
-        assert message.body[4] == 56
-        assert message.body[23] == 70
+        assert message.body[4] == 51
+        assert message.body[23] == 65
 
     def test_process_message_rsjrac08_real_status_frame(self) -> None:
         """Decode a real RSJRAC08 status frame (Midea MCHW-50VN3A).

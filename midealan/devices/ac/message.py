@@ -98,9 +98,13 @@ DEFAULT_OUT_SILENT_VALUE = 0x03
 WIND_STRAIGHT_ON_VALUE = 0x01
 OUT_SILENT_OFF_VALUE = 0x00
 POWER_SAVING_VALUE = 0x08
-SCREEN_DISPLAY_BYTE_CHECK = 0x07
-TOGGLE_DISPLAY_COMMAND = 0x61
-TOGGLE_DISPLAY_RESERVED_LENGTH = 14
+SCREEN_DISPLAY_STATUS_MASK = 0x07
+SCREEN_DISPLAY_OFF_VALUE = 0x07
+TOGGLE_DISPLAY_61_COMMAND = 0x61
+TOGGLE_DISPLAY_61_RESERVED_LENGTH = 14
+TOGGLE_DISPLAY_C1_COMMAND = 0xC1
+TOGGLE_DISPLAY_81_COMMAND = 0x81
+TOGGLE_DISPLAY_C1_RESERVED_LENGTH = 15
 LEGACY_TOGGLE_DISPLAY_COMMAND = 0x02
 LEGACY_TOGGLE_DISPLAY_TONE_MASK = 0x40
 LEGACY_TOGGLE_DISPLAY_RESERVED_LENGTH = 13
@@ -234,6 +238,9 @@ PROPERTIES_TIMER_SWITCH_OFF = 0x00
 # Live self-clean state is carried by the same payload (byte 8 bit 2).
 NEW_PROTOCOL_SELF_CLEAN_BYTE = 8
 NEW_PROTOCOL_SELF_CLEAN_MASK = 0x04
+# Lua reads screenDisplayNowValue at cursor + 15. The parsed 0x7e value starts
+# four bytes after the property cursor, so that field is value index 11.
+NEW_PROTOCOL_SCREEN_DISPLAY_BYTE = 11
 # Live state bytes riding the same 0x7e new-protocol payload: power / mode /
 # fan-speed at bytes 1 / 2 / 3 (identical encoding to the C0/A0 state
 # bodies), indirect wind (prevent straight wind) at byte 14 bit 0x40 and
@@ -495,6 +502,14 @@ class MessageACBase(MessageRequest):
         body = bytearray([self.body_type]) + self._body + bytearray([self._message_id])
         body.append(calculate(body))
         return body
+
+
+class DisplayToggleMode(IntEnum):
+    """Known AC display-toggle body layouts."""
+
+    LEGACY = 0
+    LUA_61 = 1
+    LUA_C1 = 2
 
 
 class MessageA0Query(MessageACBase):
@@ -763,7 +778,12 @@ class GroupSevenQuery(GroupDataQuery):
 class ToggleDisplay(MessageACBase):
     """AC message toggle display."""
 
-    def __init__(self, protocol_version: int, *, lua_toggle: bool = False) -> None:
+    def __init__(
+        self,
+        protocol_version: int,
+        *,
+        mode: DisplayToggleMode = DisplayToggleMode.LEGACY,
+    ) -> None:
         """Initialize AC message toggle display."""
         super().__init__(
             protocol_version=protocol_version,
@@ -771,24 +791,29 @@ class ToggleDisplay(MessageACBase):
             body_type=ListTypes.X41,
         )
         self.prompt_tone = False
-        self.lua_toggle = lua_toggle
+        self.mode = mode
 
     @property
     def _body(self) -> bytearray:
-        command = (
-            TOGGLE_DISPLAY_COMMAND
-            if self.lua_toggle
-            else LEGACY_TOGGLE_DISPLAY_COMMAND
-            | (LEGACY_TOGGLE_DISPLAY_TONE_MASK if self.prompt_tone else 0)
-        )
-        reserved_length = (
-            TOGGLE_DISPLAY_RESERVED_LENGTH
-            if self.lua_toggle
-            else LEGACY_TOGGLE_DISPLAY_RESERVED_LENGTH
+        if self.mode == DisplayToggleMode.LUA_61:
+            return bytearray(
+                [TOGGLE_DISPLAY_61_COMMAND, 0x00, 0xFF, 0x02, 0x00, 0x02],
+            ) + bytearray(TOGGLE_DISPLAY_61_RESERVED_LENGTH)
+        if self.mode == DisplayToggleMode.LUA_C1:
+            command = (
+                TOGGLE_DISPLAY_C1_COMMAND
+                if self.prompt_tone
+                else TOGGLE_DISPLAY_81_COMMAND
+            )
+            return bytearray(
+                [command, 0x00, 0xFF, 0x02, 0xFF, 0x02, 0x02],
+            ) + bytearray(TOGGLE_DISPLAY_C1_RESERVED_LENGTH)
+        command = LEGACY_TOGGLE_DISPLAY_COMMAND | (
+            LEGACY_TOGGLE_DISPLAY_TONE_MASK if self.prompt_tone else 0
         )
         return bytearray(
             [command, 0x00, 0xFF, 0x02, 0x00, 0x02],
-        ) + bytearray(reserved_length)
+        ) + bytearray(LEGACY_TOGGLE_DISPLAY_RESERVED_LENGTH)
 
 
 # Module-level shared constants for B1 query splitting.
@@ -1616,7 +1641,7 @@ class XA0Body(MessageBody):
         self.pmv = ((body[11] & 0xF0) >> 4) * 0.5 - 3.5  # pmv
         # screenDisplayNowValue
         self.screen_display = (
-            (body[14] >> 4 & 0x7) != SCREEN_DISPLAY_BYTE_CHECK
+            (body[14] >> 4 & SCREEN_DISPLAY_STATUS_MASK) != SCREEN_DISPLAY_OFF_VALUE
         ) and self.power
         self.smart_eye = (body[9] & SMART_EYE_A0_MASK) > 0
         self.dry = (body[9] & 0x04) > 0  # dryValue
@@ -1903,9 +1928,17 @@ class PropertiesBody(NewProtocolMessageBody):
         new-protocol-temperature path, where byte-1 encoding is known to
         differ.
         """
-        if new_protocol_temperature or NEW_PROTOCOL_TEMPERATURE_TAG not in params:
+        if NEW_PROTOCOL_TEMPERATURE_TAG not in params:
             return
         data = params[NEW_PROTOCOL_TEMPERATURE_TAG]
+        if len(data) > NEW_PROTOCOL_SCREEN_DISPLAY_BYTE:
+            self.screen_display = (
+                data[NEW_PROTOCOL_SCREEN_DISPLAY_BYTE] & SCREEN_DISPLAY_STATUS_MASK
+            ) != SCREEN_DISPLAY_OFF_VALUE and (
+                data[NEW_PROTOCOL_POWER_BYTE] & NEW_PROTOCOL_POWER_MASK
+            ) > 0
+        if new_protocol_temperature:
+            return
         if len(data) > NEW_PROTOCOL_WIND_ANGLE_BYTE:
             self.swing_vertical = (
                 data[NEW_PROTOCOL_SWING_BYTE] & NEW_PROTOCOL_SWING_VERTICAL_MASK
@@ -2297,7 +2330,7 @@ class StateBody(XMessageBody):
         self.full_dust = ((body[13] & 0x20) >> 5) > 0  # dust_full_time
         # screenDisplayNowValue
         self.screen_display = (
-            (body[14] >> 4 & 0x7) != SCREEN_DISPLAY_BYTE_CHECK
+            (body[14] >> 4 & SCREEN_DISPLAY_STATUS_MASK) != SCREEN_DISPLAY_OFF_VALUE
         ) and self.power
         # arom
         self.frost_protect = (

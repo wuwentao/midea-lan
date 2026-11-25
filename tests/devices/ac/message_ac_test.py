@@ -23,6 +23,7 @@ from midealan.devices.ac.message import (
     CapabilityBody,
     CapabilityTag,
     CapabilityValue,
+    DisplayToggleMode,
     GroupDataQuery,
     GroupOneQuery,
     GroupSevenQuery,
@@ -224,7 +225,10 @@ class TestToggleDisplay:
 
     def test_toggle_disply_body(self) -> None:
         """Test toggle display body."""
-        msg = ToggleDisplay(protocol_version=ProtocolVersion.V1, lua_toggle=True)
+        msg = ToggleDisplay(
+            protocol_version=ProtocolVersion.V1,
+            mode=DisplayToggleMode.LUA_61,
+        )
         expected_body = bytearray(
             [
                 0x41,
@@ -274,6 +278,20 @@ class TestToggleDisplay:
         assert msg.body[:-2] == expected_body
         msg.prompt_tone = True
         expected_body[1] = 0x42
+        assert msg.body[:-2] == expected_body
+
+    def test_toggle_display_c1_body(self) -> None:
+        """C1 Lua models use the longer frame and 0x81 when tone is off."""
+        msg = ToggleDisplay(
+            protocol_version=ProtocolVersion.V1,
+            mode=DisplayToggleMode.LUA_C1,
+        )
+        expected_body = bytearray(
+            [0x41, 0x81, 0x00, 0xFF, 0x02, 0xFF, 0x02, 0x02, *([0x00] * 15)],
+        )
+        assert msg.body[:-2] == expected_body
+        msg.prompt_tone = True
+        expected_body[1] = 0xC1
         assert msg.body[:-2] == expected_body
 
 
@@ -1254,6 +1272,28 @@ class TestMessageACResponse:
             ),
         )
         assert response.degerming_active is True
+
+    @pytest.mark.parametrize(("raw_display", "expected"), [(0x07, False), (0x00, True)])
+    def test_b1_0x7e_screen_display_state(
+        self,
+        raw_display: int,
+        expected: bool,
+    ) -> None:
+        """Decode Lua cursor+15 display state from 0x7e value index 11."""
+        body = bytearray(19)
+        body[0] = 0xB1
+        body[1] = 0x01
+        body[2] = 0x7E
+        body[3] = 0x00
+        body[4] = 0x00
+        body[5] = 12
+        body[7] = 0x01  # payload[1]: power on
+        body[17] = raw_display  # payload[11]: screenDisplayNowValue
+
+        response = MessageACResponse(self.header + body)
+
+        assert hasattr(response, "screen_display")
+        assert response.screen_display is expected
 
     def test_b1_degerming_state_off(self) -> None:
         """Test degerming state is read from the 0x7e payload (captured off)."""

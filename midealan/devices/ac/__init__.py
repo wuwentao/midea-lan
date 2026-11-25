@@ -23,6 +23,7 @@ from .message import (
     CapabilitiesAdditionalQuery,
     CapabilitiesQuery,
     CapabilityValue,
+    DisplayToggleMode,
     GroupOneQuery,
     GroupSevenQuery,
     GroupTwoQuery,
@@ -213,7 +214,7 @@ class ACModelCapabilities:
 DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
 # These Lua models use the dedicated 0x41/0x61 display-toggle body. Other AC
 # models retain the legacy display command until their control path is verified.
-LUA_DISPLAY_TOGGLE_MODELS = frozenset(
+LUA_DISPLAY_TOGGLE_61_MODELS = frozenset(
     {
         "00000Q11",
         "00000Q13",
@@ -230,17 +231,42 @@ LUA_DISPLAY_TOGGLE_MODELS = frozenset(
         "24",
     },
 )
-# This exact Q1B subtype ignores both the Lua 0x41/0x61 toggle and B0 property
-# 0x0017, and its C0 display bit does not follow the physical remote. Do not
-# send controls that the appliance cannot execute.
-# https://github.com/wuwentao/midea_ac_lan/issues/1093
-UNSUPPORTED_DISPLAY_CONTROL_DEVICES = frozenset({("00000Q1B", 44204)})
-DISPLAY_CONTROL_ATTRIBUTES = frozenset(
+LUA_DISPLAY_TOGGLE_C1_MODELS = frozenset(
     {
-        DeviceAttributes.screen_display,
-        DeviceAttributes.screen_display_alternate,
+        "22012997",
+        "22040023",
+        "22040047",
+        "22040055",
+        "22270021",
+        "22270043",
+        "75",
     },
 )
+# These Lua models decode A0 screenDisplayNowValue from byte 11 bits 0-2.
+# Their C0 decoder still uses byte 14 bits 4-6 like the other AC families.
+A0_SCREEN_DISPLAY_BYTE11_MODELS = frozenset(
+    {
+        "22012997",
+        "22013005",
+        "22013133",
+        "22013279",
+        "22013303",
+        "22019053",
+        "22019061",
+        "22040023",
+        "22040047",
+        "22040055",
+        "22040079",
+        "220F4047",
+        "22251637",
+        "22251649",
+        "22270021",
+        "22270043",
+    },
+)
+A0_SCREEN_DISPLAY_BYTE11_INDEX = 11
+A0_SCREEN_DISPLAY_STATUS_MASK = 0x07
+A0_SCREEN_DISPLAY_OFF_VALUE = 0x07
 # These BB fields use model-specific offsets and command payloads observed on
 # exact model/subtype pairs. Keep unrelated devices hidden from attributes and
 # commands whose bytes may have a different meaning on other firmware.
@@ -784,6 +810,37 @@ class MideaACDevice(MideaDevice):
         if body[C0_OUTDOOR_TEMPERATURE_INDEX] in C0_OUTDOOR_TEMPERATURE_PLACEHOLDERS:
             setattr(message, DeviceAttributes.outdoor_temperature, None)
 
+    def _matches_model_identifier(self, models: frozenset[str]) -> bool:
+        """Return whether the device model or cloud SN8 selects a Lua family."""
+        return str(self.model) in models or self.sn8 in models
+
+    def _display_toggle_mode(self) -> DisplayToggleMode:
+        """Select the display-toggle body documented by the device Lua."""
+        if self._matches_model_identifier(LUA_DISPLAY_TOGGLE_C1_MODELS):
+            return DisplayToggleMode.LUA_C1
+        if self._matches_model_identifier(LUA_DISPLAY_TOGGLE_61_MODELS):
+            return DisplayToggleMode.LUA_61
+        return DisplayToggleMode.LEGACY
+
+    def _fix_a0_screen_display(self, message: MessageACResponse) -> None:
+        """Decode the alternate A0 display layout used by newer Lua families."""
+        if (
+            message.body_type != ListTypes.A0
+            or not self._matches_model_identifier(A0_SCREEN_DISPLAY_BYTE11_MODELS)
+            or len(message.body) <= A0_SCREEN_DISPLAY_BYTE11_INDEX
+        ):
+            return
+        setattr(
+            message,
+            DeviceAttributes.screen_display,
+            (
+                message.body[A0_SCREEN_DISPLAY_BYTE11_INDEX]
+                & A0_SCREEN_DISPLAY_STATUS_MASK
+            )
+            != A0_SCREEN_DISPLAY_OFF_VALUE
+            and bool(getattr(message, DeviceAttributes.power, False)),
+        )
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Route validated Toshiba frames before the regular AC decoder."""
         status = self.process_toshiba_message(msg)
@@ -813,6 +870,7 @@ class MideaACDevice(MideaDevice):
             new_protocol_temperature=self._uses_new_protocol_temperature,
         )
         self._fix_c0_temperature(message)
+        self._fix_a0_screen_display(message)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         has_fresh_air = False
@@ -1754,15 +1812,6 @@ class MideaACDevice(MideaDevice):
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea AC device set attribute."""
         self.reject_toshiba_write()
-        if (
-            attr in DISPLAY_CONTROL_ATTRIBUTES
-            and self._model_key in UNSUPPORTED_DISPLAY_CONTROL_DEVICES
-        ):
-            msg = (
-                f"Display control is unsupported by model {self.model} "
-                f"subtype {self.subtype}"
-            )
-            raise ValueError(msg)
         # if nat a sensor
         message: (
             ToggleDisplay
@@ -1818,10 +1867,7 @@ class MideaACDevice(MideaDevice):
                 ):
                     message = ToggleDisplay(
                         self._message_protocol_version,
-                        lua_toggle=(
-                            str(self.model) in LUA_DISPLAY_TOGGLE_MODELS
-                            or self.sn8 in LUA_DISPLAY_TOGGLE_MODELS
-                        ),
+                        mode=self._display_toggle_mode(),
                     )
                     message.prompt_tone = self._attributes[DeviceAttributes.prompt_tone]
             elif self._model_capabilities.has_bb_fresh_air and attr in {

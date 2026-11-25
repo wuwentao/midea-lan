@@ -96,14 +96,25 @@ user-facing harnesses.
 - PRs should link any related
   [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) issue, regardless of
   its title or change type; explain when no related issue exists.
-- PRs should link a matching `midea_ac_lan` PR when they affect Home Assistant
-  behavior or device support; explain when no integration PR is needed. Do not
-  update the `midea-lan` version in
-  `midea_ac_lan/custom_components/midea_ac_lan/manifest.json`; maintainers update
-  it centrally after release.
-- A merge does not trigger an immediate release. Maintainers accumulate changes,
-  publish `midea-lan` manually on a periodic basis, and then synchronize
-  `midea_ac_lan`.
+- PRs should link a matching `midea_ac_lan` integration PR when they affect Home Assistant
+  behavior or device support; explain when no integration PR is needed. While
+  this `midea-lan` lib PR is unmerged, the integration PR may point the
+  `midea-lan` requirement in its `manifest.json` at the contributor fork/branch
+  for CI and end-to-end testing.
+  The integration manifest is the sole source of its `midea-lan` runtime
+  requirement; CI and local setup install from it. Its `pyproject.toml` and
+  `uv.lock` contain development/test dependencies only and must not include
+  `midea-lan`. After the library PR merges, the integration PR switches only
+  its manifest to `wuwentao/midea-lan@main` unless it already does. Before the
+  integration PR merges, its manifest must reference upstream `main` or a
+  released version containing all library changes it depends on; it must not
+  retain a contributor fork/branch. The library repository's
+  own `uv.lock` remains independent of the integration requirement.
+- A merge does not trigger an immediate library release, and the integration PR
+  does not need to wait for one. Maintainers periodically publish `midea-lan`
+  and then `midea_ac_lan` based on merged PRs: they generate the changelog,
+  update the integration manifest to a released library version containing the
+  merged changes, and publish the integration release.
 - After GitHub Actions finish, verify 100% Codecov patch coverage and wait for the
   automatic CodeRabbit review. Address each actionable comment, reply in its
   thread with the fix and test evidence, and resolve the conversation before merge.

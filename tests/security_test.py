@@ -209,6 +209,37 @@ class TestMSmartCloudSecurity:
         assert security._aes_key == b"secret_aes_key00"
         assert security._aes_iv == b"secret_aes_iv000"
 
+    def test_encrypt_account(self) -> None:
+        """Test encrypt_account AES-CBC encrypts with the sha256(app_key) vectors.
+
+        The account router receives the account name encrypted with a key/IV
+        derived from ``sha256(app_key)``; the expected ciphertext is pinned so
+        a change to the derivation cannot pass silently.
+        """
+        security = MSmartCloudSecurity("login_key", "iot_key", "hmac_key")
+        assert (
+            security.encrypt_account("user@example.com")
+            == "73fe41a2150d4b8fa13c30fa5ae6e5906a2174fa83dd6fdcbabe26719ad99022"
+        )
+
+    def test_encrypt_account_ignores_session_keys(self) -> None:
+        """Test encrypt_account uses app-key vectors, not the per-session keys.
+
+        The result must stay identical after ``set_aes_keys`` installs the
+        session keys, proving the account cipher is derived from the app key
+        alone (so re-routing works before any AES key exchange).
+        """
+        security = MSmartCloudSecurity("login_key", "iot_key", "hmac_key")
+        before = security.encrypt_account("user@example.com")
+        key_digest = sha256(b"login_key").hexdigest()
+        tmp_key = key_digest[:16].encode("ascii")
+        tmp_iv = key_digest[16:32].encode("ascii")
+        security.set_aes_keys(
+            security.aes_encrypt(b"secret_aes_key00", tmp_key, tmp_iv).hex(),
+            security.aes_encrypt(b"secret_aes_iv000", tmp_key, tmp_iv).hex(),
+        )
+        assert security.encrypt_account("user@example.com") == before
+
 
 class TestMideaAirSecurity:
     """Test Midea Air security."""

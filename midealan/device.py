@@ -510,20 +510,23 @@ class MideaDevice:
         key is negotiated live from the provisioned app certificate and the
         device's module certificate (see :class:`midealan.tls.TLSSession`).
         """
-        if not self._writer or self._cert_bundle is None:
+        with self._stream_state_lock:
+            writer = self._writer
+        cert_bundle = self._cert_bundle
+        if writer is None or cert_bundle is None:
             _LOGGER.debug(
                 "[%s] authenticate_tls failure, socket or cert bundle is none",
                 self._device_id,
             )
             raise SocketException
-        session = TLSSession(self._cert_bundle, self._device_id)
+        session = TLSSession(cert_bundle, self._device_id)
         _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
         try:
             # The stream writer buffers the whole handshake frame; a drain()
             # after each write flushes the (large) cert request so the peer is
             # not left waiting on a partially sent frame.
-            self._writer.write(session.build_cert_request())
-            await self._writer.drain()
+            writer.write(session.build_cert_request())
+            await writer.drain()
             reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: cert response %d bytes: %s",
@@ -532,8 +535,8 @@ class MideaDevice:
                 reply.hex(),
             )
             session.process_cert_response(reply)
-            self._writer.write(session.build_finish())
-            await self._writer.drain()
+            writer.write(session.build_finish())
+            await writer.drain()
             finish_reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: finish response %d bytes: %s",
@@ -549,11 +552,22 @@ class MideaDevice:
                 repr(e),
             )
             raise AuthException from e
-        self._tls_codec = MSDatagram(
+        codec = MSDatagram(
             self._device_id,
-            ap_private_key=self._cert_bundle.ap_private_key,
+            ap_private_key=cert_bundle.ap_private_key,
             session_key=session.session_key,
         )
+        # A synchronous close may run from another thread while authentication
+        # awaits network I/O. Publish the negotiated codec only if its stream is
+        # still current; otherwise it could be reused briefly by a reconnect.
+        with self._stream_state_lock:
+            if self._writer is not writer:
+                _LOGGER.debug(
+                    "[%s] TLS handshake completed for a stale connection",
+                    self._device_id,
+                )
+                raise SocketException
+            self._tls_codec = codec
         _LOGGER.debug("[%s] TLS handshake success", self._device_id)
 
     async def _recv_tls_frame(self) -> bytes:

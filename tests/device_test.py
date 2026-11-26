@@ -2783,6 +2783,29 @@ class TestMideaDeviceTLS:
         assert len(stream.sent) == 2
 
     @pytest.mark.asyncio
+    async def test_authenticate_tls_rejects_codec_after_stream_close(self) -> None:
+        """A codec negotiated for a detached stream is never published."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        stream = _FakeTLSStream(sim)
+        device = self._tls_device(bundle)
+        device._reader = stream  # type: ignore[assignment]
+        device._writer = stream  # type: ignore[assignment]
+
+        def close_before_publish(*_args: object, **_kwargs: object) -> MagicMock:
+            device.close_socket()
+            return MagicMock()
+
+        with (
+            patch("midealan.device.MSDatagram", side_effect=close_before_publish),
+            pytest.raises(SocketException),
+        ):
+            await device.authenticate_tls()
+
+        assert device._tls_codec is None
+        assert device._writer is None
+
+    @pytest.mark.asyncio
     async def test_authenticate_tls_no_socket(self) -> None:
         """Without a socket the handshake refuses to start."""
         device = self._tls_device(_make_bundle())

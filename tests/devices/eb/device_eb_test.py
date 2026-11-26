@@ -1,8 +1,9 @@
 """Test eb device."""
 
+import asyncio
 from collections.abc import Sequence
 from threading import Event, RLock, Thread, get_ident
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -154,6 +155,34 @@ class TestMideaEBDevice:
         second_body = build_send.call_args_list[1].args[0].body
         assert second_body[12] == 1
         assert second_body[13] == 30
+
+    @pytest.mark.asyncio
+    async def test_executor_set_uses_async_transport(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """An executor-side setter safely queues its write on the stream loop."""
+        writer = Mock()
+        device._security._tcp_key = b"\x00" * 32
+        device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
+
+        await asyncio.to_thread(
+            device.set_attribute,
+            DeviceAttributes.time_reserve_hr,
+            1,
+        )
+        await asyncio.sleep(0)
+
+        writer.write.assert_called_once()
+        assert writer.write.call_args.args[0][0:2] == b"\x83\x70"
+        pending = device._pending_controls[DeviceAttributes.time_reserve_hr]
+        assert list(pending) == [1]
+
+        body = _status_body()
+        body[17] = 1
+        device.process_message(_report_frame(body))
+        assert DeviceAttributes.time_reserve_hr not in device._pending_controls
 
     def test_stale_report_keeps_pending_value(self, device: MideaEBDevice) -> None:
         """A stale intervening report does not undo an unconfirmed write."""

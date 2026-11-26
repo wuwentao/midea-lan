@@ -602,14 +602,26 @@ class MideaDevice:
     def send_message_tls(self, data: bytes, query: bool = False) -> None:
         """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
         _ = query
-        codec = self._tls_codec
+        # Read codec, writer, and loop under one lock so a concurrent
+        # close_socket cannot clear the codec between the connection check and
+        # the deferred encode, leaving an off-loop send with a stale snapshot.
+        with self._stream_state_lock:
+            codec = self._tls_codec
+            writer = self._writer
+            loop = self._stream_loop
         if codec is None:
             _LOGGER.debug(
                 "[%s] send_message_tls failure, TLS session not established",
                 self._device_id,
             )
             raise SocketException
-        writer, loop = self._require_stream_connection(data)
+        if writer is None or loop is None:
+            _LOGGER.debug(
+                "[%s] send failure, device stream is incomplete, data: %s",
+                self._device_id,
+                data.hex(),
+            )
+            raise SocketException
         if _running_loop() is not loop:
             # MSDatagram.encode advances per-session counters. Keep that state
             # change next to the write on the stream loop so heartbeat and
@@ -1617,7 +1629,7 @@ class MideaDevice:
             self._reader = None
             self._writer = None
             self._stream_loop = None
-        self._tls_codec = None
+            self._tls_codec = None
         self._unsupported_protocol = []
         # Re-arm the appliance query too. It is cleared in pre_process_message
         # and was never set back, so a reconnected device would skip protocol

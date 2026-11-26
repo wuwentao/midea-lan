@@ -2880,6 +2880,15 @@ class TestMideaDeviceTLS:
         with pytest.raises(SocketException):
             device.send_message_tls(b"\xaa\x1e\xac\x00")
 
+    def test_send_message_tls_no_writer(self) -> None:
+        """Codec present but stream not yet open raises SocketException."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        # leave _writer and _stream_loop at None (default)
+        with pytest.raises(SocketException):
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+
     @pytest.mark.asyncio
     async def test_send_message_tls_success(self) -> None:
         """A plaintext frame is wrapped as a 5a5a CCM datagram and sent."""

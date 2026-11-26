@@ -661,6 +661,7 @@ class TestMideaDevice:
         )
         self.device._reader = reader
         self.device._writer = writer
+        self.device._stream_loop = asyncio.get_running_loop()
         await self.device.authenticate()
         self.device.send_message(bytes([0x0] * 20))
         self.device._device_protocol_version = ProtocolVersion.V2
@@ -672,15 +673,23 @@ class TestMideaDevice:
         with pytest.raises(SocketException):
             self.device.send_message_v2(bytes([0x0] * 20))
 
-    def test_send_message_v2_writes_to_stream(self) -> None:
+    def test_send_message_v2_loop_none(self) -> None:
+        """A writer without an owning loop cannot authorize an inline write."""
+        self.device._writer = self._stream_mocks()[1]
+        self.device._stream_loop = None
+        with pytest.raises(SocketException):
+            self.device.send_message_v2(bytes([0x0] * 20))
+
+    @pytest.mark.asyncio
+    async def test_send_message_v2_writes_to_stream(self) -> None:
         """Test send_message_v2 writes the payload straight to the stream.
 
-        Called on the device loop (or with no loop captured, as here), the
-        write goes directly to the StreamWriter; the ``query`` flag no longer
-        toggles any socket timeout.
+        Called on the device loop, the write goes directly to the StreamWriter;
+        the ``query`` flag no longer toggles any socket timeout.
         """
         _, writer = self._stream_mocks()
         self.device._writer = writer
+        self.device._stream_loop = asyncio.get_running_loop()
         payload = bytes([0x0] * 20)
         self.device.send_message_v2(payload, query=True)
         writer.write.assert_called_once_with(payload)
@@ -2871,13 +2880,15 @@ class TestMideaDeviceTLS:
         with pytest.raises(SocketException):
             device.send_message_tls(b"\xaa\x1e\xac\x00")
 
-    def test_send_message_tls_success(self) -> None:
+    @pytest.mark.asyncio
+    async def test_send_message_tls_success(self) -> None:
         """A plaintext frame is wrapped as a 5a5a CCM datagram and sent."""
         bundle = _make_bundle()
         device = self._tls_device(bundle)
         self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         device.send_message_tls(b"\xaa\x1e\xac\x00")
         writer.write.assert_called_once()
         sent = writer.write.call_args.args[0]
@@ -2936,7 +2947,8 @@ class TestMideaDeviceTLS:
             device.send_message(b"\xaa\x1e\xac\x00", query=True)
         tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
 
-    def test_build_send_tls_wraps_bare_frame(self) -> None:
+    @pytest.mark.asyncio
+    async def test_build_send_tls_wraps_bare_frame(self) -> None:
         """build_send CCM-wraps the bare appliance frame, no 5a5a0111 envelope.
 
         The decoded CCM body must equal the raw ``cmd.serialize()`` bytes; the
@@ -2948,6 +2960,7 @@ class TestMideaDeviceTLS:
         peer = self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         payload = b"\xaa\x1e\xe3\x00\x00\x00\x00\x00\x03\x03"
         cmd = MagicMock()
         cmd.serialize.return_value = payload
@@ -3058,13 +3071,15 @@ class TestMideaDeviceTLS:
         with patch.object(device, "process_message", side_effect=ValueError):
             assert device.parse_message(frame) == MessageResult.PADDING
 
-    def test_send_heartbeat_tls(self) -> None:
+    @pytest.mark.asyncio
+    async def test_send_heartbeat_tls(self) -> None:
         """A TLS heartbeat is an empty-bodied 0x7B datagram."""
         bundle = _make_bundle()
         device = self._tls_device(bundle)
         self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         device.send_heartbeat()
         writer.write.assert_called_once()
         sent = writer.write.call_args.args[0]

@@ -58,7 +58,7 @@ class TestMideaEBDevice:
     def test_initial_attributes(self, device: MideaEBDevice) -> None:
         """Every attribute starts unset."""
         assert device.attributes[DeviceAttributes.work_status] is None
-        assert device.attributes[DeviceAttributes.function_no] is None
+        assert device.attributes[DeviceAttributes.function_num] is None
 
     def test_build_query(self, device: MideaEBDevice) -> None:
         """Build a single status query with the inner query frame."""
@@ -70,7 +70,7 @@ class TestMideaEBDevice:
         """A query reply updates every decoded attribute."""
         status = device.process_message(_report_frame(_status_body()))
         assert status["work_status"] == 3
-        assert status["function_no"] == 0x1234
+        assert status["function_num"] == 0x1234
         assert status["fire_level"] == 7
         assert device.attributes[DeviceAttributes.error_code] == 9
 
@@ -86,10 +86,10 @@ class TestMideaEBDevice:
         assert message.message_type == MessageType.set
         assert message.body[11] == 1
 
-    def test_set_function_no(self, device: MideaEBDevice) -> None:
-        """Setting function_no sends it big-endian at body[9]/body[10]."""
+    def test_set_function_num(self, device: MideaEBDevice) -> None:
+        """Setting function_num sends it big-endian at body[9]/body[10]."""
         with patch.object(device, "build_send") as build_send:
-            device.set_attribute(DeviceAttributes.function_no, 0x1234)
+            device.set_attribute(DeviceAttributes.function_num, 0x1234)
         body = build_send.call_args[0][0].body
         assert body[9] == 0x12
         assert body[10] == 0x34
@@ -102,13 +102,13 @@ class TestMideaEBDevice:
 
     def test_set_seeds_from_state(self, device: MideaEBDevice) -> None:
         """A single-field change keeps the other control fields from state."""
-        device._attributes[DeviceAttributes.function_no] = 0x55
+        device._attributes[DeviceAttributes.function_num] = 0x55
         device._attributes[DeviceAttributes.fire_level] = 3
         device._attributes[DeviceAttributes.time_reserve_hr] = 2
         with patch.object(device, "build_send") as build_send:
             device.set_attribute(DeviceAttributes.work_status, 1)
         body = build_send.call_args[0][0].body
-        assert body[10] == 0x55  # seeded function_no lo
+        assert body[10] == 0x55  # seeded function_num lo
         assert body[11] == 1  # overridden work_status
         assert body[12] == 2  # seeded reserve hr
         assert body[14] == 3  # seeded fire_level
@@ -244,7 +244,7 @@ class TestMideaEBDevice:
             (DeviceAttributes.time_reserve_hr, 24),
             (DeviceAttributes.time_reserve_min, 60),
             (DeviceAttributes.definite_time_hr, -1),
-            (DeviceAttributes.function_no, 0x10000),
+            (DeviceAttributes.function_num, 0x10000),
         ],
     )
     def test_set_out_of_range(

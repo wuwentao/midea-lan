@@ -24,7 +24,7 @@ from .message import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# function_no is a 16-bit menu/function identifier (Lua bit-packed 2 bytes).
+# function_num is a 16-bit menu/function identifier (Lua bit-packed 2 bytes).
 FUNCTION_NO_MIN = 0
 FUNCTION_NO_MAX = 0xFFFF
 # work_status is a single status byte (Lua BYTE_STATUS_* 0..9).
@@ -37,7 +37,7 @@ class DeviceAttributes(StrEnum):
 
     response = "response"
     work_status = "work_status"
-    function_no = "function_no"
+    function_num = "function_num"
     time_running_hr = "time_running_hr"
     time_running_min = "time_running_min"
     time_surplus_hr = "time_surplus_hr"
@@ -53,7 +53,7 @@ class DeviceAttributes(StrEnum):
 
 # Writable control params and their accepted inclusive ranges (Lua bounds).
 _SETTABLE_RANGES: dict[str, tuple[int, int]] = {
-    DeviceAttributes.function_no: (FUNCTION_NO_MIN, FUNCTION_NO_MAX),
+    DeviceAttributes.function_num: (FUNCTION_NO_MIN, FUNCTION_NO_MAX),
     DeviceAttributes.work_status: (WORK_STATUS_MIN, WORK_STATUS_MAX),
     DeviceAttributes.time_reserve_hr: (TIME_HR_LOW, TIME_HR_HIGH),
     DeviceAttributes.time_reserve_min: (TIME_MIN_LOW, TIME_MIN_HIGH),
@@ -79,7 +79,7 @@ class MideaEBDevice(MideaDevice):
             attributes={
                 DeviceAttributes.response: None,
                 DeviceAttributes.work_status: None,
-                DeviceAttributes.function_no: None,
+                DeviceAttributes.function_num: None,
                 DeviceAttributes.time_running_hr: None,
                 DeviceAttributes.time_running_min: None,
                 DeviceAttributes.time_surplus_hr: None,

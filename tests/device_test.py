@@ -700,8 +700,75 @@ class TestMideaDevice:
         # No running loop here, so _running_loop() is not the stream's loop:
         # the write must be marshalled, not issued inline.
         self.device.send_message_v2(payload)
-        loop.call_soon_threadsafe.assert_called_once_with(writer.write, payload)
+        loop.call_soon_threadsafe.assert_called_once()
         writer.write.assert_not_called()
+
+        callback, *args = loop.call_soon_threadsafe.call_args.args
+        callback(*args)
+        writer.write.assert_called_once_with(payload)
+
+    def test_send_message_v3_encodes_and_writes_on_device_loop(self) -> None:
+        """An off-loop V3 send assigns its counter in wire-write order."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        payload = b"appliance-frame"
+        encoded = b"\x83\x70encoded"
+        events: list[tuple[str, bytes]] = []
+
+        def encode_on_loop(data: bytes, _msg_type: int) -> bytes:
+            events.append(("encode", data))
+            return encoded
+
+        with patch.object(
+            self.device._security,
+            "encode_8370",
+            side_effect=encode_on_loop,
+        ) as encode:
+            writer.write.side_effect = lambda data: events.append(("write", data))
+            self.device.send_message_v3(payload)
+
+            encode.assert_not_called()
+            writer.write.assert_not_called()
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        assert events == [("encode", payload), ("write", encoded)]
+
+    def test_send_message_v3_drops_stale_scheduled_send(self) -> None:
+        """A queued command cannot encode or write after its writer is replaced."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        with patch.object(self.device._security, "encode_8370") as encode:
+            self.device.send_message_v3(b"old-connection-command")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            self.device._writer = self._stream_mocks()[1]
+            callback(*args)
+
+        encode.assert_not_called()
+        writer.write.assert_not_called()
+
+    def test_send_message_v3_scheduled_failure_closes_connection(self) -> None:
+        """A deferred encoding failure tears down the affected connection."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        with patch.object(
+            self.device._security,
+            "encode_8370",
+            side_effect=ValueError("invalid session key"),
+        ):
+            self.device.send_message_v3(b"command")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        writer.write.assert_not_called()
+        writer.close.assert_called_once_with()
+        assert self.device._writer is None
 
     @pytest.mark.asyncio
     async def test_send_message_v2_writes_inline_on_device_loop(self) -> None:
@@ -2151,6 +2218,35 @@ class TestMideaDevice:
         assert self.device._buffer == b""
         assert self.device._unsupported_protocol == []
 
+    def test_close_socket_detaches_stream_before_reset_hook(self) -> None:
+        """A reset hook cannot queue new work on the connection being closed."""
+        reader, writer = self._stream_mocks()
+        loop = MagicMock()
+        self.device._reader = reader
+        self.device._writer = writer
+        self.device._stream_loop = loop
+        self.device._tls_codec = MagicMock()
+        observed: list[tuple[object, object, object, object]] = []
+
+        def observe_reset() -> None:
+            observed.append(
+                (
+                    self.device._reader,
+                    self.device._writer,
+                    self.device._stream_loop,
+                    self.device._tls_codec,
+                ),
+            )
+            with pytest.raises(SocketException):
+                self.device.send_message_v2(b"late-command")
+
+        with patch.object(self.device, "reset_init_query", side_effect=observe_reset):
+            self.device.close_socket()
+
+        assert observed == [(None, None, None, None)]
+        loop.call_soon_threadsafe.assert_not_called()
+        writer.close.assert_called_once_with()
+
     @pytest.mark.parametrize("close_error", [None, OSError()])
     def test_close_socket_publishes_unavailable_before_reconnect(
         self,
@@ -2786,6 +2882,52 @@ class TestMideaDeviceTLS:
         writer.write.assert_called_once()
         sent = writer.write.call_args.args[0]
         assert sent[0:2] == b"\x5a\x5a"
+
+    def test_send_message_tls_encodes_and_writes_on_device_loop(self) -> None:
+        """An off-loop TLS send advances its session counters on the loop."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        codec = device._tls_codec
+        assert codec is not None
+        writer = MagicMock()
+        device._writer = writer
+        loop = MagicMock()
+        device._stream_loop = loop
+        payload = b"\xaa\x1e\xac\x00"
+
+        with patch.object(codec, "encode", wraps=codec.encode) as encode:
+            device.send_message_tls(payload)
+
+            encode.assert_not_called()
+            writer.write.assert_not_called()
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        encode.assert_called_once_with(payload, MSG_TYPE_DATA_TRANSMIT)
+        writer.write.assert_called_once()
+        assert writer.write.call_args.args[0][0:2] == b"\x5a\x5a"
+
+    def test_send_message_tls_drops_stale_session(self) -> None:
+        """A delayed TLS command cannot consume counters from a new session."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        codec = device._tls_codec
+        assert codec is not None
+        writer = MagicMock()
+        device._writer = writer
+        loop = MagicMock()
+        device._stream_loop = loop
+
+        with patch.object(codec, "encode", wraps=codec.encode) as encode:
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            self._install_codec(device, bundle)
+            callback(*args)
+
+        encode.assert_not_called()
+        writer.write.assert_not_called()
 
     def test_send_message_routes_to_tls(self) -> None:
         """send_message dispatches to the TLS path when TLS is enabled."""

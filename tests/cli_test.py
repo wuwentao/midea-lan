@@ -173,7 +173,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         }
         mock_cloud_instance = AsyncMock()
         mock_device_instance = MagicMock()
-        mock_device_instance.connect.return_value = True
+        mock_device_instance.connect = AsyncMock(return_value=True)
         with (
             patch(
                 "midealan.cli.discover",
@@ -190,6 +190,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             patch.object(
                 mock_device_instance,
                 "refresh_status",
+                new_callable=AsyncMock,
             ) as refresh_status_mock,
         ):
             mock_discover.return_value = {1: mock_device}
@@ -292,7 +293,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         }
         cert_bundle = object()
         mock_device_instance = MagicMock()
-        mock_device_instance.connect.return_value = True
+        mock_device_instance.connect = AsyncMock(return_value=True)
+        mock_device_instance.refresh_status = AsyncMock()
         with (
             patch("midealan.cli.discover", return_value={3: tls_device}),
             patch(
@@ -329,7 +331,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         devices = {3: _tls(3, "192.168.0.3"), 4: _tls(4, "192.168.0.4")}
         cert_bundle = object()
         mock_device_instance = MagicMock()
-        mock_device_instance.connect.return_value = True
+        mock_device_instance.connect = AsyncMock(return_value=True)
+        mock_device_instance.refresh_status = AsyncMock()
         with (
             patch("midealan.cli.discover", return_value=devices),
             patch(
@@ -900,7 +903,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
     async def test_set_attribute(self) -> None:
         """Test set attribute."""
         mock_device_instance = MagicMock()
-        mock_device_instance.connect.return_value = True
+        mock_device_instance.connect = AsyncMock(return_value=True)
+        mock_device_instance.refresh_status = AsyncMock()
         with (
             patch.object(
                 self.cli,
@@ -912,6 +916,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                     [mock_device_instance],
                 ],
             ),
+            patch("midealan.cli.asyncio.sleep", new_callable=AsyncMock),
         ):
             await self.cli.set_attribute()
             mock_device_instance.set_attribute.assert_not_called()

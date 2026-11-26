@@ -120,7 +120,9 @@ class Midea13Device(MideaDevice):
         if hasattr(message, "control_success"):
             new_status = {"control_success": message.control_success}
             if message.control_success:
-                self.refresh_status()
+                # process_message runs inside the serve loop's parse (sync), so
+                # schedule the follow-up refresh on the loop instead of awaiting.
+                self.queue_refresh()
         else:
             fan_attrs = (
                 DeviceAttributes.fan_power,

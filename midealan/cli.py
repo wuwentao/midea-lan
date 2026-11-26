@@ -220,13 +220,13 @@ class MideaCLI:
                     cert_bundle=cert_bundle,
                 )
                 _LOGGER.debug("Opening socket for device.")
-                if dev.connect():
+                if await dev.connect():
                     success = False
                     try:
                         # connect() already authenticates V3 devices, so there
                         # is no need to call authenticate() again here.
                         _LOGGER.debug("Trying to retrieve device attributes.")
-                        dev.refresh_status(True)
+                        await dev.refresh_status(True)
                         _LOGGER.info("Found device:\n%s", dev.attributes)
                         device_list.append(dev)
                         success = True
@@ -623,7 +623,7 @@ class MideaCLI:
                 self._cast_attr_value(),
             )
             await asyncio.sleep(2)
-            device_list[0].refresh_status(True)
+            await device_list[0].refresh_status(True)
             _LOGGER.info("New device status:\n%s", device_list[0].attributes)
         finally:
             for dev in device_list:

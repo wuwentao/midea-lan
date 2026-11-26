@@ -1,6 +1,7 @@
 """Midea lan CA device."""
 
 import logging
+import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from .message import (
     CA_MODE_BODY_OFFSET,
     CA_MODE_MASKS,
     CA_MODE_MAX_AGE_SECONDS,
+    CA_MODE_PENDING_TIMEOUT_SECONDS,
     MessageCAResponse,
     MessageQuery,
     build_ca_mode_body,
@@ -94,6 +96,7 @@ class _PendingCAModeWrite:
 
     mask: int
     enabled: bool
+    sent_at: float | None = None
 
 
 class CAModeWritePendingError(RuntimeError):
@@ -248,6 +251,14 @@ class MideaCADevice(MideaDevice):
         with self._ca_mode_lock:
             self._ca_mode_received_at = None
 
+    def close_socket(self, sock: socket.socket | None = None) -> None:
+        """Clear cached mode state when the transport is disconnected."""
+        super().close_socket(sock)
+        with self._ca_mode_lock:
+            self._ca_mode_received_at = None
+            self._ca_mode_status = None
+            self._ca_mode_pending = None
+
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
         """Decode and publish a Toshiba CA base status."""
         status = decode_toshiba_ca_status(
@@ -276,10 +287,19 @@ class MideaCADevice(MideaDevice):
             raise ValueWrongType("[ca] Expected bool")
 
         with self._ca_mode_lock:
-            if self._ca_mode_pending is not None:
-                raise CAModeWritePendingError(
-                    "[ca] mode write refused: waiting for device confirmation",
+            pending = self._ca_mode_pending
+            if pending is not None:
+                pending_expired = (
+                    pending.sent_at is not None
+                    and time.monotonic() - pending.sent_at
+                    > CA_MODE_PENDING_TIMEOUT_SECONDS
                 )
+                if pending_expired:
+                    self._ca_mode_pending = None
+                else:
+                    raise CAModeWritePendingError(
+                        "[ca] mode write refused: waiting for device status",
+                    )
             status = self._fresh_ca_mode_status()
             if status is None:
                 return
@@ -300,6 +320,12 @@ class MideaCADevice(MideaDevice):
                 if self._ca_mode_pending == pending:
                     self._ca_mode_pending = None
                 raise
+            if self._ca_mode_pending == pending:
+                self._ca_mode_pending = _PendingCAModeWrite(
+                    mask=mask,
+                    enabled=value,
+                    sent_at=time.monotonic(),
+                )
 
     def _remember_ca_mode_status(
         self,
@@ -335,11 +361,16 @@ class MideaCADevice(MideaDevice):
                 received_at=received_at,
             )
             pending = self._ca_mode_pending
-            is_confirmed = (
+            if (
                 pending is not None
-                and bool(raw_body[0] & pending.mask) == pending.enabled
-            )
-            if is_confirmed:
+                and pending.sent_at is not None
+                and received_at > pending.sent_at
+            ):
+                if bool(raw_body[0] & pending.mask) != pending.enabled:
+                    _LOGGER.debug(
+                        "[%s] CA mode write was not confirmed by device status",
+                        self.device_id,
+                    )
                 self._ca_mode_pending = None
 
     def _fresh_ca_mode_status(self) -> _CAModeStatus | None:

@@ -141,16 +141,46 @@ def test_notify02_general_status_is_a_valid_set_template() -> None:
     assert command.body[0] == 0x03
 
 
-def test_unconfirmed_status_does_not_clear_pending_guard() -> None:
-    """A status without the requested bit cannot release the pending write."""
+def test_post_set_rejection_releases_pending_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A newer status rejecting the requested bit permits a safe retry."""
     device = _device()
+    clock = [100.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
     device.process_message(_status(0x00))
     with patch.object(device, "build_send") as send:
+        clock[0] += 1.0
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        clock[0] += 1.0
         device.process_message(_status(0x00))
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 2
+
+
+def test_pre_set_status_with_delayed_dispatch_does_not_clear_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A frame received before SET cannot confirm it after delayed dispatch."""
+    device = _device()
+    clock = [90.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+    device.process_message(_status(0x00))
+    clock[0] = 100.0
+    device._message_received()
+    with patch.object(device, "build_send") as send:
+        clock[0] = 101.0
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        clock[0] = 102.0
+        device.process_message(_status(0x01))
+        device._message_dispatch_complete()
         with pytest.raises(CAModeWritePendingError):
             device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 1
+
+        device.process_message(_status(0x01))
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 2
 
 
 def test_confirming_status_clears_pending_guard() -> None:
@@ -209,6 +239,40 @@ def test_pending_write_is_reported_after_status_expires(
         clock[0] += 121.0
         with pytest.raises(CAModeWritePendingError, match="waiting for device"):
             device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+
+
+def test_pending_write_recovers_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreported write cannot block later writes indefinitely."""
+    device = _device()
+    clock = [100.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        clock[0] += 241.0
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 1
+
+        device.process_message(_status(0x00))
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 2
+
+
+def test_disconnect_clears_pending_write_and_cached_status() -> None:
+    """Reconnect requires a new status and does not retain a pending write."""
+    device = _device()
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        device.close_socket()
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 1
+
+        device.process_message(_status(0x00))
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 2
 
 
 def test_failed_send_does_not_publish_state_or_leave_pending() -> None:

@@ -510,20 +510,23 @@ class MideaDevice:
         key is negotiated live from the provisioned app certificate and the
         device's module certificate (see :class:`midealan.tls.TLSSession`).
         """
-        if not self._writer or self._cert_bundle is None:
+        with self._stream_state_lock:
+            writer = self._writer
+        cert_bundle = self._cert_bundle
+        if writer is None or cert_bundle is None:
             _LOGGER.debug(
                 "[%s] authenticate_tls failure, socket or cert bundle is none",
                 self._device_id,
             )
             raise SocketException
-        session = TLSSession(self._cert_bundle, self._device_id)
+        session = TLSSession(cert_bundle, self._device_id)
         _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
         try:
             # The stream writer buffers the whole handshake frame; a drain()
             # after each write flushes the (large) cert request so the peer is
             # not left waiting on a partially sent frame.
-            self._writer.write(session.build_cert_request())
-            await self._writer.drain()
+            writer.write(session.build_cert_request())
+            await writer.drain()
             reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: cert response %d bytes: %s",
@@ -532,8 +535,8 @@ class MideaDevice:
                 reply.hex(),
             )
             session.process_cert_response(reply)
-            self._writer.write(session.build_finish())
-            await self._writer.drain()
+            writer.write(session.build_finish())
+            await writer.drain()
             finish_reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: finish response %d bytes: %s",
@@ -549,11 +552,22 @@ class MideaDevice:
                 repr(e),
             )
             raise AuthException from e
-        self._tls_codec = MSDatagram(
+        codec = MSDatagram(
             self._device_id,
-            ap_private_key=self._cert_bundle.ap_private_key,
+            ap_private_key=cert_bundle.ap_private_key,
             session_key=session.session_key,
         )
+        # A synchronous close may run from another thread while authentication
+        # awaits network I/O. Publish the negotiated codec only if its stream is
+        # still current; otherwise it could be reused briefly by a reconnect.
+        with self._stream_state_lock:
+            if self._writer is not writer:
+                _LOGGER.debug(
+                    "[%s] TLS handshake completed for a stale connection",
+                    self._device_id,
+                )
+                raise SocketException
+            self._tls_codec = codec
         _LOGGER.debug("[%s] TLS handshake success", self._device_id)
 
     async def _recv_tls_frame(self) -> bytes:
@@ -602,14 +616,26 @@ class MideaDevice:
     def send_message_tls(self, data: bytes, query: bool = False) -> None:
         """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
         _ = query
-        codec = self._tls_codec
+        # Read codec, writer, and loop under one lock so a concurrent
+        # close_socket cannot clear the codec between the connection check and
+        # the deferred encode, leaving an off-loop send with a stale snapshot.
+        with self._stream_state_lock:
+            codec = self._tls_codec
+            writer = self._writer
+            loop = self._stream_loop
         if codec is None:
             _LOGGER.debug(
                 "[%s] send_message_tls failure, TLS session not established",
                 self._device_id,
             )
             raise SocketException
-        writer, loop = self._require_stream_connection(data)
+        if writer is None or loop is None:
+            _LOGGER.debug(
+                "[%s] send failure, device stream is incomplete, data: %s",
+                self._device_id,
+                data.hex(),
+            )
+            raise SocketException
         if _running_loop() is not loop:
             # MSDatagram.encode advances per-session counters. Keep that state
             # change next to the write on the stream loop so heartbeat and
@@ -1617,7 +1643,7 @@ class MideaDevice:
             self._reader = None
             self._writer = None
             self._stream_loop = None
-        self._tls_codec = None
+            self._tls_codec = None
         self._unsupported_protocol = []
         # Re-arm the appliance query too. It is cleared in pre_process_message
         # and was never set back, so a reconnected device would skip protocol

@@ -126,15 +126,15 @@ class MideaE7Device(MideaDevice):
         message = MessageE7Response(msg, self._soft_version)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
-        for status in self._attributes:
-            if hasattr(message, str(status)):
-                value = getattr(message, str(status))
-                self._attributes[status] = value
-                status_key = str(status)
-                with self._pending_controls_lock:
+        with self._pending_controls_lock:
+            for status in self._attributes:
+                if hasattr(message, str(status)):
+                    value = getattr(message, str(status))
+                    self._attributes[status] = value
+                    status_key = str(status)
                     if self._pending_controls.get(status_key) == value:
                         del self._pending_controls[status_key]
-                new_status[str(status)] = value
+                    new_status[str(status)] = value
         return new_status
 
     def _make_message_set(self) -> MessageSet:

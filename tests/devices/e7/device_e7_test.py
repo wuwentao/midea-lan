@@ -1,7 +1,7 @@
 """Test e7 device."""
 
 from collections.abc import Sequence
-from threading import Event, Thread
+from threading import Event, RLock, Thread, get_ident
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +11,36 @@ from midealan.devices.e7 import DeviceAttributes, MideaE7Device
 from midealan.devices.e7.message import INNER_HEAD
 from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
+
+
+class _SignalingRLock:
+    """Reentrant lock that signals before each acquisition attempt."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self.attempted = Event()
+        self._owner: int | None = None
+        self._depth = 0
+
+    def __enter__(self) -> None:
+        self.attempted.set()
+        self._lock.acquire()
+        current_thread = get_ident()
+        if self._owner == current_thread:
+            self._depth += 1
+        else:
+            self._owner = current_thread
+            self._depth = 1
+
+    def __exit__(self, *_args: object) -> None:
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+        self._lock.release()
+
+    def owned_by_current_thread(self) -> bool:
+        """Return whether the calling thread currently owns the lock."""
+        return self._owner == get_ident()
 
 
 def _report_frame(body: Sequence[int], message_type: int = MessageType.query) -> bytes:
@@ -196,6 +226,8 @@ class TestMideaE7Device32bit:
         device: MideaE7Device,
     ) -> None:
         """A replacement cannot race a report's pending confirmation."""
+        lock = _SignalingRLock()
+        device._pending_controls_lock = lock  # type: ignore[assignment]
         completed = Event()
 
         def replace_pending() -> None:
@@ -203,10 +235,12 @@ class TestMideaE7Device32bit:
                 device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
             completed.set()
 
-        with device._pending_controls_lock:
+        with lock:
+            lock.attempted.clear()
             replace_thread = Thread(target=replace_pending)
             replace_thread.start()
-            assert not completed.wait(timeout=0.05)
+            assert lock.attempted.wait(timeout=1)
+            assert not completed.is_set()
         replace_thread.join(timeout=1)
         assert not replace_thread.is_alive()
         assert completed.is_set()
@@ -216,6 +250,8 @@ class TestMideaE7Device32bit:
         device: MideaE7Device,
     ) -> None:
         """A report received during a failed send confirms the prior value."""
+        lock = _SignalingRLock()
+        device._pending_controls_lock = lock  # type: ignore[assignment]
         with patch.object(device, "build_send"):
             device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
 
@@ -246,9 +282,11 @@ class TestMideaE7Device32bit:
             replace_thread = Thread(target=replace_pending)
             replace_thread.start()
             assert send_started.wait(timeout=1)
+            lock.attempted.clear()
             report_thread = Thread(target=confirm_previous)
             report_thread.start()
-            assert not report_completed.wait(timeout=0.05)
+            assert lock.attempted.wait(timeout=1)
+            assert not report_completed.is_set()
             release_send.set()
             replace_thread.join(timeout=1)
             report_thread.join(timeout=1)
@@ -257,6 +295,58 @@ class TestMideaE7Device32bit:
         assert not report_thread.is_alive()
         assert send_errors
         assert DeviceAttributes.time_reserve_hr not in device._pending_controls
+
+    def test_report_update_is_atomic_with_control_build(
+        self,
+        device: MideaE7Device,
+    ) -> None:
+        """A setter cannot build a frame from a partially applied report."""
+        lock = _SignalingRLock()
+        device._pending_controls_lock = lock  # type: ignore[assignment]
+        field_updated = Event()
+        continue_report = Event()
+        set_completed = Event()
+        unlocked_update = Event()
+
+        class BlockingAttributes(dict[str, object]):
+            """Pause the report after its first writable field update."""
+
+            def __setitem__(self, key: str, value: object) -> None:
+                super().__setitem__(key, value)
+                if key == DeviceAttributes.work_status:
+                    if not lock.owned_by_current_thread():
+                        unlocked_update.set()
+                    field_updated.set()
+                    continue_report.wait(timeout=1)
+
+        device._attributes = BlockingAttributes(device._attributes)
+
+        def process_report() -> None:
+            device.process_message(_report_frame(_status_body_32()))
+
+        def set_fire_level() -> None:
+            device.set_attribute(DeviceAttributes.fire_level, 5)
+            set_completed.set()
+
+        with patch.object(device, "build_send") as build_send:
+            report_thread = Thread(target=process_report)
+            report_thread.start()
+            assert field_updated.wait(timeout=1)
+            lock.attempted.clear()
+            set_thread = Thread(target=set_fire_level)
+            set_thread.start()
+            assert lock.attempted.wait(timeout=1)
+            assert not set_completed.is_set()
+            continue_report.set()
+            report_thread.join(timeout=1)
+            set_thread.join(timeout=1)
+
+        assert not report_thread.is_alive()
+        assert not set_thread.is_alive()
+        assert not unlocked_update.is_set()
+        body = build_send.call_args.args[0].body
+        assert body[11] == 0x12
+        assert body[12] == 0x34
 
     @pytest.mark.parametrize(
         ("attr", "value"),

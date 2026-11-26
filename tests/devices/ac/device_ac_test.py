@@ -387,6 +387,25 @@ class TestMideaACDevice:
             assert isinstance(message, ToggleDisplay)
             assert message.mode == DisplayToggleMode.LUA_C1
 
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [
+            ("24", None),
+            ("marketing-name", "24"),
+            ("75", None),
+            ("marketing-name", "75"),
+        ],
+    )
+    def test_lua_protocol_ids_do_not_select_display_frame(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Lua protocol IDs are not device model/SN8 routing keys."""
+        self.device._model = model
+        self.device._sn8 = sn8
+        assert self.device._display_toggle_mode() == DisplayToggleMode.LEGACY
+
     def test_set_attribute_eco_mode_resets_exclusive_modes(self) -> None:
         """Test eco mode set resets comfort and frost protect on general set."""
         with patch.object(self.device, "build_send") as mock_build_send:

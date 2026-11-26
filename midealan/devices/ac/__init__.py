@@ -212,8 +212,9 @@ class ACModelCapabilities:
 
 
 DEFAULT_AC_MODEL_CAPABILITIES = ACModelCapabilities()
-# These Lua models use the dedicated 0x41/0x61 display-toggle body. Other AC
-# models retain the legacy display command until their control path is verified.
+# These confirmed model/SN8 identifiers use the dedicated 0x41/0x61
+# display-toggle body. Other AC models retain the legacy display command until
+# their control path is verified.
 LUA_DISPLAY_TOGGLE_61_MODELS = frozenset(
     {
         "00000Q11",
@@ -228,7 +229,6 @@ LUA_DISPLAY_TOGGLE_61_MODELS = frozenset(
         "00000Q1E",
         "00000Q1F",
         "20601026",
-        "24",
     },
 )
 LUA_DISPLAY_TOGGLE_C1_MODELS = frozenset(
@@ -239,7 +239,6 @@ LUA_DISPLAY_TOGGLE_C1_MODELS = frozenset(
         "22040055",
         "22270021",
         "22270043",
-        "75",
     },
 )
 # These Lua models decode A0 screenDisplayNowValue from byte 11 bits 0-2.

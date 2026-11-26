@@ -592,14 +592,30 @@ class MideaDevice:
 
     def send_message_tls(self, data: bytes, query: bool = False) -> None:
         """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
-        if self._tls_codec is None:
+        _ = query
+        codec = self._tls_codec
+        if codec is None:
             _LOGGER.debug(
                 "[%s] send_message_tls failure, TLS session not established",
                 self._device_id,
             )
             raise SocketException
-        frame = self._tls_codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
-        self.send_message_v2(frame, query=query)
+        writer = self._require_stream_writer(data)
+        loop = self._stream_loop
+        if loop is not None and _running_loop() is not loop:
+            # MSDatagram.encode advances per-session counters. Keep that state
+            # change next to the write on the stream loop so heartbeat and
+            # executor-originated commands cannot allocate counters in one
+            # order and reach the wire in another.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_tls_send,
+                writer,
+                codec,
+                data,
+            )
+            return
+        frame = codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
+        writer.write(frame)
 
     def send_message_v2(self, data: bytes, query: bool = False) -> None:
         """Send message V2.
@@ -617,21 +633,18 @@ class MideaDevice:
         stability across the send helpers.
         """
         _ = query
-        writer = self._writer
-        if not writer:
-            _LOGGER.debug(
-                "[%s] send_message_v2 failure, device socket is none, data: %s",
-                self._device_id,
-                data.hex(),
-            )
-            # raise exception to main loop
-            raise SocketException
+        writer = self._require_stream_writer(data)
         loop = self._stream_loop
         if loop is not None and _running_loop() is not loop:
             # Off the stream's owning loop (executor thread): asyncio transports
-            # are not thread-safe, so hand the write to that loop. A dead link is
-            # surfaced by the serve loop's read, exactly as for a loop-side send.
-            loop.call_soon_threadsafe(writer.write, data)
+            # are not thread-safe, so hand the write to that loop. Capturing the
+            # writer also prevents a delayed callback from reaching a replacement
+            # connection after reconnect.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_send,
+                writer,
+                lambda: data,
+            )
             return
         writer.write(data)
 
@@ -642,8 +655,75 @@ class MideaDevice:
         query: bool = False,
     ) -> None:
         """Send message V3."""
-        data = self._security.encode_8370(data, msg_type)
-        self.send_message_v2(data, query=query)
+        _ = query
+        writer = self._require_stream_writer(data)
+        loop = self._stream_loop
+        if loop is not None and _running_loop() is not loop:
+            # encode_8370 advances the request counter, so defer both encoding
+            # and writing to the stream loop as one ordered operation.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_send,
+                writer,
+                lambda: self._security.encode_8370(data, msg_type),
+            )
+            return
+        writer.write(self._security.encode_8370(data, msg_type))
+
+    def _require_stream_writer(self, data: bytes) -> asyncio.StreamWriter:
+        """Return the active writer or fail before mutating transport counters."""
+        writer = self._writer
+        if writer is None:
+            _LOGGER.debug(
+                "[%s] send failure, device socket is none, data: %s",
+                self._device_id,
+                data.hex(),
+            )
+            raise SocketException
+        return writer
+
+    def _run_scheduled_tls_send(
+        self,
+        expected_writer: asyncio.StreamWriter,
+        expected_codec: MSDatagram,
+        data: bytes,
+    ) -> None:
+        """Encode and write one TLS frame if its connection is still active."""
+        if self._tls_codec is not expected_codec:
+            _LOGGER.debug(
+                "[%s] Dropping send from a stale TLS session",
+                self._device_id,
+            )
+            return
+        self._run_scheduled_send(
+            expected_writer,
+            lambda: expected_codec.encode(data, MSG_TYPE_DATA_TRANSMIT),
+        )
+
+    def _run_scheduled_send(
+        self,
+        expected_writer: asyncio.StreamWriter,
+        build_frame: Callable[[], bytes],
+    ) -> None:
+        """Build and write a frame on the stream loop for the active connection."""
+        if self._writer is not expected_writer:
+            _LOGGER.debug(
+                "[%s] Dropping send from a stale connection",
+                self._device_id,
+            )
+            return
+        try:
+            expected_writer.write(build_frame())
+        except (MideaLanError, OSError, RuntimeError, ValueError):
+            # A fire-and-forget executor send cannot return an exception to its
+            # caller. The callback is synchronous on the stream loop, so the
+            # captured writer is still current here; tear it down and let the
+            # supervisor reconnect.
+            _LOGGER.debug(
+                "[%s] Scheduled send failed",
+                self._device_id,
+                exc_info=True,
+            )
+            self.close_socket()
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
         """Serialize and send."""
@@ -1518,6 +1598,14 @@ class MideaDevice:
 
     def close_socket(self) -> None:
         """Close the stream and re-arm per-connection probe state."""
+        writer = self._writer
+        # Detach the connection first. A synchronous setter may be running in
+        # an executor while the loop tears down; it must fail before recording
+        # new pending state or scheduling work on this obsolete connection.
+        self._reader = None
+        self._writer = None
+        self._stream_loop = None
+        self._tls_codec = None
         self._unsupported_protocol = []
         # Re-arm the appliance query too. It is cleared in pre_process_message
         # and was never set back, so a reconnected device would skip protocol
@@ -1527,15 +1615,6 @@ class MideaDevice:
         # reconnected device re-probes instead of reusing stale results.
         self.reset_init_query()
         self._buffer = b""
-        # Drop the negotiated session key so a reconnect re-runs the TLS
-        # cert/ECDH handshake instead of reusing a stale key.
-        self._tls_codec = None
-        writer = self._writer
-        self._reader = None
-        self._writer = None
-        # The stream is gone; drop its owning-loop reference so a stale write
-        # cannot be marshalled onto a loop that no longer has the transport.
-        self._stream_loop = None
         if writer is not None:
             # close() releases the transport synchronously on the next loop
             # iteration; wait_closed() is not needed for the fd to be freed, and

@@ -2,9 +2,9 @@
 
 import json
 import logging
-import threading
 from collections import deque
 from enum import StrEnum
+from threading import RLock
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
@@ -102,7 +102,10 @@ class MideaE7Device(MideaDevice):
         # pending until a report confirms them so a rapid follow-up write does
         # not rebuild the frame from stale reported state.
         self._pending_controls: dict[str, deque[int]] = {}
-        self._pending_controls_lock = threading.RLock()
+        # Reports run on the asyncio stream loop, while synchronous setters may
+        # run in an executor thread. asyncio.Lock cannot protect both call paths;
+        # this lock covers only state/frame construction, never awaited I/O.
+        self._pending_controls_lock = RLock()
         self.set_customize(customize)
 
     @property

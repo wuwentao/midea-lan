@@ -88,6 +88,7 @@ class _CAModeStatus:
 
     body: bytes
     received_at: float
+    event_order: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +97,7 @@ class _PendingCAModeWrite:
 
     mask: int
     enabled: bool
+    sent_order: int | None = None
     sent_at: float | None = None
 
 
@@ -177,6 +179,9 @@ class MideaCADevice(MideaDevice):
         )
         self._modes = [""]
         self._ca_mode_lock = threading.RLock()
+        self._ca_mode_event_lock = threading.Lock()
+        self._ca_mode_event_order = 0
+        self._ca_mode_received_event_order: int | None = None
         self._ca_mode_received_at: float | None = None
         self._ca_mode_status: _CAModeStatus | None = None
         self._ca_mode_pending: _PendingCAModeWrite | None = None
@@ -193,12 +198,15 @@ class MideaCADevice(MideaDevice):
         if status is not None:
             return status
         with self._ca_mode_lock:
+            event_order = self._ca_mode_received_event_order
             received_at = self._ca_mode_received_at
+        if event_order is None:
+            event_order = self._next_ca_mode_event_order()
         if received_at is None:
             received_at = time.monotonic()
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        self._remember_ca_mode_status(message, received_at)
+        self._remember_ca_mode_status(message, event_order, received_at)
         new_status = {}
         for attr in self._attributes:
             if hasattr(message, str(attr)):
@@ -243,18 +251,22 @@ class MideaCADevice(MideaDevice):
 
     def _message_received(self) -> None:
         """Record when a socket frame arrives, before dispatch."""
+        event_order = self._next_ca_mode_event_order()
         with self._ca_mode_lock:
+            self._ca_mode_received_event_order = event_order
             self._ca_mode_received_at = time.monotonic()
 
     def _message_dispatch_complete(self) -> None:
         """Clear the receive marker after the decoded batch is dispatched."""
         with self._ca_mode_lock:
+            self._ca_mode_received_event_order = None
             self._ca_mode_received_at = None
 
     def close_socket(self, sock: socket.socket | None = None) -> None:
         """Clear cached mode state when the transport is disconnected."""
         super().close_socket(sock)
         with self._ca_mode_lock:
+            self._ca_mode_received_event_order = None
             self._ca_mode_received_at = None
             self._ca_mode_status = None
             self._ca_mode_pending = None
@@ -324,12 +336,14 @@ class MideaCADevice(MideaDevice):
                 self._ca_mode_pending = _PendingCAModeWrite(
                     mask=mask,
                     enabled=value,
+                    sent_order=self._next_ca_mode_event_order(),
                     sent_at=time.monotonic(),
                 )
 
     def _remember_ca_mode_status(
         self,
         message: MessageCAResponse,
+        event_order: int,
         received_at: float,
     ) -> None:
         """Store only a complete Midea general status body for later SETs."""
@@ -354,17 +368,18 @@ class MideaCADevice(MideaDevice):
         raw_body = bytes(body[CA_MODE_BODY_OFFSET:end])
         with self._ca_mode_lock:
             current = self._ca_mode_status
-            if current is not None and received_at < current.received_at:
+            if current is not None and event_order < current.event_order:
                 return
             self._ca_mode_status = _CAModeStatus(
                 body=raw_body,
                 received_at=received_at,
+                event_order=event_order,
             )
             pending = self._ca_mode_pending
             if (
                 pending is not None
-                and pending.sent_at is not None
-                and received_at > pending.sent_at
+                and pending.sent_order is not None
+                and event_order > pending.sent_order
             ):
                 if bool(raw_body[0] & pending.mask) != pending.enabled:
                     _LOGGER.debug(
@@ -372,6 +387,12 @@ class MideaCADevice(MideaDevice):
                         self.device_id,
                     )
                 self._ca_mode_pending = None
+
+    def _next_ca_mode_event_order(self) -> int:
+        """Return an ordering point assigned at actual receipt or completed SET."""
+        with self._ca_mode_event_lock:
+            self._ca_mode_event_order += 1
+            return self._ca_mode_event_order
 
     def _fresh_ca_mode_status(self) -> _CAModeStatus | None:
         """Return a recent complete status body, if one is available."""

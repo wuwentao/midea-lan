@@ -183,9 +183,12 @@ def test_pre_set_status_with_delayed_dispatch_does_not_clear_pending(
         assert send.call_count == 2
 
 
-def test_confirming_status_clears_pending_guard() -> None:
-    """A real status confirming the requested bit releases the pending write."""
+def test_confirming_status_clears_pending_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Receipt order confirms a write even when monotonic clock ticks are equal."""
     device = _device()
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: 100.0)
     device.process_message(_status(0x00))
     with patch.object(device, "build_send") as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
@@ -218,8 +221,8 @@ def test_older_status_cannot_replace_newer_cached_status() -> None:
     older = MessageCAResponse(_status(0x01))
 
     with patch("midealan.devices.ca.time.monotonic", return_value=200.0):
-        device._remember_ca_mode_status(newer, received_at=200.0)
-        device._remember_ca_mode_status(older, received_at=100.0)
+        device._remember_ca_mode_status(newer, event_order=2, received_at=200.0)
+        device._remember_ca_mode_status(older, event_order=1, received_at=100.0)
 
         with patch.object(device, "build_send") as send:
             device.set_attribute(DeviceAttributes.holiday_mode.value, True)

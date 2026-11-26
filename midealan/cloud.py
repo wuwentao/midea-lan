@@ -71,12 +71,15 @@ CERT_CBC_IV_HEX_LENGTH = 32
 DAY_REPORT_ALIAS = "/cfhrs/e3/v1/api"
 DAY_REPORT_MESSAGE = "dayReportV2"
 DAY_REPORT_TIMEOUT = ClientTimeout(20)
-E1_FILTER_WASH_TIME_ALIAS = "/cfhrs/e1/v1/api"
-E1_FILTER_WASH_TIME_MESSAGE = "selfCleanV2"
-E1_FILTER_WASH_TIME_ACTION = "getCleanTimes"
 # Codes the gateway answers when the access token is missing, rejected or not a
 # user token; callers log in again instead of retrying the same token.
 AUTH_ERROR_CODES = frozenset({40001, 40002, 44001})
+# Authentication request and response bodies contain account identifiers,
+# password material, access tokens, or session identifiers. Log only that the
+# exchange completed, including in cloud-specific request overrides.
+SENSITIVE_AUTH_ENDPOINTS = frozenset(
+    {"/v1/user/login/id/get", "/v1/user/login", "/mj/user/login"},
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -396,7 +399,7 @@ class MideaCloud:
                         timeout=ClientTimeout(10),
                     )
                     raw = await r.read()
-                    if endpoint in {"/v1/user/login/id/get", "/mj/user/login"}:
+                    if endpoint in SENSITIVE_AUTH_ENDPOINTS:
                         # Login replies contain identifiers and session credentials.
                         _LOGGER.debug("Midea cloud authentication response received")
                     else:
@@ -664,7 +667,7 @@ class MideaCloud:
             or answered with an error.
 
         """
-        data = await self._request_signed_proxy(
+        data = await self.request_signed_proxy(
             DAY_REPORT_ALIAS,
             {"msg": DAY_REPORT_MESSAGE, "params": {"applianceId": str(appliance_id)}},
         )
@@ -676,7 +679,7 @@ class MideaCloud:
         result = data.get("result")
         return result if isinstance(result, dict) else None
 
-    async def _request_signed_proxy(
+    async def request_signed_proxy(
         self,
         alias: str,
         payload: dict[str, Any],
@@ -800,54 +803,6 @@ class MeijuCloud(MideaCloud):
             "appId": self._app_id,
             "language": "en_US",
         }
-
-    async def get_e1_filter_wash_time(self, appliance_id: int) -> int | None:
-        """Read the E1 filter's cumulative washing time in minutes.
-
-        The 7600644C app plugin reads ``selfCleanV2/getCleanTimes`` via the
-        signed proxy. The E3-style gateway envelope is not yet verified live
-        for E1. This method requires an existing Meiju user session.
-
-        Returns:
-            Whole, non-negative minutes, or None if the result is missing or
-            invalid. Zero is a valid reading, not a fallback.
-
-        Raises:
-            CloudAuthError: If the user access token is absent or rejected.
-            CloudError: If the proxy request fails or returns an error.
-
-        """
-        data = await self._request_signed_proxy(
-            E1_FILTER_WASH_TIME_ALIAS,
-            {
-                "msg": E1_FILTER_WASH_TIME_MESSAGE,
-                "params": {
-                    "applianceId": str(appliance_id),
-                    "action": E1_FILTER_WASH_TIME_ACTION,
-                    "diffWashTimes": 0,
-                    "totalWashTimes": 0,
-                },
-            },
-        )
-        code = data.get("code")
-        if str(code) in {str(auth_code) for auth_code in AUTH_ERROR_CODES}:
-            msg = "Midea cloud rejected the E1 filter query credentials"
-            raise CloudAuthError(msg)
-        if code is not None or str(data.get("retCode")) != "0":
-            msg = "Midea cloud rejected the E1 filter query"
-            raise CloudError(msg)
-        result = data.get("result")
-        minutes = result.get("time") if isinstance(result, dict) else None
-        if isinstance(minutes, int) and not isinstance(minutes, bool):
-            return minutes if minutes >= 0 else None
-        # Accept decimal integer strings and zero-only fractional suffixes,
-        # without rounding, float conversion or interpreting a boolean as time.
-        if isinstance(minutes, str) and re.fullmatch(r"[0-9]+(?:\.0+)?", minutes):
-            try:
-                return int(minutes.partition(".")[0])
-            except ValueError:
-                return None  # Python may limit very large integer strings.
-        return None
 
     async def login(self) -> bool:
         """Authenticate to Meiju Cloud."""
@@ -1497,12 +1452,15 @@ class MideaAirCloud(MideaCloud):
                         timeout=ClientTimeout(10),
                     )
                     raw = await r.read()
-                    _LOGGER.debug(
-                        "Midea cloud API url: %s, \n data: %s, \n response: %s",
-                        url,
-                        _redact_data(str(data)),
-                        _redact_data(str(raw)),
-                    )
+                    if endpoint in SENSITIVE_AUTH_ENDPOINTS:
+                        _LOGGER.debug("Midea cloud authentication response received")
+                    else:
+                        _LOGGER.debug(
+                            "Midea cloud API url: %s, \n data: %s, \n response: %s",
+                            url,
+                            _redact_data(str(data)),
+                            _redact_data(str(raw)),
+                        )
                     response = json.loads(raw)
                     break
             except (TimeoutError, ClientConnectionError, json.JSONDecodeError) as e:

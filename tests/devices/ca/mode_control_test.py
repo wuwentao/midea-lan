@@ -122,7 +122,7 @@ def test_set_requires_status_and_waits_for_next_status() -> None:
         assert command.body[0] == 0x01
         assert command.body[1:] == bytes(range(2, CA_MODE_BODY_LENGTH + 1))
 
-        with pytest.raises(CAModeWritePendingError, match="waiting for a newer"):
+        with pytest.raises(CAModeWritePendingError, match="waiting for device"):
             device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 1
 
@@ -141,12 +141,11 @@ def test_notify02_general_status_is_a_valid_set_template() -> None:
     assert command.body[0] == 0x03
 
 
-def test_status_received_before_set_does_not_clear_pending_guard() -> None:
-    """A parsed pre-SET status cannot release the pending write."""
+def test_unconfirmed_status_does_not_clear_pending_guard() -> None:
+    """A status without the requested bit cannot release the pending write."""
     device = _device()
     device.process_message(_status(0x00))
     with patch.object(device, "build_send") as send:
-        device._message_received()
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         device.process_message(_status(0x00))
         with pytest.raises(CAModeWritePendingError):
@@ -154,21 +153,15 @@ def test_status_received_before_set_does_not_clear_pending_guard() -> None:
         assert send.call_count == 1
 
 
-def test_status_received_before_dispatch_hook_cannot_clear_pending_guard() -> None:
-    """A receive reserved before SET keeps its pending guard after dispatch."""
+def test_confirming_status_clears_pending_guard() -> None:
+    """A real status confirming the requested bit releases the pending write."""
     device = _device()
     device.process_message(_status(0x00))
     with patch.object(device, "build_send") as send:
-        # Model recv() returning, then the receive callback being delayed while
-        # the caller sends a SET. The reserved order must remain older than SET.
-        device._message_receive_started()
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
-        device._message_received()
-        device.process_message(_status(0x00))
-        device._message_dispatch_complete()
-        with pytest.raises(CAModeWritePendingError):
-            device.set_attribute(DeviceAttributes.freezing_mode.value, True)
-        assert send.call_count == 1
+        device.process_message(_status(0x01))
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+        assert send.call_count == 2
 
 
 def test_status_freshness_uses_receive_time_when_dispatch_is_delayed(
@@ -195,12 +188,27 @@ def test_older_status_cannot_replace_newer_cached_status() -> None:
     older = MessageCAResponse(_status(0x01))
 
     with patch("midealan.devices.ca.time.monotonic", return_value=200.0):
-        device._remember_ca_mode_status(newer, event_order=2, received_at=200.0)
-        device._remember_ca_mode_status(older, event_order=1, received_at=100.0)
+        device._remember_ca_mode_status(newer, received_at=200.0)
+        device._remember_ca_mode_status(older, received_at=100.0)
 
         with patch.object(device, "build_send") as send:
             device.set_attribute(DeviceAttributes.holiday_mode.value, True)
     assert send.call_args.args[0].body[0] == 0x12
+
+
+def test_pending_write_is_reported_after_status_expires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An expired cache does not turn a pending write into a silent no-op."""
+    device = _device()
+    clock = [100.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send"):
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+        clock[0] += 121.0
+        with pytest.raises(CAModeWritePendingError, match="waiting for device"):
+            device.set_attribute(DeviceAttributes.freezing_mode.value, True)
 
 
 def test_failed_send_does_not_publish_state_or_leave_pending() -> None:

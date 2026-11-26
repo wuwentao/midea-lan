@@ -86,8 +86,14 @@ class _CAModeStatus:
 
     body: bytes
     received_at: float
-    generation: int
-    event_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingCAModeWrite:
+    """Mode bit that must be confirmed by a later real status."""
+
+    mask: int
+    enabled: bool
 
 
 class CAModeWritePendingError(RuntimeError):
@@ -168,14 +174,9 @@ class MideaCADevice(MideaDevice):
         )
         self._modes = [""]
         self._ca_mode_lock = threading.RLock()
-        self._ca_mode_event_lock = threading.Lock()
-        self._ca_mode_event_order = 0
-        self._ca_mode_receive_event_order: int | None = None
-        self._ca_mode_received_event_order: int | None = None
         self._ca_mode_received_at: float | None = None
         self._ca_mode_status: _CAModeStatus | None = None
-        self._ca_mode_pending_generation: int | None = None
-        self._ca_mode_pending_event_order: int | None = None
+        self._ca_mode_pending: _PendingCAModeWrite | None = None
 
     def build_query(self) -> list[MessageRequest]:
         """Midea CA device build query."""
@@ -189,15 +190,12 @@ class MideaCADevice(MideaDevice):
         if status is not None:
             return status
         with self._ca_mode_lock:
-            event_order = self._ca_mode_received_event_order
             received_at = self._ca_mode_received_at
-        if event_order is None:
-            event_order = self._next_ca_mode_event_order()
         if received_at is None:
             received_at = time.monotonic()
         message = MessageCAResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
-        self._remember_ca_mode_status(message, event_order, received_at)
+        self._remember_ca_mode_status(message, received_at)
         new_status = {}
         for attr in self._attributes:
             if hasattr(message, str(attr)):
@@ -240,26 +238,14 @@ class MideaCADevice(MideaDevice):
         finally:
             self._message_dispatch_complete()
 
-    def _message_receive_started(self) -> None:
-        """Reserve ordering before the socket read begins."""
-        event_order = self._next_ca_mode_event_order()
-        with self._ca_mode_lock:
-            self._ca_mode_receive_event_order = event_order
-
     def _message_received(self) -> None:
-        """Record ordering when a socket frame arrives, before dispatch."""
+        """Record when a socket frame arrives, before dispatch."""
         with self._ca_mode_lock:
-            event_order = self._ca_mode_receive_event_order
-            if event_order is None:
-                event_order = self._next_ca_mode_event_order()
-            self._ca_mode_received_event_order = event_order
             self._ca_mode_received_at = time.monotonic()
 
     def _message_dispatch_complete(self) -> None:
         """Clear the receive marker after the decoded batch is dispatched."""
         with self._ca_mode_lock:
-            self._ca_mode_receive_event_order = None
-            self._ca_mode_received_event_order = None
             self._ca_mode_received_at = None
 
     def process_toshiba_frame(self, frame: ToshibaFrame) -> dict[str, Any] | None:
@@ -290,16 +276,13 @@ class MideaCADevice(MideaDevice):
             raise ValueWrongType("[ca] Expected bool")
 
         with self._ca_mode_lock:
+            if self._ca_mode_pending is not None:
+                raise CAModeWritePendingError(
+                    "[ca] mode write refused: waiting for device confirmation",
+                )
             status = self._fresh_ca_mode_status()
             if status is None:
                 return
-            if (
-                self._ca_mode_pending_event_order is not None
-                and status.event_order <= self._ca_mode_pending_event_order
-            ):
-                raise CAModeWritePendingError(
-                    "[ca] mode write refused: waiting for a newer device status",
-                )
             body = build_ca_mode_body(status.body, mask, value)
             if body == status.body:
                 return
@@ -309,15 +292,18 @@ class MideaCADevice(MideaDevice):
                 MessageType.set,
                 bytearray(body),
             )
-            self.build_send(command)
-            send_event_order = self._next_ca_mode_event_order()
-            self._ca_mode_pending_generation = status.generation
-            self._ca_mode_pending_event_order = send_event_order
+            pending = _PendingCAModeWrite(mask=mask, enabled=value)
+            self._ca_mode_pending = pending
+            try:
+                self.build_send(command)
+            except Exception:
+                if self._ca_mode_pending == pending:
+                    self._ca_mode_pending = None
+                raise
 
     def _remember_ca_mode_status(
         self,
         message: MessageCAResponse,
-        event_order: int,
         received_at: float,
     ) -> None:
         """Store only a complete Midea general status body for later SETs."""
@@ -342,27 +328,19 @@ class MideaCADevice(MideaDevice):
         raw_body = bytes(body[CA_MODE_BODY_OFFSET:end])
         with self._ca_mode_lock:
             current = self._ca_mode_status
-            if current is not None and event_order < current.event_order:
+            if current is not None and received_at < current.received_at:
                 return
-            generation = 1 if current is None else current.generation + 1
             self._ca_mode_status = _CAModeStatus(
                 body=raw_body,
                 received_at=received_at,
-                generation=generation,
-                event_order=event_order,
             )
-            if (
-                self._ca_mode_pending_event_order is not None
-                and event_order > self._ca_mode_pending_event_order
-            ):
-                self._ca_mode_pending_generation = None
-                self._ca_mode_pending_event_order = None
-
-    def _next_ca_mode_event_order(self) -> int:
-        """Return a monotonic order point independent of the status lock."""
-        with self._ca_mode_event_lock:
-            self._ca_mode_event_order += 1
-            return self._ca_mode_event_order
+            pending = self._ca_mode_pending
+            is_confirmed = (
+                pending is not None
+                and bool(raw_body[0] & pending.mask) == pending.enabled
+            )
+            if is_confirmed:
+                self._ca_mode_pending = None
 
     def _fresh_ca_mode_status(self) -> _CAModeStatus | None:
         """Return a recent complete status body, if one is available."""

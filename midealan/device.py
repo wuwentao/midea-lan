@@ -807,7 +807,6 @@ class MideaDevice:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError
-            self._message_receive_started()
             msg = await asyncio.wait_for(
                 self._reader.read(STREAM_READ_LIMIT),
                 timeout=remaining,
@@ -1495,9 +1494,6 @@ class MideaDevice:
     def _message_received(self) -> None:
         """Record a socket receipt for devices that need ordering."""
 
-    def _message_receive_started(self) -> None:
-        """Reserve ordering before a socket read for devices that need it."""
-
     def send_command(self, cmd_type: MessageType, cmd_body: bytearray) -> None:
         """Send command."""
         cmd = MessageQuestCustom(
@@ -1779,7 +1775,6 @@ class MideaDevice:
                     await self._check_refresh(now)
                     self._check_heartbeat(now)
                     # each read is bounded by SOCKET_TIMEOUT
-                    self._message_receive_started()
                     msg = await asyncio.wait_for(
                         self._reader.read(STREAM_READ_LIMIT),
                         timeout=SOCKET_TIMEOUT,

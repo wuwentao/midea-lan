@@ -1,11 +1,12 @@
 """Test x9b Device."""
 
-from unittest.mock import Mock, patch
+from collections.abc import Awaitable
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from midealan.const import ProtocolVersion
-from midealan.device import MessageResult, MideaDevice, ResponseException
+from midealan.device import MessageResult, ResponseException
 from midealan.devices.x9b import (
     DeviceAttributes,
     MideaAppliance,
@@ -253,12 +254,16 @@ class TestMideaX9BDevice:
             MessageSetState(ProtocolVersion.V3),
         )
 
-    def test_probe_wait_ignores_heartbeat_until_matching_status_response(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_wait_ignores_heartbeat_until_matching_status_response(
+        self,
+    ) -> None:
         """A heartbeat does not finish a probe before its status frame arrives."""
         self.device._active_probe_protocol = X9BProtocol.STATUS
         self.device._probe_response_protocols.clear()
-        self.device._socket = Mock()
-        self.device._socket.recv.side_effect = [b"heartbeat", b"status"]
+        reader = MagicMock()
+        reader.read = AsyncMock(side_effect=[b"heartbeat", b"status"])
+        self.device._reader = reader
 
         def parse_message(message: bytes) -> MessageResult:
             if message == b"status":
@@ -266,41 +271,68 @@ class TestMideaX9BDevice:
             return MessageResult.SUCCESS
 
         with patch.object(self.device, "parse_message", side_effect=parse_message):
-            self.device._await_query_reply()
+            await self.device._await_query_reply()
 
-        assert self.device._socket.recv.call_count == 2
-        self.device._socket.settimeout.assert_called_with(10)
+        assert reader.read.call_count == 2
         assert self.device._is_query_response_valid(
             MessageQuery(ProtocolVersion.V3),
         )
 
-    def test_probe_wait_deadline_is_not_extended_by_heartbeat(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_wait_deadline_is_not_extended_by_heartbeat(self) -> None:
         """Repeated unrelated frames cannot extend a checked query indefinitely."""
         self.device._active_probe_protocol = X9BProtocol.STATUS
         self.device._probe_response_protocols.clear()
-        self.device._socket = Mock()
-        self.device._socket.recv.return_value = b"heartbeat"
+        reader = MagicMock()
+        reader.read = AsyncMock(return_value=b"heartbeat")
+        self.device._reader = reader
+        # A heartbeat parses as SUCCESS but is not the awaited STATUS reply, so
+        # the loop reads again against the SAME deadline. Drive the probe's own
+        # clock: deadline at t=0, first read budgets the full QUERY_TIMEOUT, then
+        # 3s elapse so the second read budgets only the remainder, then past the
+        # deadline so it times out. Fake wait_for to record each per-read budget
+        # and pass the frame through, so only the probe's clock is exercised --
+        # the event loop's own loop.time() is never touched.
+        clock = iter([0.0, 0.0, 3.0, 6.0])
+        recorded_timeouts: list[float] = []
+
+        # Mirrors asyncio.wait_for's signature exactly so it can replace it; the
+        # `timeout` parameter name is required for that, hence the ASYNC109 skip.
+        async def fake_wait_for(
+            awaitable: Awaitable[bytes],
+            timeout: float,  # noqa: ASYNC109
+        ) -> bytes:
+            recorded_timeouts.append(timeout)
+            return await awaitable
+
         with (
             patch.object(
                 self.device,
                 "parse_message",
                 return_value=MessageResult.SUCCESS,
             ),
-            patch(
-                "midealan.devices.x9b.time.monotonic",
-                side_effect=[0.0, 0.0, 6.0],
-            ),
+            patch("midealan.device.time.monotonic", side_effect=lambda: next(clock)),
+            patch("midealan.device.asyncio.wait_for", side_effect=fake_wait_for),
             pytest.raises(TimeoutError),
         ):
-            self.device._await_query_reply()
-        self.device._socket.recv.assert_called_once_with(512)
+            await self.device._await_query_reply()
 
-    def test_probe_wait_propagates_parse_error_without_matching_response(self) -> None:
+        # Two reads happened; the second's budget is strictly smaller than the
+        # first (the deadline did not reset), and then the probe gave up.
+        assert reader.read.await_count == 2
+        assert recorded_timeouts == [5.0, 2.0]
+        assert recorded_timeouts[1] < recorded_timeouts[0]
+
+    @pytest.mark.asyncio
+    async def test_probe_wait_propagates_parse_error_without_matching_response(
+        self,
+    ) -> None:
         """Malformed replies retain common transport error handling."""
         self.device._active_probe_protocol = X9BProtocol.STATUS
         self.device._probe_response_protocols.clear()
-        self.device._socket = Mock()
-        self.device._socket.recv.return_value = b"invalid"
+        reader = MagicMock()
+        reader.read = AsyncMock(return_value=b"invalid")
+        self.device._reader = reader
         with (
             patch.object(
                 self.device,
@@ -309,14 +341,27 @@ class TestMideaX9BDevice:
             ),
             pytest.raises(ResponseException),
         ):
-            self.device._await_query_reply()
+            await self.device._await_query_reply()
 
-    def test_probe_wait_uses_common_behavior_without_x9b_probe(self) -> None:
-        """Non-X9B probes continue to use the common waiter."""
-        with patch.object(MideaDevice, "_await_query_reply") as await_reply:
-            self.device._active_probe_protocol = None
-            self.device._await_query_reply()
-        await_reply.assert_called_once_with()
+    def test_query_reply_ready_falls_back_without_active_probe(self) -> None:
+        """With no active probe, the common first-success rule applies."""
+        self.device._active_probe_protocol = None
+        # The base rule resolves on the first fully parsed frame only.
+        assert self.device._query_reply_ready(MessageResult.SUCCESS) is True
+        assert self.device._query_reply_ready(MessageResult.PADDING) is False
+
+    def test_query_reply_ready_requires_success_result(self) -> None:
+        """An active probe resolves only on a SUCCESS result for its family."""
+        self.device._active_probe_protocol = X9BProtocol.STATUS
+        self.device._probe_response_protocols = {X9BProtocol.STATUS}
+        # The matching family was recorded, so a SUCCESS batch resolves it.
+        assert self.device._query_reply_ready(MessageResult.SUCCESS) is True
+        # A batch that parsed the family frame but ended in ERROR must keep
+        # waiting (so it raises ResponseException) rather than count as answered.
+        assert self.device._query_reply_ready(MessageResult.ERROR) is False
+        # SUCCESS without the family's own response recorded is not enough.
+        self.device._probe_response_protocols.clear()
+        assert self.device._query_reply_ready(MessageResult.SUCCESS) is False
 
     def test_build_send_non_probe_query_clears_active_probe(self) -> None:
         """A non-protocol query does not inherit a preceding x9b probe family."""
@@ -337,16 +382,18 @@ class TestMideaX9BDevice:
             )
         assert self.device._active_probe_protocol is None
 
-    def test_probe_wait_raises_if_socket_is_missing_or_closed(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_wait_raises_if_socket_is_missing_or_closed(self) -> None:
         """Socket failure remains visible to the common reconnect loop."""
         self.device._active_probe_protocol = X9BProtocol.STATUS
-        self.device._socket = None
+        self.device._reader = None
         with pytest.raises(SocketException):
-            self.device._await_query_reply()
-        self.device._socket = Mock()
-        self.device._socket.recv.return_value = b""
+            await self.device._await_query_reply()
+        reader = MagicMock()
+        reader.read = AsyncMock(return_value=b"")
+        self.device._reader = reader
         with pytest.raises(ConnectionResetError):
-            self.device._await_query_reply()
+            await self.device._await_query_reply()
 
     def test_build_send_non_query_uses_common_transport(self) -> None:
         """Standard SET traffic still uses the inherited transport path."""

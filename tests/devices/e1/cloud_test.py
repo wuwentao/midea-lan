@@ -1,5 +1,6 @@
 """Test E1 cloud features."""
 
+import asyncio
 import sys
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -142,6 +143,82 @@ async def test_e1_cloud_client_retries_token_then_logs_in_again() -> None:
 
 
 @pytest.mark.asyncio
+async def test_e1_cloud_client_serializes_concurrent_relogin() -> None:
+    """Overlapping rejected tokens share one replacement cloud login."""
+    old_cloud = Mock()
+    new_cloud = Mock(login=AsyncMock(return_value=True))
+    client = E1CloudClient(Mock(), "account", "password")
+    client._cloud = old_cloud
+    initial_calls = 0
+    both_started = asyncio.Event()
+
+    async def fetch(cloud: Mock, appliance_id: int) -> int:
+        nonlocal initial_calls
+        if cloud is new_cloud:
+            return appliance_id
+        initial_calls += 1
+        if initial_calls <= 2:
+            if initial_calls == 2:
+                both_started.set()
+            await both_started.wait()
+        raise CloudAuthError("rejected")
+
+    with (
+        patch(
+            "midealan.devices.e1.cloud.get_midea_cloud",
+            return_value=new_cloud,
+        ) as get_cloud,
+        patch(
+            "midealan.devices.e1.cloud.get_filter_wash_time",
+            side_effect=fetch,
+        ),
+        patch("asyncio.sleep", AsyncMock()),
+    ):
+        results = await asyncio.gather(
+            client.async_get_report(100),
+            client.async_get_report(101),
+        )
+        assert tuple(results) == (100, 101)
+    get_cloud.assert_called_once()
+    new_cloud.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_e1_cloud_client_serializes_concurrent_initial_login() -> None:
+    """Overlapping first reports wait for one shared cloud login."""
+    login_started = asyncio.Event()
+    allow_login = asyncio.Event()
+
+    async def login() -> bool:
+        login_started.set()
+        await allow_login.wait()
+        return True
+
+    cloud = Mock(login=AsyncMock(side_effect=login))
+    client = E1CloudClient(Mock(), "account", "password")
+    with (
+        patch(
+            "midealan.devices.e1.cloud.get_midea_cloud",
+            return_value=cloud,
+        ) as get_cloud,
+        patch(
+            "midealan.devices.e1.cloud.get_filter_wash_time",
+            AsyncMock(return_value=12),
+        ),
+    ):
+        reports = [
+            asyncio.create_task(client.async_get_report(appliance_id))
+            for appliance_id in (100, 101)
+        ]
+        await login_started.wait()
+        await asyncio.sleep(0)
+        allow_login.set()
+        assert tuple(await asyncio.gather(*reports)) == (12, 12)
+    get_cloud.assert_called_once()
+    cloud.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_e1_cloud_client_raises_after_second_login_is_rejected() -> None:
     """Stop after retrying both the initial and replacement login tokens."""
     clouds = [
@@ -187,3 +264,22 @@ async def test_e1_cloud_client_rejects_failed_login() -> None:
         pytest.raises(CloudAuthError, match="login failed"),
     ):
         await client.async_get_report(100)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [KeyError("result"), TypeError(), ValueError()])
+async def test_e1_cloud_client_sanitizes_malformed_login(failure: Exception) -> None:
+    """Map malformed cloud login replies to the public authentication error."""
+    cloud = Mock(login=AsyncMock(side_effect=failure))
+    client = E1CloudClient(Mock(), "account", "password")
+    get_minutes = AsyncMock()
+    with (
+        patch("midealan.devices.e1.cloud.get_midea_cloud", return_value=cloud),
+        patch("midealan.devices.e1.cloud.get_filter_wash_time", get_minutes),
+        pytest.raises(CloudAuthError, match="login failed") as exc,
+    ):
+        await client.async_get_report(100)
+    assert type(exc.value) is CloudAuthError
+    assert exc.value.__cause__ is None
+    assert client._cloud is None
+    get_minutes.assert_not_awaited()

@@ -19,6 +19,11 @@ AUTH_RETRY_DELAY = 3.0
 class _LoginTokenRejected(CloudAuthError):
     """Raised when the proxy still rejects a freshly issued login token."""
 
+    def __init__(self, cloud: MideaCloud, message: str) -> None:
+        """Remember which cached client supplied the rejected token."""
+        super().__init__(message)
+        self.cloud = cloud
+
 
 async def get_filter_wash_time(cloud: MideaCloud, appliance_id: int) -> int | None:
     """Read an E1 appliance's cumulative filter-wash time in minutes.
@@ -87,6 +92,7 @@ class E1CloudClient:
         self._account = account
         self._password = password
         self._cloud: MideaCloud | None = None
+        self._login_lock = asyncio.Lock()
 
     async def async_get_report(self, appliance_id: int) -> int | None:
         """Fetch cumulative filter-wash minutes.
@@ -97,8 +103,11 @@ class E1CloudClient:
         """
         try:
             return await self._async_fetch(appliance_id)
-        except _LoginTokenRejected:
-            self._cloud = None
+        except _LoginTokenRejected as rejected:
+            async with self._login_lock:
+                # Another caller may already have replaced this rejected client.
+                if self._cloud is rejected.cloud:
+                    self._cloud = None
             return await self._async_fetch(appliance_id)
 
     async def _async_fetch(self, appliance_id: int) -> int | None:
@@ -111,22 +120,29 @@ class E1CloudClient:
             try:
                 return await get_filter_wash_time(cloud, appliance_id)
             except CloudAuthError as retry_err:
-                raise _LoginTokenRejected(str(retry_err)) from retry_err
+                raise _LoginTokenRejected(cloud, str(retry_err)) from retry_err
 
     async def _async_cloud(self) -> MideaCloud:
         """Return a logged-in Meiju client, creating it on first use."""
         if self._cloud is None:
-            if not self._account or not self._password:
-                msg = "No Midea cloud account stored"
-                raise CloudAuthError(msg)
-            cloud = get_midea_cloud(
-                MEIJU_CLOUD_NAME,
-                self._session,
-                self._account,
-                self._password,
-            )
-            if not await cloud.login():
-                msg = "Midea cloud login failed"
-                raise CloudAuthError(msg)
-            self._cloud = cloud
+            async with self._login_lock:
+                if self._cloud is None:
+                    if not self._account or not self._password:
+                        msg = "No Midea cloud account stored"
+                        raise CloudAuthError(msg)
+                    cloud = get_midea_cloud(
+                        MEIJU_CLOUD_NAME,
+                        self._session,
+                        self._account,
+                        self._password,
+                    )
+                    try:
+                        logged_in = await cloud.login()
+                    except (KeyError, TypeError, ValueError):
+                        msg = "Midea cloud login failed"
+                        raise CloudAuthError(msg) from None
+                    if not logged_in:
+                        msg = "Midea cloud login failed"
+                        raise CloudAuthError(msg)
+                    self._cloud = cloud
         return self._cloud

@@ -661,6 +661,7 @@ class TestMideaDevice:
         )
         self.device._reader = reader
         self.device._writer = writer
+        self.device._stream_loop = asyncio.get_running_loop()
         await self.device.authenticate()
         self.device.send_message(bytes([0x0] * 20))
         self.device._device_protocol_version = ProtocolVersion.V2
@@ -672,15 +673,23 @@ class TestMideaDevice:
         with pytest.raises(SocketException):
             self.device.send_message_v2(bytes([0x0] * 20))
 
-    def test_send_message_v2_writes_to_stream(self) -> None:
+    def test_send_message_v2_loop_none(self) -> None:
+        """A writer without an owning loop cannot authorize an inline write."""
+        self.device._writer = self._stream_mocks()[1]
+        self.device._stream_loop = None
+        with pytest.raises(SocketException):
+            self.device.send_message_v2(bytes([0x0] * 20))
+
+    @pytest.mark.asyncio
+    async def test_send_message_v2_writes_to_stream(self) -> None:
         """Test send_message_v2 writes the payload straight to the stream.
 
-        Called on the device loop (or with no loop captured, as here), the
-        write goes directly to the StreamWriter; the ``query`` flag no longer
-        toggles any socket timeout.
+        Called on the device loop, the write goes directly to the StreamWriter;
+        the ``query`` flag no longer toggles any socket timeout.
         """
         _, writer = self._stream_mocks()
         self.device._writer = writer
+        self.device._stream_loop = asyncio.get_running_loop()
         payload = bytes([0x0] * 20)
         self.device.send_message_v2(payload, query=True)
         writer.write.assert_called_once_with(payload)
@@ -700,8 +709,75 @@ class TestMideaDevice:
         # No running loop here, so _running_loop() is not the stream's loop:
         # the write must be marshalled, not issued inline.
         self.device.send_message_v2(payload)
-        loop.call_soon_threadsafe.assert_called_once_with(writer.write, payload)
+        loop.call_soon_threadsafe.assert_called_once()
         writer.write.assert_not_called()
+
+        callback, *args = loop.call_soon_threadsafe.call_args.args
+        callback(*args)
+        writer.write.assert_called_once_with(payload)
+
+    def test_send_message_v3_encodes_and_writes_on_device_loop(self) -> None:
+        """An off-loop V3 send assigns its counter in wire-write order."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        payload = b"appliance-frame"
+        encoded = b"\x83\x70encoded"
+        events: list[tuple[str, bytes]] = []
+
+        def encode_on_loop(data: bytes, _msg_type: int) -> bytes:
+            events.append(("encode", data))
+            return encoded
+
+        with patch.object(
+            self.device._security,
+            "encode_8370",
+            side_effect=encode_on_loop,
+        ) as encode:
+            writer.write.side_effect = lambda data: events.append(("write", data))
+            self.device.send_message_v3(payload)
+
+            encode.assert_not_called()
+            writer.write.assert_not_called()
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        assert events == [("encode", payload), ("write", encoded)]
+
+    def test_send_message_v3_drops_stale_scheduled_send(self) -> None:
+        """A queued command cannot encode or write after its writer is replaced."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        with patch.object(self.device._security, "encode_8370") as encode:
+            self.device.send_message_v3(b"old-connection-command")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            self.device._writer = self._stream_mocks()[1]
+            callback(*args)
+
+        encode.assert_not_called()
+        writer.write.assert_not_called()
+
+    def test_send_message_v3_scheduled_failure_closes_connection(self) -> None:
+        """A deferred encoding failure tears down the affected connection."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        with patch.object(
+            self.device._security,
+            "encode_8370",
+            side_effect=ValueError("invalid session key"),
+        ):
+            self.device.send_message_v3(b"command")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        writer.write.assert_not_called()
+        writer.close.assert_called_once_with()
+        assert self.device._writer is None
 
     @pytest.mark.asyncio
     async def test_send_message_v2_writes_inline_on_device_loop(self) -> None:
@@ -2151,6 +2227,35 @@ class TestMideaDevice:
         assert self.device._buffer == b""
         assert self.device._unsupported_protocol == []
 
+    def test_close_socket_detaches_stream_before_reset_hook(self) -> None:
+        """A reset hook cannot queue new work on the connection being closed."""
+        reader, writer = self._stream_mocks()
+        loop = MagicMock()
+        self.device._reader = reader
+        self.device._writer = writer
+        self.device._stream_loop = loop
+        self.device._tls_codec = MagicMock()
+        observed: list[tuple[object, object, object, object]] = []
+
+        def observe_reset() -> None:
+            observed.append(
+                (
+                    self.device._reader,
+                    self.device._writer,
+                    self.device._stream_loop,
+                    self.device._tls_codec,
+                ),
+            )
+            with pytest.raises(SocketException):
+                self.device.send_message_v2(b"late-command")
+
+        with patch.object(self.device, "reset_init_query", side_effect=observe_reset):
+            self.device.close_socket()
+
+        assert observed == [(None, None, None, None)]
+        loop.call_soon_threadsafe.assert_not_called()
+        writer.close.assert_called_once_with()
+
     @pytest.mark.parametrize("close_error", [None, OSError()])
     def test_close_socket_publishes_unavailable_before_reconnect(
         self,
@@ -2678,6 +2783,29 @@ class TestMideaDeviceTLS:
         assert len(stream.sent) == 2
 
     @pytest.mark.asyncio
+    async def test_authenticate_tls_rejects_codec_after_stream_close(self) -> None:
+        """A codec negotiated for a detached stream is never published."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        stream = _FakeTLSStream(sim)
+        device = self._tls_device(bundle)
+        device._reader = stream  # type: ignore[assignment]
+        device._writer = stream  # type: ignore[assignment]
+
+        def close_before_publish(*_args: object, **_kwargs: object) -> MagicMock:
+            device.close_socket()
+            return MagicMock()
+
+        with (
+            patch("midealan.device.MSDatagram", side_effect=close_before_publish),
+            pytest.raises(SocketException),
+        ):
+            await device.authenticate_tls()
+
+        assert device._tls_codec is None
+        assert device._writer is None
+
+    @pytest.mark.asyncio
     async def test_authenticate_tls_no_socket(self) -> None:
         """Without a socket the handshake refuses to start."""
         device = self._tls_device(_make_bundle())
@@ -2775,17 +2903,74 @@ class TestMideaDeviceTLS:
         with pytest.raises(SocketException):
             device.send_message_tls(b"\xaa\x1e\xac\x00")
 
-    def test_send_message_tls_success(self) -> None:
+    def test_send_message_tls_no_writer(self) -> None:
+        """Codec present but stream not yet open raises SocketException."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        # leave _writer and _stream_loop at None (default)
+        with pytest.raises(SocketException):
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+
+    @pytest.mark.asyncio
+    async def test_send_message_tls_success(self) -> None:
         """A plaintext frame is wrapped as a 5a5a CCM datagram and sent."""
         bundle = _make_bundle()
         device = self._tls_device(bundle)
         self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         device.send_message_tls(b"\xaa\x1e\xac\x00")
         writer.write.assert_called_once()
         sent = writer.write.call_args.args[0]
         assert sent[0:2] == b"\x5a\x5a"
+
+    def test_send_message_tls_encodes_and_writes_on_device_loop(self) -> None:
+        """An off-loop TLS send advances its session counters on the loop."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        codec = device._tls_codec
+        assert codec is not None
+        writer = MagicMock()
+        device._writer = writer
+        loop = MagicMock()
+        device._stream_loop = loop
+        payload = b"\xaa\x1e\xac\x00"
+
+        with patch.object(codec, "encode", wraps=codec.encode) as encode:
+            device.send_message_tls(payload)
+
+            encode.assert_not_called()
+            writer.write.assert_not_called()
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            callback(*args)
+
+        encode.assert_called_once_with(payload, MSG_TYPE_DATA_TRANSMIT)
+        writer.write.assert_called_once()
+        assert writer.write.call_args.args[0][0:2] == b"\x5a\x5a"
+
+    def test_send_message_tls_drops_stale_session(self) -> None:
+        """A delayed TLS command cannot consume counters from a new session."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        codec = device._tls_codec
+        assert codec is not None
+        writer = MagicMock()
+        device._writer = writer
+        loop = MagicMock()
+        device._stream_loop = loop
+
+        with patch.object(codec, "encode", wraps=codec.encode) as encode:
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+            callback, *args = loop.call_soon_threadsafe.call_args.args
+            self._install_codec(device, bundle)
+            callback(*args)
+
+        encode.assert_not_called()
+        writer.write.assert_not_called()
 
     def test_send_message_routes_to_tls(self) -> None:
         """send_message dispatches to the TLS path when TLS is enabled."""
@@ -2794,7 +2979,8 @@ class TestMideaDeviceTLS:
             device.send_message(b"\xaa\x1e\xac\x00", query=True)
         tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
 
-    def test_build_send_tls_wraps_bare_frame(self) -> None:
+    @pytest.mark.asyncio
+    async def test_build_send_tls_wraps_bare_frame(self) -> None:
         """build_send CCM-wraps the bare appliance frame, no 5a5a0111 envelope.
 
         The decoded CCM body must equal the raw ``cmd.serialize()`` bytes; the
@@ -2806,6 +2992,7 @@ class TestMideaDeviceTLS:
         peer = self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         payload = b"\xaa\x1e\xe3\x00\x00\x00\x00\x00\x03\x03"
         cmd = MagicMock()
         cmd.serialize.return_value = payload
@@ -2916,13 +3103,15 @@ class TestMideaDeviceTLS:
         with patch.object(device, "process_message", side_effect=ValueError):
             assert device.parse_message(frame) == MessageResult.PADDING
 
-    def test_send_heartbeat_tls(self) -> None:
+    @pytest.mark.asyncio
+    async def test_send_heartbeat_tls(self) -> None:
         """A TLS heartbeat is an empty-bodied 0x7B datagram."""
         bundle = _make_bundle()
         device = self._tls_device(bundle)
         self._install_codec(device, bundle)
         writer = MagicMock()
         device._writer = writer
+        device._stream_loop = asyncio.get_running_loop()
         device.send_heartbeat()
         writer.write.assert_called_once()
         sent = writer.write.call_args.args[0]

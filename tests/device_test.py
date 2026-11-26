@@ -1,27 +1,27 @@
 """Midea Lan device test."""
 
+import asyncio
 import contextlib
 import logging
 import re
-import threading
 from typing import Any, ClassVar
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from Crypto.Random import get_random_bytes
 
 from midealan.cloud import DEFAULT_KEYS
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import (
     MAX_RECONNECT_SLEEP,
     MESSAGE_TYPE_INDEX,
-    QUERY_TIMEOUT,
     RESPONSE_TIMEOUT,
     AuthException,
     MessageResult,
     MideaDevice,
     NoSupportedProtocol,
 )
-from midealan.exceptions import SocketException
+from midealan.exceptions import MessageWrongFormat, SocketException
 from midealan.message import (
     MessageQueryAppliance,
     MessageRequest,
@@ -29,6 +29,56 @@ from midealan.message import (
     ToshibaFrame,
     ToshibaMessageRequest,
     encode_toshiba_frame,
+)
+from midealan.tls import (
+    FRAME_MAGIC,
+    MSG_TYPE_DATA_TRANSMIT,
+    MSG_TYPE_DATA_TRANSMIT_RESPONSE,
+    MSG_TYPE_HEARTBEAT,
+    MSG_TYPE_HEARTBEAT_RESPONSE,
+    CertBundle,
+    MSDatagram,
+)
+from tests.tls_test import _DEVICE_ID, _make_bundle, _SimulatedDevice
+
+# A valid 72-byte V3 (8370) handshake reply: 40 leading bytes then 32 bytes of
+# key material at [8:72] that tcp_key() accepts for the shared test token/key.
+_AUTH_RESPONSE = bytes(
+    [0x00] * (8 + 32)
+    + [
+        0xCE,
+        0x8C,
+        0xFB,
+        0xF1,
+        0x65,
+        0x90,
+        0xD1,
+        0x07,
+        0x6D,
+        0xF8,
+        0x3A,
+        0x3B,
+        0x67,
+        0xCC,
+        0x6B,
+        0xB6,
+        0x80,
+        0xF6,
+        0x0E,
+        0x3D,
+        0xFF,
+        0xE7,
+        0x74,
+        0x92,
+        0x14,
+        0x4D,
+        0xE9,
+        0xD2,
+        0xD5,
+        0x74,
+        0x7E,
+        0x6F,
+    ],
 )
 
 
@@ -50,6 +100,16 @@ class _ToshibaTestDevice(MideaDevice):
         return {"body": frame.body}
 
 
+class _TLSTestDevice(MideaDevice):
+    """Concrete device exposing a trivial process_message for TLS tests."""
+
+    def process_message(self, msg: bytes) -> dict[str, Any]:
+        """Return an empty status for a single NUL byte, else echo the body."""
+        if msg == b"\x00":
+            return {}
+        return {"body": msg.hex()}
+
+
 def test_get_dict_key_by_value() -> None:
     """Test get_dict_key_by_value found, not-found and missing-dict cases."""
     assert _DictDevice.get_dict_key_by_value("modes", "cool") == 2
@@ -59,13 +119,32 @@ def test_get_dict_key_by_value() -> None:
 
 
 def test_fetch_v2_message() -> None:
-    """Test fetch v2 message."""
+    """Test fetch v2 message framing, incomplete-frame buffering and guards."""
+    # Nothing buffered, or fewer than the 6-byte minimum: return unconsumed.
     assert MideaDevice.fetch_v2_message(bytes([])) == ([], bytes([]))
     assert MideaDevice.fetch_v2_message(bytes([0x1])) == ([], bytes([0x1]))
-    assert MideaDevice.fetch_v2_message(bytes([0x1] * 5 + [0x0] + [0x1] * 7)) == (
-        [bytes([0x1])],
-        bytes([0x1] * 4 + [0x0] + [0x1] * 7),
+    # One whole frame: declared length (bytes [4:6], little-endian) == 6 == the
+    # buffered length, so it is sliced out and nothing is left over.
+    one_frame = bytes([0x0, 0x0, 0x0, 0x0, 0x6, 0x0])
+    assert MideaDevice.fetch_v2_message(one_frame) == ([one_frame], bytes([]))
+    # Two batched frames (declared 6 then 8) are split in order.
+    frame_a = bytes([0x0, 0x0, 0x0, 0x0, 0x6, 0x0])
+    frame_b = bytes([0x0, 0x0, 0x0, 0x0, 0x8, 0x0, 0x1, 0x2])
+    assert MideaDevice.fetch_v2_message(frame_a + frame_b) == (
+        [frame_a, frame_b],
+        bytes([]),
     )
+    # An incomplete frame (declares 10, only 8 buffered) is left whole for the
+    # next read rather than mis-sliced.
+    partial = bytes([0x0, 0x0, 0x0, 0x0, 0xA, 0x0, 0x1, 0x2])
+    assert MideaDevice.fetch_v2_message(partial) == ([], partial)
+    # A declared length of 0 would append an empty frame and never consume
+    # input -> infinite loop; it must be rejected as a malformed frame.
+    with pytest.raises(MessageWrongFormat):
+        MideaDevice.fetch_v2_message(bytes([0x0] * 6 + [0x1] * 7))
+    # Any declared length below the 6-byte minimum is corrupt likewise.
+    with pytest.raises(MessageWrongFormat):
+        MideaDevice.fetch_v2_message(bytes([0x0, 0x0, 0x0, 0x0, 0x5, 0x0] + [0x1] * 7))
 
 
 def test_pre_process_message_short_message() -> None:
@@ -243,7 +322,10 @@ class TestMideaDevice:
         )
 
     @staticmethod
-    def _toshiba_device(**identity: str) -> _ToshibaTestDevice:
+    def _toshiba_device(
+        manufacturer_code: str | None = None,
+        cloud_name: str | None = None,
+    ) -> _ToshibaTestDevice:
         """Build a shared Toshiba test device without opening a socket."""
         return _ToshibaTestDevice(
             name="Test Toshiba Device",
@@ -257,7 +339,8 @@ class TestMideaDevice:
             model="test_model",
             subtype=1,
             attributes={},
-            **identity,
+            manufacturer_code=manufacturer_code,
+            cloud_name=cloud_name,
         )
 
     @pytest.mark.parametrize(
@@ -398,259 +481,238 @@ class TestMideaDevice:
         assert self.device.fahrenheit_to_celsius(68, is_fahrenheit=False) == 68
         assert self.device.fahrenheit_to_celsius(68) == 68
 
+    @staticmethod
+    def _stream_mocks(
+        read_side_effect: object = None,
+        readexactly_side_effect: object = None,
+    ) -> tuple[MagicMock, MagicMock]:
+        """Build (reader, writer) stand-ins for the asyncio stream pair.
+
+        ``reader.read`` is an ``AsyncMock`` (the serve loop awaits it);
+        ``reader.readexactly`` is an ``AsyncMock`` (the V3 handshake awaits it);
+        ``writer.write`` is a plain synchronous ``MagicMock`` and
+        ``writer.drain`` an ``AsyncMock`` (the TLS handshake awaits it).
+        """
+        reader = MagicMock()
+        reader.read = AsyncMock(side_effect=read_side_effect)
+        reader.readexactly = AsyncMock(side_effect=readexactly_side_effect)
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        return reader, writer
+
     @pytest.mark.parametrize(
-        ("exc", "result", "socket_is_none"),
+        ("dial_exc", "auth_exc", "refresh_exc", "result"),
         [
-            (TimeoutError, False, True),
-            (OSError, False, True),
-            (AuthException, False, True),
-            (NoSupportedProtocol, False, True),
-            (SocketException, False, True),
-            (None, True, False),
+            # Dial fails: the stream is never installed, writer stays None.
+            (TimeoutError, None, None, False),
+            # Dial succeeds, then a later stage raises: close_socket() must run
+            # and close the writer that connect() installed.
+            (None, AuthException, None, False),
+            (None, None, OSError, False),
+            (None, None, SocketException, False),
+            (None, None, NoSupportedProtocol, False),
+            # Full success keeps the stream open.
+            (None, None, None, True),
         ],
     )
-    def test_connect(
+    @pytest.mark.asyncio
+    async def test_connect(
         self,
-        exc: Exception,
+        dial_exc: type[Exception] | None,
+        auth_exc: type[Exception] | None,
+        refresh_exc: type[Exception] | None,
         result: bool,
-        socket_is_none: bool,
     ) -> None:
-        """Test connect."""
+        """Test connect across dial / auth / refresh failures and success."""
         # Pre-populate buffer to confirm the failure path runs close_socket(),
-        # which clears it (the old code only nulled _socket).
+        # which clears it (the old code only nulled the stream pair).
         self.device._buffer = b"stale"
+        reader, writer = self._stream_mocks()
+        if dial_exc is not None:
+            open_connection = AsyncMock(side_effect=dial_exc)
+        else:
+            open_connection = AsyncMock(return_value=(reader, writer))
         with (
-            patch("socket.socket.connect", side_effect=exc),
-            patch.object(self.device, "authenticate"),
-            patch.object(self.device, "refresh_status"),
+            patch("asyncio.open_connection", open_connection),
+            patch.object(
+                self.device,
+                "authenticate",
+                new_callable=AsyncMock,
+                side_effect=auth_exc,
+            ),
+            patch.object(
+                self.device,
+                "refresh_status",
+                new_callable=AsyncMock,
+                side_effect=refresh_exc,
+            ),
         ):
-            assert self.device.connect(check_protocol=True) is result
-            assert self.device.available is result
-            assert (self.device._socket is None) is socket_is_none
-            if socket_is_none:
-                # close_socket() was invoked: it also resets the buffer.
-                assert self.device._buffer == b""
+            assert await self.device.connect(check_protocol=True) is result
+        assert self.device.available is result
+        if result:
+            # Success keeps the installed stream open for the serve loop.
+            assert self.device._writer is writer
+            writer.close.assert_not_called()
+        else:
+            # Every failure path releases the stream via close_socket(), which
+            # also resets the buffer.
+            assert self.device._writer is None
+            assert self.device._buffer == b""
+            if dial_exc is None:
+                # The stream was installed before the later stage failed, so
+                # close_socket() must have closed it.
+                writer.close.assert_called_once()
 
-    def test_connect_generic_exception(self) -> None:
+    @pytest.mark.asyncio
+    async def test_connect_generic_exception(self) -> None:
         """Test connect with generic exception."""
         self.device._buffer = b"stale"
-        with patch("socket.socket.connect") as connect_mock:
-            connect_mock.side_effect = Exception()
-
-            assert self.device.connect() is False
+        open_connection = AsyncMock(side_effect=Exception())
+        with patch("asyncio.open_connection", open_connection):
+            assert await self.device.connect() is False
             assert self.device.available is False
-            assert self.device._socket is None
+            assert self.device._writer is None
             assert self.device._buffer == b""
 
-    def test_connect_failure_only_closes_its_own_socket(self) -> None:
-        """Test failed connect cleanup does not close a replaced socket."""
-        old_socket = MagicMock()
-        new_socket: Any = MagicMock()
-
-        def fail_after_socket_replaced(*_args: object) -> None:
-            self.device._socket = new_socket
-            raise OSError("connect failed")
-
-        old_socket.connect.side_effect = fail_after_socket_replaced
-        self.device._buffer = b"active"
-        self.device._unsupported_protocol = ["new"]
-        with (
-            patch("socket.socket", return_value=old_socket),
-            patch.object(self.device, "authenticate"),
-            patch.object(self.device, "refresh_status"),
-        ):
-            assert self.device.connect(check_protocol=True) is False
-
-        old_socket.close.assert_called_once()
-        new_socket.close.assert_not_called()
-        assert self.device._socket is new_socket
-        assert self.device._buffer == b"active"
-        assert self.device._unsupported_protocol == ["new"]
-
-    def test_connect_v2_without_protocol_check(self) -> None:
+    @pytest.mark.asyncio
+    async def test_connect_v2_without_protocol_check(self) -> None:
         """Test successful V2 connect skips auth and protocol checks."""
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks()
         self.device._device_protocol_version = ProtocolVersion.V2
         with (
-            patch("socket.socket", return_value=socket_mock),
+            patch("asyncio.open_connection", AsyncMock(return_value=(reader, writer))),
             patch.object(self.device, "authenticate") as authenticate_mock,
             patch.object(self.device, "refresh_status") as refresh_mock,
         ):
-            assert self.device.connect() is True
+            assert await self.device.connect() is True
 
         authenticate_mock.assert_not_called()
         refresh_mock.assert_not_called()
         assert self.device.available is False
 
-    def test_connect_loop_discards_connection_closed_before_install(self) -> None:
-        """Test close() during connect prevents a connected socket from surviving."""
-        socket_mock = MagicMock()
-        close_started = threading.Event()
-        close_finished = threading.Event()
-        close_thread: threading.Thread | None = None
-
-        def close_device() -> None:
-            close_started.set()
-            self.device.close()
-            close_finished.set()
-
-        def create_socket(*_args: object) -> MagicMock:
-            nonlocal close_thread
-            close_thread = threading.Thread(target=close_device)
-            close_thread.start()
-            assert close_started.wait(1)
-            assert not close_finished.wait(0.01)
-            return socket_mock
-
-        self.device._is_run = True
-        self.device._device_protocol_version = ProtocolVersion.V2
-        with (
-            patch("socket.socket", side_effect=create_socket),
-            patch.object(self.device, "refresh_status"),
-        ):
-            self.device._connect_loop()
-
-        assert close_thread is not None
-        close_thread.join(1)
-        assert close_finished.is_set()
-        socket_mock.close.assert_called_once()
-        assert self.device._socket is None
-        assert self.device.available is False
-
-    def test_authenticate(self) -> None:
-        """Test authenticate."""
-        socket_mock = MagicMock()
-        with patch.object(
-            socket_mock,
-            "recv",
-            side_effect=[
-                bytearray(),
-                bytearray(
-                    [0x00] * (8 + 32)
-                    + [
-                        0xCE,
-                        0x8C,
-                        0xFB,
-                        0xF1,
-                        0x65,
-                        0x90,
-                        0xD1,
-                        0x07,
-                        0x6D,
-                        0xF8,
-                        0x3A,
-                        0x3B,
-                        0x67,
-                        0xCC,
-                        0x6B,
-                        0xB6,
-                        0x80,
-                        0xF6,
-                        0x0E,
-                        0x3D,
-                        0xFF,
-                        0xE7,
-                        0x74,
-                        0x92,
-                        0x14,
-                        0x4D,
-                        0xE9,
-                        0xD2,
-                        0xD5,
-                        0x74,
-                        0x7E,
-                        0x6F,
-                    ],
-                ),
+    @pytest.mark.asyncio
+    async def test_authenticate(self) -> None:
+        """Test authenticate: no socket, a truncated reply, then success."""
+        reader, writer = self._stream_mocks(
+            # First a short reply (peer closed early) -> IncompleteReadError ->
+            # AuthException; then the full handshake frame -> success.
+            readexactly_side_effect=[
+                asyncio.IncompleteReadError(partial=b"\x00\x00", expected=72),
+                _AUTH_RESPONSE,
             ],
-        ):
-            self.device._socket = None
-            with pytest.raises(SocketException):
-                self.device.authenticate()
+        )
+        self.device._reader = None
+        self.device._writer = None
+        with pytest.raises(SocketException):
+            await self.device.authenticate()
 
-            self.device._socket = socket_mock
-            with pytest.raises(AuthException):
-                self.device.authenticate()
+        self.device._reader = reader
+        self.device._writer = writer
+        with pytest.raises(AuthException):
+            await self.device.authenticate()
 
-            self.device.authenticate()
+        await self.device.authenticate()
 
-    def test_send_message(self) -> None:
+    @pytest.mark.asyncio
+    async def test_authenticate_reassembles_split_handshake_reply(self) -> None:
+        """A handshake reply split across TCP chunks is read whole, then used."""
+        reader = asyncio.StreamReader()
+        self.device._reader = reader
+        self.device._writer = self._stream_mocks()[1]
+
+        # Deliver only the first chunk, then start authenticate and let it reach
+        # the handshake read. readexactly(72) must keep waiting on 40 buffered
+        # bytes; a plain read(72) would return those 40 bytes and finish the
+        # task now (then mis-key or error), so `not task.done()` is what proves
+        # the whole frame is reassembled before use.
+        reader.feed_data(_AUTH_RESPONSE[:40])
+        task = asyncio.create_task(self.device.authenticate())
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not task.done()
+
+        # Now deliver the rest plus a trailing status byte that must survive for
+        # the serve loop, and let auth finish.
+        reader.feed_data(_AUTH_RESPONSE[40:] + b"\xaa")
+        reader.feed_eof()
+        await task
+
+        # The extra byte is left for the next reader, proving auth read exactly
+        # the handshake frame and no more.
+        assert await reader.read(1) == b"\xaa"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_truncated_handshake_reply_fails(self) -> None:
+        """A reply shorter than the handshake frame raises AuthException."""
+        reader = asyncio.StreamReader()
+        reader.feed_data(_AUTH_RESPONSE[:40])
+        reader.feed_eof()
+        self.device._reader = reader
+        self.device._writer = self._stream_mocks()[1]
+
+        with pytest.raises(AuthException):
+            await self.device.authenticate()
+
+    @pytest.mark.asyncio
+    async def test_send_message(self) -> None:
         """Test send message."""
-        socket_mock = MagicMock()
-        with patch.object(
-            socket_mock,
-            "recv",
-            side_effect=[
-                bytearray(
-                    [0x00] * (8 + 32)
-                    + [
-                        0xCE,
-                        0x8C,
-                        0xFB,
-                        0xF1,
-                        0x65,
-                        0x90,
-                        0xD1,
-                        0x07,
-                        0x6D,
-                        0xF8,
-                        0x3A,
-                        0x3B,
-                        0x67,
-                        0xCC,
-                        0x6B,
-                        0xB6,
-                        0x80,
-                        0xF6,
-                        0x0E,
-                        0x3D,
-                        0xFF,
-                        0xE7,
-                        0x74,
-                        0x92,
-                        0x14,
-                        0x4D,
-                        0xE9,
-                        0xD2,
-                        0xD5,
-                        0x74,
-                        0x7E,
-                        0x6F,
-                    ],
-                ),
-            ],
-        ):
-            self.device._socket = socket_mock
-            self.device.authenticate()
-            self.device.send_message(bytes([0x0] * 20))
-            self.device._device_protocol_version = ProtocolVersion.V2
-            self.device.send_message(bytes([0x0] * 20))
+        reader, writer = self._stream_mocks(
+            readexactly_side_effect=[_AUTH_RESPONSE],
+        )
+        self.device._reader = reader
+        self.device._writer = writer
+        await self.device.authenticate()
+        self.device.send_message(bytes([0x0] * 20))
+        self.device._device_protocol_version = ProtocolVersion.V2
+        self.device.send_message(bytes([0x0] * 20))
 
     def test_send_message_v2_socket_none(self) -> None:
-        """Test send_message_v2 raises SocketException when socket is None."""
-        self.device._socket = None
+        """Test send_message_v2 raises SocketException when the stream is gone."""
+        self.device._writer = None
         with pytest.raises(SocketException):
             self.device.send_message_v2(bytes([0x0] * 20))
 
-    def test_send_message_v2_query_sets_timeout(self) -> None:
-        """Test send_message_v2 sets QUERY_TIMEOUT when query is True."""
-        socket_mock = MagicMock()
-        self.device._socket = socket_mock
-        self.device.send_message_v2(bytes([0x0] * 20), query=True)
-        socket_mock.settimeout.assert_called_once_with(QUERY_TIMEOUT)
-        socket_mock.send.assert_called_once()
+    def test_send_message_v2_writes_to_stream(self) -> None:
+        """Test send_message_v2 writes the payload straight to the stream.
 
-    @pytest.mark.parametrize(
-        "exc",
-        [TimeoutError, ConnectionResetError, OSError, ValueError],
-    )
-    def test_send_message_v2_send_errors_reraised(self, exc: type[Exception]) -> None:
-        """Test send_message_v2 logs and re-raises every socket.send failure."""
-        socket_mock = MagicMock()
-        socket_mock.send.side_effect = exc("boom")
-        self.device._socket = socket_mock
-        with pytest.raises(exc):
-            self.device.send_message_v2(bytes([0x0] * 20))
+        Called on the device loop (or with no loop captured, as here), the
+        write goes directly to the StreamWriter; the ``query`` flag no longer
+        toggles any socket timeout.
+        """
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        payload = bytes([0x0] * 20)
+        self.device.send_message_v2(payload, query=True)
+        writer.write.assert_called_once_with(payload)
+
+    def test_send_message_v2_marshals_off_loop_write(self) -> None:
+        """A write from off the device loop is handed to the owning loop.
+
+        asyncio transports are not thread-safe, so a send arriving from a Home
+        Assistant executor thread (set_attribute) must be scheduled on the
+        device's loop with call_soon_threadsafe rather than written inline.
+        """
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        loop = MagicMock()
+        self.device._stream_loop = loop
+        payload = bytes([0x0] * 20)
+        # No running loop here, so _running_loop() is not the stream's loop:
+        # the write must be marshalled, not issued inline.
+        self.device.send_message_v2(payload)
+        loop.call_soon_threadsafe.assert_called_once_with(writer.write, payload)
+        writer.write.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_message_v2_writes_inline_on_device_loop(self) -> None:
+        """A write issued from the stream's own loop goes straight through."""
+        _, writer = self._stream_mocks()
+        self.device._writer = writer
+        # The running loop IS the stream's owning loop, so no marshalling.
+        self.device._stream_loop = asyncio.get_running_loop()
+        payload = bytes([0x0] * 20)
+        self.device.send_message_v2(payload)
+        writer.write.assert_called_once_with(payload)
 
     def test_build_send(self) -> None:
         """Test build_send serializes, packages and sends the command."""
@@ -662,31 +724,29 @@ class TestMideaDevice:
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["query"] is True
 
-    def test_refresh_status(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status(self) -> None:
         """Test refresh status."""
         with pytest.raises(NotImplementedError):
-            self.device.refresh_status()  # build_query not implemented
+            await self.device.refresh_status()  # build_query not implemented
 
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                bytearray([]),
+                bytearray([0x0]),
+                bytearray([0x0]),
+                bytearray([0x0]),
+                bytearray([0x0]),
+                TimeoutError(),
+                TimeoutError(),
+            ],
+        )
         # One REAL status query rather than the appliance query, so the command count
         # per refresh_status is unchanged and the mock side_effects still line up.
         self.device._appliance_query = False
         real_cmd = MagicMock()
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
-            patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[
-                    bytearray([]),
-                    bytearray([0x0]),
-                    bytearray([0x0]),
-                    bytearray([0x0]),
-                    bytearray([0x0]),
-                    TimeoutError(),
-                    TimeoutError(),
-                ],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -699,25 +759,28 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device._socket = None
+            self.device._reader = None
+            self.device._writer = None
             with pytest.raises(SocketException):
-                self.device.refresh_status(True)
+                await self.device.refresh_status(True)
 
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             with pytest.raises(OSError, match=r"Connection closed by peer\."):
-                self.device.refresh_status(True)
+                await self.device.refresh_status(True)
 
-            self.device.refresh_status(True)  # SUCCESS
-            self.device.refresh_status(True)  # PADDING
+            await self.device.refresh_status(True)  # SUCCESS
+            await self.device.refresh_status(True)  # PADDING
 
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)  # ERROR
+                await self.device.refresh_status(True)  # ERROR
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)  # Timeout
+                await self.device.refresh_status(True)  # Timeout
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)  # Unsupported protocol
+                await self.device.refresh_status(True)  # Unsupported protocol
 
-    def test_appliance_query_success_does_not_mask_failed_status_queries(
+    @pytest.mark.asyncio
+    async def test_appliance_query_success_does_not_mask_failed_status_queries(
         self,
     ) -> None:
         """A successful appliance query must not hide every status query failing.
@@ -727,15 +790,12 @@ class TestMideaDevice:
         NoSupportedProtocol was never raised, connect() returned True, and the device
         came up available with data that never updated.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
+        )
         real_cmd = MagicMock()
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
-            patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[bytearray([0x0]), TimeoutError(), TimeoutError()],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -743,31 +803,32 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             assert self.device._appliance_query is True
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)
+                await self.device.refresh_status(True)
 
-    def test_appliance_query_failure_alone_does_not_fail_the_device(self) -> None:
+    @pytest.mark.asyncio
+    async def test_appliance_query_failure_alone_does_not_fail_the_device(
+        self,
+    ) -> None:
         """A failed appliance query must not count against the status queries.
 
         Ungated, its timeout increments error_count to 1, which already equals
         len(real_cmds) on the first iteration -- so a device whose real status query
         works perfectly well would be declared to support no protocol at all.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                TimeoutError(),
+                TimeoutError(),
+                bytearray([0x0]),
+            ],
+        )
         real_cmd = MagicMock()
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
-            patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[
-                    TimeoutError(),
-                    TimeoutError(),
-                    bytearray([0x0]),
-                ],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -775,16 +836,18 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             assert self.device._appliance_query is True
-            self.device.refresh_status(True)  # must not raise
+            await self.device.refresh_status(True)  # must not raise
             # The timed-out appliance query must still be blacklisted, which is what
             # stops it being re-sent on the next refresh. close_socket() re-arms
             # _appliance_query, so this list is the only thing holding it back on a
             # device that never answers it.
             assert "MessageQueryAppliance" in self.device._unsupported_protocol
 
-    def test_garbled_appliance_reply_does_not_fail_the_device(self) -> None:
+    @pytest.mark.asyncio
+    async def test_garbled_appliance_reply_does_not_fail_the_device(self) -> None:
         """Third path into the same trap: a ResponseException on the appliance query.
 
         A V3 decode returning an error for the appliance reply raises
@@ -792,15 +855,12 @@ class TestMideaDevice:
         per-iteration check raises on the appliance iteration -- before the real query
         has even been sent -- tearing down a device whose status queries are fine.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[bytearray([0x0]), bytearray([0x0])],
+        )
         real_cmd = MagicMock()
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
-            patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[bytearray([0x0]), bytearray([0x0])],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -809,22 +869,23 @@ class TestMideaDevice:
                 side_effect=[MessageResult.ERROR, MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)  # must not raise
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)  # must not raise
 
-    def test_skipped_appliance_query_does_not_fail_the_device(self) -> None:
+    @pytest.mark.asyncio
+    async def test_skipped_appliance_query_does_not_fail_the_device(self) -> None:
         """Same, via the "already unsupported, SKIP" branch.
 
         Once the appliance query is blacklisted it takes the SKIP path, which also
         increments error_count. Ungated that alone reaches len(real_cmds) and fails a
         healthy device.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])])
         real_cmd = MagicMock()
         self.device._unsupported_protocol = ["MessageQueryAppliance"]
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -832,20 +893,21 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)  # must not raise
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)  # must not raise
 
-    def test_empty_build_query_does_not_raise(self) -> None:
+    @pytest.mark.asyncio
+    async def test_empty_build_query_does_not_raise(self) -> None:
         """A device with no status queries must not report every query as failed.
 
         With build_query() empty, error_count and len(real_cmds) are both 0. Without
         the `real_cmds and` guard that compares equal and raises, failing a connect
         whose only command -- the appliance query -- had succeeded.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])])
         with (
             patch.object(self.device, "build_query", return_value=[]),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -853,17 +915,19 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)
 
-    def test_build_init_query_prepended_before_status_queries(self) -> None:
+    @pytest.mark.asyncio
+    async def test_build_init_query_prepended_before_status_queries(self) -> None:
         """Init queries run after the appliance query and before status queries.
 
         build_init_query() (e.g. AC's one-shot B5 capability probes) must be
         prepended ahead of build_query() so their replies are processed before
         the recurring status queries, but still after the appliance query.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])] * 3)
         init_cmd = MagicMock(name="init_cmd")
         real_cmd = MagicMock(name="real_cmd")
         init_cmd.__class__.__name__ = "InitQuery"
@@ -880,7 +944,6 @@ class TestMideaDevice:
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", return_value=[init_cmd]),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])] * 3),
             patch.object(
                 self.device,
                 "build_send",
@@ -888,16 +951,18 @@ class TestMideaDevice:
             ),
             patch.object(self.device, "parse_message", side_effect=parse),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             assert self.device._appliance_query is True
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         # appliance query first, then the init query, then the status query.
         assert sent[0].__class__.__name__ == "MessageQueryAppliance"
         assert sent[1] is init_cmd
         assert sent[2] is real_cmd
 
-    def test_appliance_query_timeout_still_runs_init_probes(self) -> None:
+    @pytest.mark.asyncio
+    async def test_appliance_query_timeout_still_runs_init_probes(self) -> None:
         """A failed appliance query must not block init/capability probes.
 
         Some devices do not answer MessageQueryAppliance, but still answer B5
@@ -905,7 +970,14 @@ class TestMideaDevice:
         0. Once the appliance query timeout is recorded as unsupported, the
         checked pass must continue to init probes before recurring status.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                TimeoutError(),
+                TimeoutError(),
+                bytearray([0x0]),
+                bytearray([0x0]),
+            ],
+        )
         init_cmd = MagicMock(name="init_cmd")
         real_cmd = MagicMock(name="real_cmd")
         init_cmd.__class__.__name__ = "InitQuery"
@@ -918,16 +990,6 @@ class TestMideaDevice:
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", return_value=[init_cmd]),
             patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[
-                    TimeoutError(),
-                    TimeoutError(),
-                    bytearray([0x0]),
-                    bytearray([0x0]),
-                ],
-            ),
-            patch.object(
                 self.device,
                 "build_send",
                 side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
@@ -938,9 +1000,10 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS, MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             assert self.device._appliance_query is True
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         # appliance query first, then the init probe, then the status query.
         assert sent[0].__class__.__name__ == "MessageQueryAppliance"
@@ -950,9 +1013,10 @@ class TestMideaDevice:
         assert "MessageQueryAppliance" in self.device._unsupported_protocol
         assert self.device._appliance_query is True
 
-    def test_skipped_appliance_query_still_runs_init_probes(self) -> None:
+    @pytest.mark.asyncio
+    async def test_skipped_appliance_query_still_runs_init_probes(self) -> None:
         """A blacklisted appliance query must still advance to init probes."""
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])] * 2)
         init_cmd = MagicMock(name="init_cmd")
         real_cmd = MagicMock(name="real_cmd")
         init_cmd.__class__.__name__ = "InitQuery"
@@ -963,7 +1027,6 @@ class TestMideaDevice:
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", return_value=[init_cmd]),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])] * 2),
             patch.object(
                 self.device,
                 "build_send",
@@ -975,14 +1038,16 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS, MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             assert self.device._appliance_query is True
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert sent == [init_cmd, real_cmd]
         assert self.device._appliance_query is True
 
-    def test_followup_init_query_spliced_into_checked_pass(self) -> None:
+    @pytest.mark.asyncio
+    async def test_followup_init_query_spliced_into_checked_pass(self) -> None:
         """A reply that arms a follow-up init query gets it validated in-pass.
 
         The AC additional-capability probe is armed only after the basic frame's
@@ -990,7 +1055,7 @@ class TestMideaDevice:
         validated inside the same check_protocol pass, not deferred to an
         unchecked refresh where a timeout could never blacklist it.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])] * 3)
         self.device._appliance_query = False
 
         class _Basic:
@@ -1018,7 +1083,6 @@ class TestMideaDevice:
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", side_effect=build_init),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])] * 3),
             patch.object(
                 self.device,
                 "build_send",
@@ -1026,22 +1090,30 @@ class TestMideaDevice:
             ),
             patch.object(self.device, "parse_message", side_effect=parse),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)
 
         # basic probe, then the spliced additional probe, then the status query.
         assert sent[0] is basic
         assert sent[1] is additional
         assert sent[2] is real_cmd
 
-    def test_followup_init_query_blacklisted_on_timeout(self) -> None:
+    @pytest.mark.asyncio
+    async def test_followup_init_query_blacklisted_on_timeout(self) -> None:
         """An armed follow-up probe that times out is recorded, not re-sent.
 
         Once the additional probe is spliced in and times out during the checked
         pass, it lands in _unsupported_protocol, so it is never queued again even
         though build_init_query() keeps reporting it as armed.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                bytearray([0x0]),
+                TimeoutError(),
+                bytearray([0x0]),
+            ],
+        )
         self.device._appliance_query = False
 
         class _Basic:
@@ -1070,30 +1142,26 @@ class TestMideaDevice:
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", side_effect=build_init),
             patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[
-                    bytearray([0x0]),
-                    TimeoutError(),
-                    bytearray([0x0]),
-                ],
-            ),
-            patch.object(
                 self.device,
                 "build_send",
                 side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
             ),
             patch.object(self.device, "parse_message", side_effect=parse),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)  # must not raise (real query answered)
+            self.device._reader = reader
+            self.device._writer = writer
+            # must not raise (real query answered)
+            await self.device.refresh_status(True)
 
         assert "_Additional" in self.device._unsupported_protocol
         # The basic probe already answered in this pass, so a later timeout is
         # treated as unsupported without another wait.
         assert sum(isinstance(c, _Additional) for c in sent) == 1
 
-    def test_blacklisted_init_query_still_advances_stage_in_checked_pass(self) -> None:
+    @pytest.mark.asyncio
+    async def test_blacklisted_init_query_still_advances_stage_in_checked_pass(
+        self,
+    ) -> None:
         """A skipped (already-unsupported) init stage still advances to the next.
 
         When an init query is already in _unsupported_protocol its send is
@@ -1101,7 +1169,7 @@ class TestMideaDevice:
         send the next stage (the status queries) rather than stalling on the
         skipped command.
         """
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(read_side_effect=[bytearray([0x0])])
         self.device._appliance_query = False
 
         class _Init:
@@ -1120,7 +1188,6 @@ class TestMideaDevice:
         with (
             patch.object(self.device, "build_query", return_value=[real_cmd]),
             patch.object(self.device, "build_init_query", side_effect=build_init),
-            patch.object(socket_mock, "recv", side_effect=[bytearray([0x0])]),
             patch.object(
                 self.device,
                 "build_send",
@@ -1132,14 +1199,16 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)
 
         # The skipped init query is never sent, but the status stage still runs.
         assert init_cmd not in sent
         assert sent == [real_cmd]
 
-    def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
+    @pytest.mark.asyncio
+    async def test_run_loop_reconnects_when_no_protocol_is_supported(self) -> None:
         """NoSupportedProtocol must drop the socket, like every other error here.
 
         Continuing on the same socket could never recover: once every command is in
@@ -1186,10 +1255,10 @@ class TestMideaDevice:
             patch.object(self.device, "_check_refresh", side_effect=refresh),
             patch.object(self.device, "close_socket") as close_mock,
         ):
-            self.device._socket = MagicMock()
+            self.device._reader = MagicMock()
             self.device._is_run = True
             with contextlib.suppress(SystemExit):
-                self.device.run()
+                await self.device._supervise()
 
         assert attempts == 1
         # The point of the fix: the socket is dropped AND the loop dials again.
@@ -1197,7 +1266,10 @@ class TestMideaDevice:
         assert connects == 2
         close_mock.assert_called_once()
 
-    def test_one_failing_query_among_several_does_not_fail_the_device(self) -> None:
+    @pytest.mark.asyncio
+    async def test_one_failing_query_among_several_does_not_fail_the_device(
+        self,
+    ) -> None:
         """Only ALL the status queries failing may raise.
 
         Every other test here uses a single status query, which cannot tell
@@ -1208,7 +1280,14 @@ class TestMideaDevice:
         timed-out group query during the initial probe fails connect() and a working
         device never comes online.
         """
-        socket_mock = MagicMock()
+        # appliance ok, first real ok, second real times out once
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                bytearray([0x0]),
+                bytearray([0x0]),
+                TimeoutError(),
+            ],
+        )
         # Distinct classes on purpose: _unsupported_protocol keys off
         # cmd.__class__.__name__, so two MagicMocks would share a name and the second
         # would take the "already unsupported, SKIP" path instead of the one under
@@ -1221,16 +1300,6 @@ class TestMideaDevice:
                 "build_query",
                 return_value=[cmd_ok, cmd_bad],
             ),
-            patch.object(
-                socket_mock,
-                "recv",
-                # appliance ok, first real ok, second real times out once
-                side_effect=[
-                    bytearray([0x0]),
-                    bytearray([0x0]),
-                    TimeoutError(),
-                ],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -1238,26 +1307,25 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS, MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
-            self.device.refresh_status(True)  # must not raise
-            assert socket_mock.recv.call_count == 3
+            self.device._reader = reader
+            self.device._writer = writer
+            await self.device.refresh_status(True)  # must not raise
+            assert reader.read.call_count == 3
 
-    def test_all_queries_failing_among_several_raises(self) -> None:
+    @pytest.mark.asyncio
+    async def test_all_queries_failing_among_several_raises(self) -> None:
         """The sibling of the above: every real query failing must still raise."""
-        socket_mock = MagicMock()
+        reader, writer = self._stream_mocks(
+            read_side_effect=[
+                bytearray([0x0]),
+                TimeoutError(),
+                TimeoutError(),
+            ],
+        )
         cmd_a = type("QueryA", (), {})()
         cmd_b = type("QueryB", (), {})()
         with (
             patch.object(self.device, "build_query", return_value=[cmd_a, cmd_b]),
-            patch.object(
-                socket_mock,
-                "recv",
-                side_effect=[
-                    bytearray([0x0]),
-                    TimeoutError(),
-                    TimeoutError(),
-                ],
-            ),
             patch.object(self.device, "build_send", return_value=None),
             patch.object(
                 self.device,
@@ -1265,15 +1333,17 @@ class TestMideaDevice:
                 side_effect=[MessageResult.SUCCESS],
             ),
         ):
-            self.device._socket = socket_mock
+            self.device._reader = reader
+            self.device._writer = writer
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)
+                await self.device.refresh_status(True)
             # The appliance query answered, so both status timeouts are treated
             # as unsupported without a second wait.
             assert self.device._unsupported_protocol == ["QueryA", "QueryB"]
-            assert socket_mock.recv.call_count == 3
+            assert reader.read.call_count == 3
 
-    def test_refresh_status_probes_fallback_query_family(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_probes_fallback_query_family(self) -> None:
         """A silent primary family must be followed by the fallback family.
 
         Verified on AC model 223J6397: the appliance answers the appliance query
@@ -1284,7 +1354,7 @@ class TestMideaDevice:
         """
         primary = [type("PrimaryA", (), {})(), type("PrimaryB", (), {})()]
         fallback = [type("FallbackA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1304,7 +1374,7 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device.refresh_status(True)  # must not raise
+            await self.device.refresh_status(True)  # must not raise
 
         # Each silent primary query is sent twice (QUERY_PROBE_RETRIES) before
         # the fallback family is tried, and the answered fallback query once.
@@ -1318,12 +1388,13 @@ class TestMideaDevice:
         # The silent family stays blacklisted for the rest of the connection.
         assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
 
-    def test_refresh_status_probes_fallback_families_in_stages(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_probes_fallback_families_in_stages(self) -> None:
         """A successful fallback stage prevents later families from being sent."""
         primary = [type("PrimaryA", (), {})()]
         first = [type("FirstFallback", (), {})()]
         second = [type("SecondFallback", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1339,7 +1410,7 @@ class TestMideaDevice:
                 side_effect=[TimeoutError(), TimeoutError(), None],
             ),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert [call.args[0] for call in build_send_mock.call_args_list] == [
             primary[0],
@@ -1347,12 +1418,13 @@ class TestMideaDevice:
             first[0],
         ]
 
-    def test_refresh_status_advances_after_silent_fallback_stage(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_advances_after_silent_fallback_stage(self) -> None:
         """A later family is probed only after the previous stage times out."""
         primary = [type("PrimaryA", (), {})()]
         first = [type("FirstFallback", (), {})()]
         second = [type("SecondFallback", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1374,7 +1446,7 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert [call.args[0] for call in build_send_mock.call_args_list] == [
             primary[0],
@@ -1401,12 +1473,13 @@ class TestMideaDevice:
         assert commands == [next_query]
         assert stage_index == 2
 
-    def test_init_timeout_does_not_mask_status_family_fallback(self) -> None:
+    @pytest.mark.asyncio
+    async def test_init_timeout_does_not_mask_status_family_fallback(self) -> None:
         """Init probe timeouts do not change the primary status result."""
         init = type("InitQuery", (), {})()
         primary = [type("PrimaryA", (), {})()]
         fallback = [type("FallbackA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(
@@ -1429,7 +1502,7 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert [call.args[0] for call in build_send_mock.call_args_list] == [
             init,
@@ -1439,12 +1512,13 @@ class TestMideaDevice:
             fallback[0],
         ]
 
-    def test_probe_success_disables_later_timeout_retries(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_success_disables_later_timeout_retries(self) -> None:
         """Once this pass gets a reply, later timeouts are not retried."""
         init = type("InitQuery", (), {})()
         primary = [type("PrimaryA", (), {})(), type("PrimaryB", (), {})()]
         fallback = [type("FallbackA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(
@@ -1466,7 +1540,7 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert [call.args[0] for call in build_send_mock.call_args_list] == [
             init,
@@ -1476,11 +1550,12 @@ class TestMideaDevice:
         ]
         assert self.device._unsupported_protocol == ["PrimaryA", "PrimaryB"]
 
-    def test_probe_answered_state_resets_each_checked_pass(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_answered_state_resets_each_checked_pass(self) -> None:
         """A later checked pass still retries before any reply is seen."""
         first_cmd = type("FirstPassQuery", (), {})()
         second_cmd = type("SecondPassQuery", (), {})()
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         queries = [[first_cmd], [second_cmd]]
 
@@ -1497,9 +1572,9 @@ class TestMideaDevice:
                 ],
             ),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
             with pytest.raises(NoSupportedProtocol):
-                self.device.refresh_status(True)
+                await self.device.refresh_status(True)
 
         assert [call.args[0] for call in build_send_mock.call_args_list] == [
             first_cmd,
@@ -1508,7 +1583,8 @@ class TestMideaDevice:
         ]
         assert self.device._unsupported_protocol == ["SecondPassQuery"]
 
-    def test_refresh_status_fallback_is_probed_only_once(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_fallback_is_probed_only_once(self) -> None:
         """A fallback that is silent too must still fail the probe.
 
         Without the once-only guard a device that answers neither family would
@@ -1517,7 +1593,7 @@ class TestMideaDevice:
         """
         primary = [type("PrimaryA", (), {})()]
         fallback = [type("FallbackA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1534,15 +1610,18 @@ class TestMideaDevice:
             ),
             pytest.raises(NoSupportedProtocol),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         fallback_mock.assert_called_once()
         assert self.device._unsupported_protocol == ["PrimaryA", "FallbackA"]
 
-    def test_refresh_status_without_fallback_keeps_previous_behaviour(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_without_fallback_keeps_previous_behaviour(
+        self,
+    ) -> None:
         """A device with no alternative family fails on the first total timeout."""
         primary = [type("PrimaryA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1554,15 +1633,16 @@ class TestMideaDevice:
             ),
             pytest.raises(NoSupportedProtocol),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert self.device._unsupported_protocol == ["PrimaryA"]
 
-    def test_refresh_status_does_not_fallback_after_invalid_probe(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_does_not_fallback_after_invalid_probe(self) -> None:
         """A parse or family error must not select an alternative protocol."""
         primary = [type("PrimaryA", (), {})()]
         fallback = [type("FallbackA", (), {})()]
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         with (
             patch.object(self.device, "build_query", return_value=primary),
@@ -1580,20 +1660,21 @@ class TestMideaDevice:
             ),
             pytest.raises(NoSupportedProtocol),
         ):
-            self.device.refresh_status(True)
+            await self.device.refresh_status(True)
 
         assert self.device._unsupported_protocol == []
 
-    def test_probe_retry_drops_partial_response_from_buffer(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_retry_drops_partial_response_from_buffer(self) -> None:
         """A timed-out partial reply must not be glued onto the retry reply.
 
-        The decoder keeps an incomplete frame in _buffer across recv() calls. If
+        The decoder keeps an incomplete frame in _buffer across read() calls. If
         the timed-out first attempt left one behind, appending the complete retry
         reply to it makes decode_8370 lose the frame, and the answered command is
         still blacklisted.
         """
         cmd = type("QueryPartial", (), {})()
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         self.device._appliance_query = False
         buffers_seen: list[bytes] = []
 
@@ -1609,7 +1690,7 @@ class TestMideaDevice:
             patch.object(self.device, "build_send") as build_send_mock,
             patch.object(self.device, "_await_query_reply", side_effect=await_reply),
         ):
-            self.device.refresh_status(True)  # must not raise
+            await self.device.refresh_status(True)  # must not raise
 
         # The retry (second wait) must start from an empty buffer.
         assert buffers_seen == [b"", b""]
@@ -1617,10 +1698,11 @@ class TestMideaDevice:
         assert self.device._unsupported_protocol == []
         assert build_send_mock.call_count == 2
 
-    def test_probe_timeout_can_be_deferred_by_device_hook(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_timeout_can_be_deferred_by_device_hook(self) -> None:
         """A device hook may defer a probe instead of blacklisting it."""
         cmd = type("DeferredQuery", (), {})()
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
         with (
             patch.object(
                 self.device,
@@ -1631,15 +1713,16 @@ class TestMideaDevice:
             patch.object(self.device, "_should_defer_query", return_value=True),
             patch.object(self.device, "_defer_query") as defer_query,
         ):
-            assert self.device._probe_query_reply(cmd, []) == (0, True)
+            assert await self.device._probe_query_reply(cmd, []) == (0, True)
 
         defer_query.assert_called_once_with(cmd)
         assert self.device._unsupported_protocol == []
 
-    def test_probe_final_timeout_clears_partial_response(self) -> None:
+    @pytest.mark.asyncio
+    async def test_probe_final_timeout_clears_partial_response(self) -> None:
         """A second timeout cannot leak a partial frame into the next query."""
         cmd = type("QueryPartialTimeout", (), {})()
-        self.device._socket = MagicMock()
+        self.device._writer = MagicMock()
 
         def await_reply() -> None:
             self.device._buffer = b"\x83\x70partial"
@@ -1649,7 +1732,7 @@ class TestMideaDevice:
             patch.object(self.device, "_await_query_reply", side_effect=await_reply),
             patch.object(self.device, "build_send"),
         ):
-            assert self.device._probe_query_reply(cmd, []) == (0, True)
+            assert await self.device._probe_query_reply(cmd, []) == (0, True)
 
         assert self.device._buffer == b""
 
@@ -1659,12 +1742,13 @@ class TestMideaDevice:
         _appliance_query is cleared in pre_process_message and was never set back, so
         a reconnected device skipped protocol detection entirely.
         """
-        self.device._socket = None
+        self.device._writer = None
         self.device._appliance_query = False
         self.device.close_socket()
         assert self.device._appliance_query is True
 
-    def test_refresh_status_without_appliance_or_protocol_check(self) -> None:
+    @pytest.mark.asyncio
+    async def test_refresh_status_without_appliance_or_protocol_check(self) -> None:
         """Test refresh_status can send queries without response validation."""
         cmd = MagicMock()
         self.device._appliance_query = False
@@ -1672,11 +1756,12 @@ class TestMideaDevice:
             patch.object(self.device, "build_query", return_value=[cmd]),
             patch.object(self.device, "build_send") as build_send_mock,
         ):
-            self.device.refresh_status()
+            await self.device.refresh_status()
 
         build_send_mock.assert_called_once_with(cmd, query=True)
 
-    def test_unchecked_refresh_delays_between_queries(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unchecked_refresh_delays_between_queries(self) -> None:
         """Pause between periodic query sends."""
         commands = [type(f"Query{index}", (), {})() for index in range(3)]
         sent: list[object] = []
@@ -1688,40 +1773,41 @@ class TestMideaDevice:
                 "build_send",
                 side_effect=lambda cmd, query=False: sent.append(cmd),  # noqa: ARG005
             ),
-            patch("midealan.device.time.sleep") as sleep_mock,
+            patch("midealan.device.asyncio.sleep") as sleep_mock,
         ):
-            self.device.refresh_status()
+            await self.device.refresh_status()
 
         assert sent == commands
         assert sleep_mock.call_count == 2
         sleep_mock.assert_called_with(0.1)
 
-    def test_checked_refresh_does_not_delay_between_queries(self) -> None:
+    @pytest.mark.asyncio
+    async def test_checked_refresh_does_not_delay_between_queries(self) -> None:
         """Protocol checking remains reply-driven and is not delay-paced."""
         command = type("Query", (), {})()
         self.device._appliance_query = False
-        socket_mock = MagicMock()
-        self.device._socket = socket_mock
+        reader, writer = self._stream_mocks()
+        reader.read = AsyncMock(return_value=bytearray([0x0]))
+        self.device._reader = reader
+        self.device._writer = writer
         with (
             patch.object(self.device, "build_query", return_value=[command]),
             patch.object(self.device, "build_send"),
-            patch.object(
-                socket_mock,
-                "recv",
-                return_value=bytearray([0x0]),
-            ),
             patch.object(
                 self.device,
                 "parse_message",
                 return_value=MessageResult.SUCCESS,
             ),
-            patch("midealan.device.time.sleep") as sleep_mock,
+            patch("midealan.device.asyncio.sleep") as sleep_mock,
         ):
-            self.device.refresh_status(check_protocol=True)
+            await self.device.refresh_status(check_protocol=True)
 
         sleep_mock.assert_not_called()
 
-    def test_unchecked_refresh_skips_unsupported_query_without_advancing(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unchecked_refresh_skips_unsupported_query_without_advancing(
+        self,
+    ) -> None:
         """An unchecked refresh skips an unsupported query and sends the rest.
 
         With check_protocol=False no reply is awaited inline, so a command in
@@ -1740,9 +1826,9 @@ class TestMideaDevice:
                 return_value=[unsupported, supported],
             ),
             patch.object(self.device, "build_send") as build_send_mock,
-            patch("midealan.device.time.sleep") as sleep_mock,
+            patch("midealan.device.asyncio.sleep") as sleep_mock,
         ):
-            self.device.refresh_status()
+            await self.device.refresh_status()
 
         # Only the supported query is sent; the unsupported one is skipped.
         build_send_mock.assert_called_once_with(supported, query=True)
@@ -1877,72 +1963,211 @@ class TestMideaDevice:
         self.device.unregister_update(other_upd)
         assert len(self.device._updates) == 0
 
-    def test_open(self) -> None:
+    @pytest.mark.asyncio
+    async def test_open(self) -> None:
         """Test open."""
         with (
             patch.object(self.device, "connect", return_value=False),
-            patch.object(self.device, "run"),
+            patch.object(self.device, "_supervise"),
         ):
-            self.device.open()
+            await self.device.open()
             assert self.device._is_run is True
+            # Let the supervise task created by open() start and finish so it is
+            # not left pending when the event loop closes.
+            await asyncio.sleep(0)
+        await self.device.close()
 
-    def test_open_noop_when_already_running(self) -> None:
-        """Test open does nothing when the thread is already marked running."""
+    @pytest.mark.asyncio
+    async def test_open_noop_when_already_running(self) -> None:
+        """Test open does nothing when the service task is already running."""
         self.device._is_run = True
-        with patch("threading.Thread.start") as start_mock:
-            self.device.open()
-        start_mock.assert_not_called()
+        with patch.object(self.device, "_supervise") as supervise_mock:
+            await self.device.open()
+        supervise_mock.assert_not_called()
 
-    def test_close(self) -> None:
+    @pytest.mark.asyncio
+    async def test_close(self) -> None:
         """Test close."""
-        with patch.object(self.device, "_socket") as socket_mock:
-            self.device._is_run = True
-            self.device.close()
-            assert self.device._is_run is False
-            socket_mock.close.assert_called()
+        writer = MagicMock()
+        self.device._writer = writer
+        self.device._is_run = True
+        await self.device.close()
+        assert self.device._is_run is False
+        writer.close.assert_called()
 
-    def test_close_noop_when_not_running(self) -> None:
-        """Test close does nothing when the thread is already stopped."""
+    @pytest.mark.asyncio
+    async def test_close_noop_when_not_running(self) -> None:
+        """Test close does nothing when the service is already stopped."""
         self.device._is_run = False
         with patch.object(self.device, "close_socket") as close_socket_mock:
-            self.device.close()
+            await self.device.close()
         close_socket_mock.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_close_releases_stream_when_task_fails(self) -> None:
+        """A supervisor task that errors on cancel still releases the stream.
+
+        The task handle and the socket must be cleared in the finally block
+        even when awaiting the cancelled task surfaces a non-CancelledError,
+        otherwise a later close() would early-return and leak the connection.
+        """
+
+        async def failing_supervise() -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError as exc:
+                # Re-raise as a different error so close()'s CancelledError
+                # suppression does not swallow it; the finally must still run.
+                raise RuntimeError("supervisor crashed") from exc
+
+        self.device._is_run = True
+        # Assign the task through a typed local so the attribute keeps its
+        # ``| None`` union (the later ``is None`` check must stay reachable).
+        task: asyncio.Task[None] | None = asyncio.get_running_loop().create_task(
+            failing_supervise(),
+        )
+        self.device._task = task
+        await asyncio.sleep(0)
+
+        with (
+            patch.object(
+                self.device,
+                "close_socket",
+                wraps=self.device.close_socket,
+            ) as close_socket_mock,
+            pytest.raises(RuntimeError, match="supervisor crashed"),
+        ):
+            await self.device.close()
+
+        assert self.device._is_run is False
+        assert self.device._task is None
+        # The finally block ran despite the task error: the stream was released.
+        close_socket_mock.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_queue_refresh_without_loop_is_noop(self) -> None:
+        """A refresh queued before the loop is captured schedules nothing."""
+        self.device._loop = None
+        with patch.object(
+            self.device,
+            "refresh_status",
+            new_callable=AsyncMock,
+        ) as refresh_mock:
+            self.device.queue_refresh()
+            await asyncio.sleep(0)
+        assert self.device._refresh_task is None
+        refresh_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_queue_refresh_skips_when_stopped(self) -> None:
+        """A refresh queued after close() cleared _is_run schedules nothing."""
+        # The loop is captured, but the service was stopped: the _is_run gate
+        # must suppress the task so it cannot resend on a dropped connection.
+        self.device._loop = asyncio.get_running_loop()
+        self.device._is_run = False
+        with patch.object(
+            self.device,
+            "refresh_status",
+            new_callable=AsyncMock,
+        ) as refresh_mock:
+            self.device.queue_refresh()
+            await asyncio.sleep(0)
+        assert self.device._refresh_task is None
+        refresh_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_queue_refresh_skips_when_one_already_pending(self) -> None:
+        """A second queued refresh does not stack onto an in-flight one."""
+        self.device._loop = asyncio.get_running_loop()
+        self.device._is_run = True
+        pending = asyncio.get_running_loop().create_task(asyncio.sleep(10))
+        self.device._refresh_task = pending
+        try:
+            self.device.queue_refresh()
+            # The in-flight task is left untouched; no replacement is scheduled.
+            assert self.device._refresh_task is pending
+        finally:
+            await self.device._cancel_refresh()
+
+    @pytest.mark.asyncio
+    async def test_queue_refresh_schedules_refresh(self) -> None:
+        """A queued refresh runs refresh_status on the device loop."""
+        self.device._loop = asyncio.get_running_loop()
+        self.device._is_run = True
+        # The freshly built device has no pending refresh task.
+        with patch.object(
+            self.device,
+            "refresh_status",
+            new_callable=AsyncMock,
+        ) as refresh_mock:
+            self.device.queue_refresh()
+            task = self.device._refresh_task
+            assert task is not None
+            await task
+        refresh_mock.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_queued_refresh_swallows_transport_error(self) -> None:
+        """A transport failure in a queued refresh is logged, not raised."""
+        with patch.object(
+            self.device,
+            "refresh_status",
+            new_callable=AsyncMock,
+            side_effect=SocketException,
+        ):
+            await self.device._queued_refresh()
+
+    @pytest.mark.asyncio
+    async def test_cancel_refresh_cancels_pending_task(self) -> None:
+        """Cancelling a queued refresh stops the task and clears the handle."""
+        pending = asyncio.get_running_loop().create_task(asyncio.sleep(10))
+        self.device._refresh_task = pending
+        await self.device._cancel_refresh()
+        assert pending.cancelled()
+        assert self.device._refresh_task is None
+
+    @pytest.mark.asyncio
+    async def test_cancel_refresh_without_task_is_noop(self) -> None:
+        """Cancelling with no queued refresh does nothing."""
+        self.device._refresh_task = None
+        await self.device._cancel_refresh()
+        assert self.device._refresh_task is None
+
     def test_close_socket_close_oserror(self) -> None:
-        """Test close_socket swallows OSError raised by socket.close()."""
-        socket_mock = MagicMock()
-        socket_mock.close.side_effect = OSError("already closed")
-        self.device._socket = socket_mock
+        """Test close_socket swallows OSError raised by writer.close()."""
+        writer = MagicMock()
+        writer.close.side_effect = OSError("already closed")
+        self.device._writer = writer
         self.device.close_socket()
-        socket_mock.close.assert_called_once()
-        assert self.device._socket is None
+        writer.close.assert_called_once()
+        assert self.device._writer is None
 
     def test_close_socket_without_socket_clears_connection_state(self) -> None:
         """Test close_socket clears connection state when no socket exists."""
-        self.device._socket = None
+        self.device._writer = None
         self.device._buffer = b"stale"
         self.device._unsupported_protocol = ["old"]
         self.device.close_socket()
         assert self.device._buffer == b""
         assert self.device._unsupported_protocol == []
 
-    @pytest.mark.parametrize("close_error", [None, OSError(), ValueError()])
+    @pytest.mark.parametrize("close_error", [None, OSError()])
     def test_close_socket_publishes_unavailable_before_reconnect(
         self,
         close_error: Exception | None,
     ) -> None:
         """Closing the active socket publishes its loss even if close raises."""
-        socket_mock: Any = MagicMock()
-        socket_mock.close.side_effect = close_error
+        writer: Any = MagicMock()
+        writer.close.side_effect = close_error
         update = MagicMock()
-        self.device._socket = socket_mock
+        self.device._writer = writer
         self.device._is_run = True
         self.device._available = True
         self.device.register_update(update)
 
         self.device.close_socket()
 
-        assert self.device._socket is None
+        assert self.device._writer is None
         assert self.device.available is False
         update.assert_called_once_with({"available": False})
         self.device.set_available(True)
@@ -1953,95 +2178,47 @@ class TestMideaDevice:
 
     def test_close_socket_already_unavailable_does_not_republish(self) -> None:
         """Closing the socket on an already-unavailable device stays quiet."""
-        socket_mock: Any = MagicMock()
+        writer: Any = MagicMock()
         update = MagicMock()
-        self.device._socket = socket_mock
+        self.device._writer = writer
         self.device._is_run = True
         self.device._available = False
         self.device.register_update(update)
 
         self.device.close_socket()
 
-        assert self.device._socket is None
+        assert self.device._writer is None
         assert self.device.available is False
         update.assert_not_called()
 
-    def test_close_socket_stopped_device_does_not_publish_unavailable(self) -> None:
-        """An explicit thread shutdown does not publish a connection loss."""
-        socket_mock: Any = MagicMock()
-        self.device._socket = socket_mock
+    @pytest.mark.asyncio
+    async def test_close_socket_stopped_device_does_not_publish_unavailable(
+        self,
+    ) -> None:
+        """An explicit service shutdown does not publish a connection loss."""
+        writer: Any = MagicMock()
+        self.device._writer = writer
         self.device._is_run = True
-        update = MagicMock()
-        self.device.register_update(update)
-
-        self.device.close()
-
-        assert self.device._socket is None
-        update.assert_not_called()
-
-    def test_close_stale_socket_preserves_current_connection(self) -> None:
-        """Closing an old socket leaves the new connection and query state intact."""
-        old_socket = MagicMock()
-        current_socket = MagicMock()
-        update = MagicMock()
-        self.device._socket = current_socket
-        self.device._is_run = True
+        # The device was available: close() clears _is_run first, so the
+        # unavailable publish is suppressed by the _is_run guard, not merely
+        # because the device was already unavailable.
         self.device._available = True
-        self.device._buffer = b"current"
-        self.device._unsupported_protocol = ["CurrentQuery"]
-        self.device._appliance_query = False
-        self.device.register_update(update)
-
-        with patch.object(self.device, "reset_init_query") as reset_init_query:
-            self.device.close_socket(old_socket)
-
-        old_socket.close.assert_called_once()
-        current_socket.close.assert_not_called()
-        assert self.device._socket is current_socket
-        assert self.device.available is True
-        assert self.device._buffer == b"current"
-        assert self.device._unsupported_protocol == ["CurrentQuery"]
-        assert self.device._appliance_query is False
-        reset_init_query.assert_not_called()
-        update.assert_not_called()
-
-    def test_close_socket_close_value_error(self) -> None:
-        """Test close_socket swallows ValueError raised by socket.close()."""
-        socket_mock = MagicMock()
-        socket_mock.close.side_effect = ValueError("invalid file descriptor")
-        self.device._socket = socket_mock
-        self.device.close_socket()
-        socket_mock.close.assert_called_once()
-        assert self.device._socket is None
-
-    def test_close_socket_does_not_clear_replaced_socket(self) -> None:
-        """Test close_socket only clears the same socket it captured."""
-        old_socket = MagicMock()
-        new_socket: Any = MagicMock()
         update = MagicMock()
-
-        def replace_socket() -> None:
-            self.device._socket = new_socket
-
-        old_socket.close.side_effect = replace_socket
-        self.device._socket = old_socket
-        self.device._is_run = True
-        self.device._available = True
         self.device.register_update(update)
-        self.device.close_socket()
 
-        old_socket.close.assert_called_once()
-        assert self.device._socket is new_socket
-        assert self.device.available is True
+        await self.device.close()
+
+        assert self.device._writer is None
         update.assert_not_called()
 
     def test_set_ip(self) -> None:
         """Test set ip."""
-        with patch.object(self.device, "_socket") as socket_mock:
-            assert self.device._ip_address == "192.168.1.100"
-            self.device.set_ip_address("10.0.0.1")
-            socket_mock.close.assert_called()
-            assert self.device._ip_address == "10.0.0.1"
+        writer = MagicMock()
+        self.device._writer = writer
+        assert self.device._ip_address == "192.168.1.100"
+        self.device.set_ip_address("10.0.0.1")
+        writer.close.assert_called()
+        assert self.device._ip_address == "10.0.0.1"
 
     def test_set_ip_noop_when_unchanged(self) -> None:
         """Test set_ip_address does not close the socket when IP is unchanged."""
@@ -2076,19 +2253,24 @@ class TestMideaDevice:
         self.device.set_refresh_interval(60)
         assert self.device._refresh_interval == 60
 
-    def test_check_refresh(self) -> None:
+    @pytest.mark.asyncio
+    async def test_check_refresh(self) -> None:
         """Test _check_refresh triggers refresh_status once the interval elapses."""
         self.device._refresh_interval = 30
         self.device._previous_refresh = 0.0
-        with patch.object(self.device, "refresh_status") as refresh_mock:
+        with patch.object(
+            self.device,
+            "refresh_status",
+            new_callable=AsyncMock,
+        ) as refresh_mock:
             # Not enough time elapsed yet: no refresh.
-            self.device._check_refresh(10.0)
-            refresh_mock.assert_not_called()
+            await self.device._check_refresh(10.0)
+            refresh_mock.assert_not_awaited()
             assert self.device._previous_refresh == 0.0
 
             # Interval elapsed: refresh triggered and previous_refresh updated.
-            self.device._check_refresh(30.0)
-            refresh_mock.assert_called_once()
+            await self.device._check_refresh(30.0)
+            refresh_mock.assert_awaited_once_with()
             assert self.device._previous_refresh == 30.0
 
     def test_check_heartbeat(self) -> None:
@@ -2104,55 +2286,58 @@ class TestMideaDevice:
             heartbeat_mock.assert_called_once()
             assert self.device._previous_heartbeat == 10.0
 
-    def test_connect_loop(self) -> None:
+    @pytest.mark.asyncio
+    async def test_connect_loop(self) -> None:
         """Test _connect_loop retries with backoff and stops when told to."""
         self.device._is_run = True
-        self.device._socket = None
+        self.device._writer = None
         sleep_calls: list[float] = []
 
-        def fake_sleep(seconds: float) -> None:
+        async def fake_sleep(seconds: float) -> None:
             sleep_calls.append(seconds)
             # Simulate close() happening concurrently during the backoff sleep.
             self.device._is_run = False
 
         with (
             patch.object(self.device, "connect", return_value=False),
-            patch("time.sleep", side_effect=fake_sleep),
+            patch("midealan.device.asyncio.sleep", side_effect=fake_sleep),
         ):
-            self.device._connect_loop()
+            await self.device._connect_loop()
 
         assert sleep_calls == [1]
-        assert self.device._socket is None
+        assert self.device._writer is None
 
-    def test_connect_loop_does_not_close_socket_replaced_during_failed_connect(
+    @pytest.mark.asyncio
+    async def test_connect_loop_does_not_close_socket_replaced_during_failed_connect(
         self,
     ) -> None:
         """Test _connect_loop failure handling keeps a concurrently replaced socket."""
-        new_socket: Any = MagicMock()
+        new_writer: Any = MagicMock()
         self.device._is_run = True
-        self.device._socket = None
+        self.device._writer = None
         self.device._buffer = b"active"
         self.device._unsupported_protocol = ["new"]
 
-        def failed_connect(**_kwargs: object) -> bool:
-            self.device._socket = new_socket
+        async def failed_connect(**_kwargs: object) -> bool:
+            self.device._writer = new_writer
             return False
 
         with (
             patch.object(self.device, "connect", side_effect=failed_connect),
-            patch("time.sleep"),
+            patch("midealan.device.asyncio.sleep"),
         ):
-            self.device._connect_loop()
+            await self.device._connect_loop()
 
-        new_socket.close.assert_not_called()
-        assert self.device._socket is new_socket
+        new_writer.close.assert_not_called()
+        assert self.device._writer is new_writer
         assert self.device._buffer == b"active"
         assert self.device._unsupported_protocol == ["new"]
 
-    def test_connect_loop_skips_connect_after_stop_request(self) -> None:
+    @pytest.mark.asyncio
+    async def test_connect_loop_skips_connect_after_stop_request(self) -> None:
         """Test _connect_loop skips connect if _should_run turns false."""
         self.device._is_run = True
-        self.device._socket = None
+        self.device._writer = None
 
         def stop_before_connect() -> bool:
             self.device._is_run = False
@@ -2162,30 +2347,32 @@ class TestMideaDevice:
             patch.object(self.device, "_should_run", side_effect=stop_before_connect),
             patch.object(self.device, "connect") as connect_mock,
         ):
-            self.device._connect_loop()
+            await self.device._connect_loop()
 
         connect_mock.assert_not_called()
 
-    def test_connect_loop_sleep_backoff_can_finish_without_stop(self) -> None:
+    @pytest.mark.asyncio
+    async def test_connect_loop_sleep_backoff_can_finish_without_stop(self) -> None:
         """Test _connect_loop can finish the retry sleep without early stop."""
         self.device._is_run = True
-        self.device._socket = None
+        self.device._writer = None
         sleep_calls: list[float] = []
 
-        def finish_sleep(seconds: float) -> None:
+        async def finish_sleep(seconds: float) -> None:
             sleep_calls.append(seconds)
             if len(sleep_calls) == 5:
-                self.device._socket = MagicMock()
+                self.device._writer = MagicMock()
 
         with (
             patch.object(self.device, "connect", return_value=False),
-            patch("time.sleep", side_effect=finish_sleep),
+            patch("midealan.device.asyncio.sleep", side_effect=finish_sleep),
         ):
-            self.device._connect_loop()
+            await self.device._connect_loop()
 
         assert sleep_calls == [1, 1, 1, 1, 1]
 
-    def test_connect_loop_caps_reconnect_backoff(
+    @pytest.mark.asyncio
+    async def test_connect_loop_caps_reconnect_backoff(
         self,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
@@ -2197,10 +2384,10 @@ class TestMideaDevice:
         again and the integration had to be reloaded by hand.
         """
         self.device._is_run = True
-        self.device._socket = None
+        self.device._writer = None
         sleeps = 0
 
-        def stop_mid_backoff(_seconds: float) -> None:
+        async def stop_mid_backoff(_seconds: float) -> None:
             nonlocal sleeps
             sleeps += 1
             # Stop once the ramp has saturated, without sleeping for real.
@@ -2210,9 +2397,9 @@ class TestMideaDevice:
         with (
             caplog.at_level(logging.WARNING, logger="midealan.device"),
             patch.object(self.device, "connect", return_value=False),
-            patch("time.sleep", side_effect=stop_mid_backoff),
+            patch("midealan.device.asyncio.sleep", side_effect=stop_mid_backoff),
         ):
-            self.device._connect_loop()
+            await self.device._connect_loop()
 
         backoff = [
             int(match.group(1))
@@ -2223,40 +2410,49 @@ class TestMideaDevice:
         # at most MAX_RECONNECT_SLEEP for the next attempt.
         assert backoff == [5, 10, 20, 40, MAX_RECONNECT_SLEEP, MAX_RECONNECT_SLEEP]
 
-    def test_run_breaks_when_stopped_during_connect_loop(self) -> None:
-        """Test run exits immediately if closed while _connect_loop runs."""
+    @pytest.mark.asyncio
+    async def test_run_breaks_when_stopped_during_connect_loop(self) -> None:
+        """Test supervise exits immediately if closed while _connect_loop runs."""
         self.device._is_run = True
-        with patch.object(
-            self.device,
-            "_connect_loop",
-            side_effect=lambda: setattr(self.device, "_is_run", False),
-        ):
-            self.device.run()
+
+        async def stop() -> None:
+            self.device._is_run = False
+
+        with patch.object(self.device, "_connect_loop", side_effect=stop):
+            await self.device._supervise()
         assert self.device._is_run is False
 
-    def test_run_socket_none_raises_socket_exception(self) -> None:
-        """Test run treats a None socket mid-loop as a SocketException."""
+    @pytest.mark.asyncio
+    async def test_run_socket_none_raises_socket_exception(self) -> None:
+        """Test supervise treats a None socket mid-loop as a SocketException."""
         self.device._is_run = True
-        self.device._socket = None
+        self.device._reader = None
+
+        def stop() -> None:
+            self.device._is_run = False
+
         with (
             patch.object(self.device, "_connect_loop"),
             patch.object(
                 self.device,
                 "close_socket",
-                side_effect=lambda: setattr(self.device, "_is_run", False),
+                side_effect=stop,
             ) as close_mock,
         ):
-            self.device.run()
+            await self.device._supervise()
         close_mock.assert_called_once()
 
-    def test_run_message_loop_branches(self) -> None:
-        """Test run's recv/parse result handling and every exception branch."""
+    @pytest.mark.asyncio
+    async def test_run_message_loop_branches(self) -> None:
+        """Test supervise's read/parse result handling and every exception branch."""
         self.device._is_run = True
-        self.device._socket = MagicMock()
+        reader, writer = self._stream_mocks()
+        self.device._reader = reader
+        self.device._writer = writer
 
         connect_loop_calls = {"n": 0}
 
-        def fake_connect_loop() -> None:
+        async def fake_connect_loop() -> None:
             connect_loop_calls["n"] += 1
             if connect_loop_calls["n"] > 6:
                 self.device._is_run = False
@@ -2267,11 +2463,11 @@ class TestMideaDevice:
         # would never run.
         check_refresh_side_effect = (
             [None, None, None, None]  # passes 1-4: no refresh due
-            + [None]  # pass 5, iter a: refresh ok, then SUCCESS recv
+            + [None]  # pass 5, iter a: refresh ok, then SUCCESS read
             + [None] * RESPONSE_TIMEOUT  # pass 5, iters b..: timeouts
             + [NoSupportedProtocol()]  # pass 6: close_socket + break
         )
-        recv_side_effect = [
+        read_side_effect = [
             b"",  # pass 1: empty -> ConnectionResetError
             b"\x01",  # pass 2: parsed as ERROR
             OSError("boom"),  # pass 3
@@ -2279,6 +2475,7 @@ class TestMideaDevice:
             b"\x01",  # pass 5, iter a: parsed as SUCCESS
             *([TimeoutError()] * RESPONSE_TIMEOUT),  # pass 5: hits the threshold
         ]
+        reader.read = AsyncMock(side_effect=read_side_effect)
         parse_message_side_effect = [MessageResult.ERROR, MessageResult.SUCCESS]
 
         with (
@@ -2290,15 +2487,13 @@ class TestMideaDevice:
                 side_effect=check_refresh_side_effect,
             ),
             patch.object(self.device, "_check_heartbeat"),
-            patch.object(self.device._socket, "recv", side_effect=recv_side_effect),
             patch.object(
                 self.device,
                 "parse_message",
                 side_effect=parse_message_side_effect,
             ),
-            patch("time.sleep"),
         ):
-            self.device.run()
+            await self.device._supervise()
 
         assert connect_loop_calls["n"] == 7
         assert self.device._is_run is False
@@ -2376,3 +2571,389 @@ class TestMideaDevice:
         # Empty or None cloud names normalize to None.
         assert self._make_device(None, cloud_name="").cloud_name is None
         assert self._make_device(None, cloud_name=None).cloud_name is None
+
+
+class _FakeTLSStream:
+    """A StreamReader/StreamWriter stand-in that answers the 0x75 handshake.
+
+    One object plays both halves of the ``asyncio.open_connection`` pair: the
+    first ``write`` (the hello) queues the module cert reply and the second
+    (the finished frame) queues the CCM-protected finish reply, so a real
+    :meth:`MideaDevice.authenticate_tls` runs end to end over it.
+    """
+
+    def __init__(self, device: _SimulatedDevice) -> None:
+        """Wire the fake stream to a simulated udp_version>=4 device."""
+        self._device = device
+        self._buf = bytearray()
+        self._write_count = 0
+        self.sent: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        """Record the frame and queue the matching handshake reply."""
+        self.sent.append(bytes(data))
+        self._write_count += 1
+        if self._write_count == 1:
+            self._buf += self._device.respond_hello(bytes(data))
+        elif self._write_count == 2:
+            self._buf += self._device.respond_finish()
+
+    async def drain(self) -> None:
+        """Flush the write buffer (no-op for the fake)."""
+
+    async def read(self, size: int) -> bytes:
+        """Return up to ``size`` queued reply bytes."""
+        chunk = bytes(self._buf[:size])
+        self._buf = self._buf[size:]
+        return chunk
+
+    def close(self) -> None:
+        """Ignore the close request (no-op for the fake)."""
+
+
+class TestMideaDeviceTLS:
+    """udp_version>=4 "TLS" transport: handshake, framing and dispatch."""
+
+    @staticmethod
+    def _tls_device(bundle: CertBundle) -> _TLSTestDevice:
+        """Build a TLS-enabled device carrying a provisioned cert bundle."""
+        device = _TLSTestDevice(
+            name="TLS Device",
+            device_id=_DEVICE_ID,
+            device_type=DeviceType.AC,
+            ip_address="192.168.1.100",
+            port=6444,
+            token=DEFAULT_KEYS[99]["token"],
+            key=DEFAULT_KEYS[99]["key"],
+            device_protocol=ProtocolVersion.V3,
+            model="test_model",
+            subtype=1,
+            attributes={},
+            mac="1234567890ab",
+        )
+        # Provision the bundle through the same call device_selector uses.
+        device.apply_cert_bundle(bundle)
+        return device
+
+    def _install_codec(
+        self,
+        device: _TLSTestDevice,
+        bundle: CertBundle,
+    ) -> MSDatagram:
+        """Install a session codec on ``device`` and return a matching peer."""
+        session_key = get_random_bytes(16)
+        device._tls_codec = MSDatagram(
+            _DEVICE_ID,
+            ap_private_key=bundle.ap_private_key,
+            session_key=session_key,
+        )
+        return MSDatagram(
+            _DEVICE_ID,
+            ap_private_key=bundle.ap_private_key,
+            session_key=session_key,
+        )
+
+    def test_init_enables_tls_with_bundle(self) -> None:
+        """A supplied cert bundle flips the device into TLS mode."""
+        device = self._tls_device(_make_bundle())
+        assert device._tls_enabled is True
+        assert device._tls_codec is None
+
+    @pytest.mark.asyncio
+    async def test_authenticate_tls_success(self) -> None:
+        """A full 0x75 handshake installs a codec with the shared session key."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        stream = _FakeTLSStream(sim)
+        device = self._tls_device(bundle)
+        # One fake object plays both halves of the stream pair.
+        device._reader = stream  # type: ignore[assignment]
+        device._writer = stream  # type: ignore[assignment]
+
+        await device.authenticate_tls()
+
+        assert device._tls_codec is not None
+        assert device._tls_codec._session_key == sim._session_key
+        # Two frames were sent: the hello and the finished frame.
+        assert len(stream.sent) == 2
+
+    @pytest.mark.asyncio
+    async def test_authenticate_tls_no_socket(self) -> None:
+        """Without a socket the handshake refuses to start."""
+        device = self._tls_device(_make_bundle())
+        device._writer = None
+        with pytest.raises(SocketException):
+            await device.authenticate_tls()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_tls_no_bundle(self) -> None:
+        """A missing cert bundle aborts even when a socket is present."""
+        device = self._tls_device(_make_bundle())
+        device._writer = MagicMock()
+        device._cert_bundle = None
+        with pytest.raises(SocketException):
+            await device.authenticate_tls()
+
+    @pytest.mark.asyncio
+    async def test_authenticate_tls_handshake_failure_raises_auth(self) -> None:
+        """A malformed cert response surfaces as AuthException."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        # Reply with a well-framed but wrong-type datagram so the session's
+        # process_cert_response raises a MideaLanError that becomes AuthException.
+        codec = MSDatagram(_DEVICE_ID, ap_private_key=bundle.ap_private_key)
+        bad = codec.encode(
+            bytes([1, 0, 0]),
+            MSG_TYPE_DATA_TRANSMIT,
+            encrypt_type=0,
+        )
+        reader = MagicMock()
+        reader.read = AsyncMock(side_effect=[bad])
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        device._reader = reader
+        device._writer = writer
+        with pytest.raises(AuthException):
+            await device.authenticate_tls()
+
+    @pytest.mark.asyncio
+    async def test_recv_tls_frame_no_socket(self) -> None:
+        """Reading a frame without a socket raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._reader = None
+        with pytest.raises(SocketException):
+            await device._recv_tls_frame()
+
+    @pytest.mark.asyncio
+    async def test_recv_tls_frame_bad_magic(self) -> None:
+        """A buffered non-5a5a frame of full length is rejected."""
+        device = self._tls_device(_make_bundle())
+        device._reader = MagicMock()
+        device._buffer = b"\x00" * 80
+        with pytest.raises(MessageWrongFormat):
+            await device._recv_tls_frame()
+
+    @pytest.mark.asyncio
+    async def test_recv_tls_frame_closed_peer(self) -> None:
+        """An empty read (peer closed) raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        reader = MagicMock()
+        reader.read = AsyncMock(return_value=b"")
+        device._reader = reader
+        with pytest.raises(SocketException):
+            await device._recv_tls_frame()
+
+    @pytest.mark.asyncio
+    async def test_recv_tls_frame_partial_then_full(self) -> None:
+        """A frame split across two reads is reassembled and returned."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        reader = MagicMock()
+        # First chunk is >=56 bytes but shorter than the whole frame.
+        reader.read = AsyncMock(side_effect=[frame[:60], frame[60:]])
+        device._reader = reader
+        assert await device._recv_tls_frame() == frame
+
+    @pytest.mark.asyncio
+    async def test_recv_tls_frame_length_below_minimum(self) -> None:
+        """A 5a5a header declaring a sub-minimum length is rejected."""
+        device = self._tls_device(_make_bundle())
+        device._reader = MagicMock()
+        # Full-length buffer, valid magic, but declared length 0 (< minimum).
+        buffer = bytearray(80)
+        buffer[0:2] = FRAME_MAGIC
+        device._buffer = bytes(buffer)
+        with pytest.raises(MessageWrongFormat):
+            await device._recv_tls_frame()
+
+    def test_send_message_tls_no_codec(self) -> None:
+        """Sending before the handshake completes raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.send_message_tls(b"\xaa\x1e\xac\x00")
+
+    def test_send_message_tls_success(self) -> None:
+        """A plaintext frame is wrapped as a 5a5a CCM datagram and sent."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        writer = MagicMock()
+        device._writer = writer
+        device.send_message_tls(b"\xaa\x1e\xac\x00")
+        writer.write.assert_called_once()
+        sent = writer.write.call_args.args[0]
+        assert sent[0:2] == b"\x5a\x5a"
+
+    def test_send_message_routes_to_tls(self) -> None:
+        """send_message dispatches to the TLS path when TLS is enabled."""
+        device = self._tls_device(_make_bundle())
+        with patch.object(device, "send_message_tls") as tls_mock:
+            device.send_message(b"\xaa\x1e\xac\x00", query=True)
+        tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
+
+    def test_build_send_tls_wraps_bare_frame(self) -> None:
+        """build_send CCM-wraps the bare appliance frame, no 5a5a0111 envelope.
+
+        The decoded CCM body must equal the raw ``cmd.serialize()`` bytes; the
+        classic PacketBuilder ``5a5a0111`` transport wrapper would be an
+        unrecognized inner payload the device drops silently.
+        """
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        writer = MagicMock()
+        device._writer = writer
+        payload = b"\xaa\x1e\xe3\x00\x00\x00\x00\x00\x03\x03"
+        cmd = MagicMock()
+        cmd.serialize.return_value = payload
+        device.build_send(cmd, query=True)
+        writer.write.assert_called_once()
+        sent = writer.write.call_args.args[0]
+        assert sent[0:2] == b"\x5a\x5a"
+        # The wire frame decodes straight back to the bare appliance payload.
+        parsed = peer.decode(sent)
+        assert parsed.msg_type == MSG_TYPE_DATA_TRANSMIT
+        assert parsed.body == payload
+
+    def test_parse_tls_message_no_codec(self) -> None:
+        """Parsing before a session exists raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.parse_message(b"\x5a\x5a" + b"\x00" * 60)
+
+    def test_parse_tls_message_dispatches(self) -> None:
+        """Two data frames dispatch through process_message."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        updates: list[dict[str, Any]] = []
+        device.register_update(updates.append)
+        # First frame yields a non-empty status; second yields an empty one
+        # (the "Unidentified protocol" branch).
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        frame += peer.encode(b"\x00", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+        assert updates == [{"body": "01020304"}]
+
+    def test_parse_tls_message_appliance_query_skips(self) -> None:
+        """A short appliance-query body is skipped but still counts as handled."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = True
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+
+    def test_parse_tls_message_heartbeat_filtered(self) -> None:
+        """A heartbeat request carries no payload and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"", MSG_TYPE_HEARTBEAT)
+        assert device.parse_message(frame) == MessageResult.PADDING
+
+    def test_parse_tls_message_heartbeat_response_is_liveness(self) -> None:
+        """A heartbeat reply dispatches nothing but counts as SUCCESS."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"", MSG_TYPE_HEARTBEAT_RESPONSE)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+
+    def test_parse_tls_message_bad_magic_clears_buffer(self) -> None:
+        """A non-5a5a buffer of full length is dropped, leaving PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        assert device.parse_message(b"\x00" * 80) == MessageResult.PADDING
+        assert device._buffer == b""
+
+    def test_parse_tls_message_partial_buffers(self) -> None:
+        """A partial frame is retained in the buffer and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        assert device.parse_message(frame[:60]) == MessageResult.PADDING
+        assert device._buffer == frame[:60]
+
+    def test_parse_tls_message_length_below_minimum_clears_buffer(self) -> None:
+        """A 5a5a frame declaring a sub-minimum length is dropped, not retained."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        # Valid magic, full-length buffer, but declared length 0 (< minimum):
+        # it can never complete, so the buffer must be cleared (not retained).
+        buffer = bytearray(80)
+        buffer[0:2] = FRAME_MAGIC
+        assert device.parse_message(bytes(buffer)) == MessageResult.PADDING
+        assert device._buffer == b""
+
+    def test_parse_tls_message_accepts_data_transmit_response(self) -> None:
+        """A 0x8020 data-transmit reply dispatches like a 0x0020 frame."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        updates: list[dict[str, Any]] = []
+        device.register_update(updates.append)
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT_RESPONSE)
+        assert device.parse_message(frame) == MessageResult.SUCCESS
+        assert updates == [{"body": "01020304"}]
+
+    def test_parse_tls_message_dispatch_error(self) -> None:
+        """An exception in process_message is caught and yields PADDING."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        peer = self._install_codec(device, bundle)
+        device._appliance_query = False
+        frame = peer.encode(b"\x01\x02\x03\x04", MSG_TYPE_DATA_TRANSMIT)
+        with patch.object(device, "process_message", side_effect=ValueError):
+            assert device.parse_message(frame) == MessageResult.PADDING
+
+    def test_send_heartbeat_tls(self) -> None:
+        """A TLS heartbeat is an empty-bodied 0x7B datagram."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        writer = MagicMock()
+        device._writer = writer
+        device.send_heartbeat()
+        writer.write.assert_called_once()
+        sent = writer.write.call_args.args[0]
+        assert int.from_bytes(sent[6:8], "little") == MSG_TYPE_HEARTBEAT
+
+    def test_send_heartbeat_tls_no_codec(self) -> None:
+        """A heartbeat before the handshake completes raises SocketException."""
+        device = self._tls_device(_make_bundle())
+        device._tls_codec = None
+        with pytest.raises(SocketException):
+            device.send_heartbeat()
+
+    @pytest.mark.asyncio
+    async def test_connect_runs_tls_handshake(self) -> None:
+        """connect() runs the cert handshake for a TLS device."""
+        bundle = _make_bundle()
+        sim = _SimulatedDevice(bundle, _DEVICE_ID)
+        stream = _FakeTLSStream(sim)
+        device = self._tls_device(bundle)
+        # open_connection yields the reader/writer pair; one fake plays both.
+        with patch(
+            "midealan.device.asyncio.open_connection",
+            AsyncMock(return_value=(stream, stream)),
+        ):
+            assert await device.connect() is True
+        assert device._tls_codec is not None
+
+    def test_close_socket_resets_tls_codec(self) -> None:
+        """Closing the socket drops the negotiated session codec."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        device.close_socket()
+        assert device._tls_codec is None

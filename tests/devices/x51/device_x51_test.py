@@ -202,7 +202,10 @@ class TestMideaX51Device:
         assert device.toshiba_protocol is False
         assert device.build_query() == []
 
-    def test_unknown_identity_is_probed_only_during_checked_refresh(self) -> None:
+    @pytest.mark.asyncio
+    async def test_unknown_identity_is_probed_only_during_checked_refresh(
+        self,
+    ) -> None:
         """Probe Toshiba framing at connect time without periodic blind queries."""
         device = _build_device(None)
         device._appliance_query = False
@@ -215,7 +218,7 @@ class TestMideaX51Device:
         )
 
         with patch.object(device, "build_send") as send:
-            device.refresh_status()
+            await device.refresh_status()
         send.assert_not_called()
         assert device.toshiba_protocol is False
 
@@ -227,7 +230,7 @@ class TestMideaX51Device:
                 side_effect=lambda: device.process_message(frame),
             ),
         ):
-            device.refresh_status(check_protocol=True)
+            await device.refresh_status(check_protocol=True)
 
         assert [type(call.args[0]) for call in send.call_args_list] == [
             MessageQueryBase,

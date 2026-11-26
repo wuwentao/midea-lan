@@ -174,6 +174,35 @@ class TestMideaEBDevice:
         device.process_message(_report_frame(body))
         assert DeviceAttributes.time_reserve_hr not in device._pending_controls
 
+    def test_repeated_value_waits_for_ordered_confirmations(
+        self,
+        device: MideaEBDevice,
+    ) -> None:
+        """A delayed first A report cannot confirm a later A in A-B-A writes."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+
+        body = _status_body()
+        body[17] = 1
+        device.process_message(_report_frame(body))
+        pending = device._pending_controls[DeviceAttributes.time_reserve_hr]
+        assert list(pending) == [2, 1]
+
+        body[17] = 2
+        device.process_message(_report_frame(body))
+        body[17] = 1
+        device.process_message(_report_frame(body))
+        assert DeviceAttributes.time_reserve_hr not in device._pending_controls
+
+    def test_reset_clears_pending_controls(self, device: MideaEBDevice) -> None:
+        """Connection invalidation discards controls from the old socket."""
+        with patch.object(device, "build_send"):
+            device.set_attribute(DeviceAttributes.time_reserve_hr, 1)
+        device.reset_init_query()
+        assert device._pending_controls == {}
+
     def test_failed_send_does_not_add_pending_value(
         self,
         device: MideaEBDevice,
@@ -198,7 +227,8 @@ class TestMideaEBDevice:
             pytest.raises(SocketException),
         ):
             device.set_attribute(DeviceAttributes.time_reserve_hr, 2)
-        assert device._pending_controls[DeviceAttributes.time_reserve_hr] == 1
+        pending = device._pending_controls[DeviceAttributes.time_reserve_hr]
+        assert list(pending) == [1]
 
     def test_pending_replacement_uses_confirmation_lock(
         self,

@@ -3,6 +3,7 @@
 import json
 import logging
 import threading
+from collections import deque
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -96,13 +97,19 @@ class MideaEBDevice(MideaDevice):
         # A control frame carries every writable field. Keep successful writes
         # pending until a report confirms them so a rapid follow-up write does
         # not rebuild the frame from stale reported state.
-        self._pending_controls: dict[str, int] = {}
+        self._pending_controls: dict[str, deque[int]] = {}
         self._pending_controls_lock = threading.RLock()
         self.set_customize(customize)
 
     def build_query(self) -> list[MessageQuery]:
         """Midea eb device build query."""
         return [MessageQuery(self._message_protocol_version)]
+
+    def reset_init_query(self) -> None:
+        """Discard controls that belonged to the invalidated connection."""
+        super().reset_init_query()
+        with self._pending_controls_lock:
+            self._pending_controls.clear()
 
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea eb device process message."""
@@ -115,8 +122,11 @@ class MideaEBDevice(MideaDevice):
                     value = getattr(message, str(status))
                     self._attributes[status] = value
                     status_key = str(status)
-                    if self._pending_controls.get(status_key) == value:
-                        del self._pending_controls[status_key]
+                    pending = self._pending_controls.get(status_key)
+                    if pending and pending[0] == value:
+                        pending.popleft()
+                        if not pending:
+                            del self._pending_controls[status_key]
                     new_status[str(status)] = value
         return new_status
 
@@ -125,10 +135,8 @@ class MideaEBDevice(MideaDevice):
         message = MessageSet(self._message_protocol_version)
         with self._pending_controls_lock:
             for key in _SETTABLE_RANGES:
-                current = self._pending_controls.get(
-                    str(key),
-                    self._attributes[key],
-                )
+                pending = self._pending_controls.get(str(key))
+                current = pending[-1] if pending else self._attributes[key]
                 if isinstance(current, int):
                     setattr(message, str(key), current)
         return message
@@ -149,15 +157,14 @@ class MideaEBDevice(MideaDevice):
             raise ValueOutOfRange(msg)
         attr_key = str(attr)
         with self._pending_controls_lock:
-            previous_pending = self._pending_controls.copy()
-            self._pending_controls[attr_key] = number
+            pending = self._pending_controls.setdefault(attr_key, deque())
+            pending.append(number)
             message = self._make_message_set()
             try:
                 self.build_send(message)
             except Exception:
-                if attr_key in previous_pending:
-                    self._pending_controls[attr_key] = previous_pending[attr_key]
-                else:
+                pending.pop()
+                if not pending:
                     del self._pending_controls[attr_key]
                 raise
 

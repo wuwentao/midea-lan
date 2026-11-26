@@ -251,10 +251,11 @@ class MideaCADevice(MideaDevice):
 
     def _message_received(self) -> None:
         """Record when a socket frame arrives, before dispatch."""
+        received_at = time.monotonic()
         event_order = self._next_ca_mode_event_order()
         with self._ca_mode_lock:
             self._ca_mode_received_event_order = event_order
-            self._ca_mode_received_at = time.monotonic()
+            self._ca_mode_received_at = received_at
 
     def _message_dispatch_complete(self) -> None:
         """Clear the receive marker after the decoded batch is dispatched."""

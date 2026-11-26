@@ -6,6 +6,7 @@ import logging
 import time
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
+from threading import Lock
 from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
 
 from typing_extensions import deprecated
@@ -180,6 +181,10 @@ class MideaDevice:
         # state the service loop needs.
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
+        # Synchronous setters may inspect the connection from an executor while
+        # the event loop connects or closes it. Protect only the endpoint/loop
+        # snapshot; never hold this lock while encoding, writing, or awaiting.
+        self._stream_state_lock = Lock()
         self._ip_address = kwargs["ip_address"]
         self._port = kwargs["port"]
         self._security = LocalSecurity()
@@ -411,14 +416,18 @@ class MideaDevice:
                 self._ip_address,
                 self._port,
             )
-            self._reader, self._writer = await asyncio.wait_for(
+            reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(self._ip_address, self._port),
                 timeout=SOCKET_TIMEOUT,
             )
             # Record the loop that owns this stream so an off-loop write
             # (set_attribute from a Home Assistant executor thread) is routed
             # back here even when connect() runs without open() / a supervisor.
-            self._stream_loop = _running_loop()
+            stream_loop = asyncio.get_running_loop()
+            with self._stream_state_lock:
+                self._reader = reader
+                self._writer = writer
+                self._stream_loop = stream_loop
             _LOGGER.debug("[%s] Connected", self._device_id)
             if self._tls_enabled:
                 await self.authenticate_tls()
@@ -600,9 +609,8 @@ class MideaDevice:
                 self._device_id,
             )
             raise SocketException
-        writer = self._require_stream_writer(data)
-        loop = self._stream_loop
-        if loop is not None and _running_loop() is not loop:
+        writer, loop = self._require_stream_connection(data)
+        if _running_loop() is not loop:
             # MSDatagram.encode advances per-session counters. Keep that state
             # change next to the write on the stream loop so heartbeat and
             # executor-originated commands cannot allocate counters in one
@@ -633,9 +641,8 @@ class MideaDevice:
         stability across the send helpers.
         """
         _ = query
-        writer = self._require_stream_writer(data)
-        loop = self._stream_loop
-        if loop is not None and _running_loop() is not loop:
+        writer, loop = self._require_stream_connection(data)
+        if _running_loop() is not loop:
             # Off the stream's owning loop (executor thread): asyncio transports
             # are not thread-safe, so hand the write to that loop. Capturing the
             # writer also prevents a delayed callback from reaching a replacement
@@ -656,9 +663,8 @@ class MideaDevice:
     ) -> None:
         """Send message V3."""
         _ = query
-        writer = self._require_stream_writer(data)
-        loop = self._stream_loop
-        if loop is not None and _running_loop() is not loop:
+        writer, loop = self._require_stream_connection(data)
+        if _running_loop() is not loop:
             # encode_8370 advances the request counter, so defer both encoding
             # and writing to the stream loop as one ordered operation.
             loop.call_soon_threadsafe(
@@ -669,17 +675,22 @@ class MideaDevice:
             return
         writer.write(self._security.encode_8370(data, msg_type))
 
-    def _require_stream_writer(self, data: bytes) -> asyncio.StreamWriter:
-        """Return the active writer or fail before mutating transport counters."""
-        writer = self._writer
-        if writer is None:
+    def _require_stream_connection(
+        self,
+        data: bytes,
+    ) -> tuple[asyncio.StreamWriter, asyncio.AbstractEventLoop]:
+        """Return one atomic writer/loop snapshot before mutating counters."""
+        with self._stream_state_lock:
+            writer = self._writer
+            loop = self._stream_loop
+        if writer is None or loop is None:
             _LOGGER.debug(
-                "[%s] send failure, device socket is none, data: %s",
+                "[%s] send failure, device stream is incomplete, data: %s",
                 self._device_id,
                 data.hex(),
             )
             raise SocketException
-        return writer
+        return writer, loop
 
     def _run_scheduled_tls_send(
         self,
@@ -1598,13 +1609,14 @@ class MideaDevice:
 
     def close_socket(self) -> None:
         """Close the stream and re-arm per-connection probe state."""
-        writer = self._writer
         # Detach the connection first. A synchronous setter may be running in
         # an executor while the loop tears down; it must fail before recording
         # new pending state or scheduling work on this obsolete connection.
-        self._reader = None
-        self._writer = None
-        self._stream_loop = None
+        with self._stream_state_lock:
+            writer = self._writer
+            self._reader = None
+            self._writer = None
+            self._stream_loop = None
         self._tls_codec = None
         self._unsupported_protocol = []
         # Re-arm the appliance query too. It is cleared in pre_process_message

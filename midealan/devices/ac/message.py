@@ -2660,6 +2660,12 @@ class MessageACResponse(MessageResponse):
     power_on_timer: int
     power_off_timer: int
     self_clean_active: bool
+    # Populated by A5Body for 00000Q1A subtype 0.
+    compressor_frequency: int
+    realtime_power: int
+    indoor_coil_temperature: float
+    outdoor_coil_temperature: float
+    discharge_pipe_temperature: int
 
     def __init__(
         self,

@@ -77,22 +77,46 @@ else:
 美的云端为每个型号提供一个 Lua 文件，定义了每条查询、上报、控制消息的字节布局。
 这是实现的唯一权威来源。
 
-### 2.1 通过序列号（SN）下载 Lua
+### 2.1 通过完整序列号（SN）或其他设备身份信息下载 Lua
 
 使用 `midealan` CLI 的 `download` 命令（完整参数见
 [README](../README_hans.md#下载云端-lua-与插件文件)）。在源码检出环境中，把
 `midealan` 替换为 `uv run python -m midealan.cli`：
 
+能够取得完整 SN 时，下面的 SN 命令仍是主要的直接查询方式；后续 model/subtype
+命令只是新增的并列选择，不会替代完整 SN 下载。
+
 ```bash
 uv run python -m midealan.cli download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3"
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3"
 ```
 
-若序列号无法正确解析设备类型，用 `--device-type HEX` 显式指定（例如
-`--device-type D9`）。也可用 `--host` 针对某个 LAN 设备下载，或同时省略
-`--host` 与 `--device-sn` 处理整个云账号下的全部设备。Lua（以及在支持时的插件）
-文件会写入当前工作目录 —— 建议使用一个全新的空目录集中保存。
+若序列号无法正确解析设备类型，继续使用同一个 `--sn` 命令，并用 `--type HEX`
+显式补充类型（例如 `--type D9`）。无法取得完整 SN、但已知 8 位 SN8/appModel 时，
+可选择另一种下载方式：
+
+```bash
+uv run python -m midealan.cli download \
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --type AC --model 22013279 --subtype 8
+```
+
+此示例会获取
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua)。
+
+`--subtype` 是设备的 `deviceSubType`（云端 `modelNumber`）；通常为数字，部分
+海外云使用字母数字型号。只有类型与 subtype、没有 `--model` 时仍可匹配
+subtype/通用 Lua，但精确插件需要 SN8。也可用 `--host` 针对某个 LAN 设备下载，或省略
+所有身份参数处理整个云账号下的设备。Lua（以及在支持时的插件）文件会写入当前工作目录
+—— 建议使用一个全新的空目录集中保存。
+
+只使用 subtype 的示例中，DB subtype `16695` 对应
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua)。
+
+请根据已有信息自行选择：`--host`、完整 `--sn`、完整 SN 加显式 `--type`、
+`--type` + `--model`、`--type` + `--subtype`，或不传选择参数处理整个账号。
+所有方式均继续支持。
 
 ### 2.2 将 Lua 提交到参考仓库
 

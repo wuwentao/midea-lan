@@ -30,6 +30,19 @@ from .tls import CertBundle, build_csr, generate_ec_keypair
 
 SN8_MIN_SERIAL_LENGTH = 17
 
+
+def _normalize_model_number(value: object) -> int | str:
+    """Keep numeric model numbers numeric and preserve model identifiers."""
+    if value is None or value == "":
+        return 0
+    try:
+        return int(cast("int | float | str", value))
+    except ValueError:
+        return value if isinstance(value, str) else 0
+    except TypeError:
+        return 0
+
+
 # udp_version>=4 "TLS" appliances replace the per-device LAN token/key with an
 # application certificate the official app provisions from the Midea cloud: it
 # fetches a keyId + AP private key, generates an EC key pair and a PKCS#10 CSR,
@@ -730,7 +743,7 @@ class MideaCloud:
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -902,10 +915,9 @@ class MeijuCloud(MideaCloud):
             for home in response.get("homeList") or []:
                 for room in home.get("roomList") or []:
                     for appliance in room.get("applianceList"):
-                        try:
-                            model_number = int(appliance.get("modelNumber", 0))
-                        except (ValueError, TypeError):
-                            model_number = 0
+                        model_number = _normalize_model_number(
+                            appliance.get("modelNumber"),
+                        )
                         device_info = {
                             "name": appliance.get("name"),
                             "type": int(appliance.get("type"), 16),
@@ -958,10 +970,7 @@ class MeijuCloud(MideaCloud):
             endpoint="/v1/appliance/info/get",
             data=data,
         ):
-            try:
-                model_number = int(response.get("modelNumber", 0))
-            except (ValueError, TypeError):
-                model_number = 0
+            model_number = _normalize_model_number(response.get("modelNumber"))
             model_type = response.get("type")
             device_info = {
                 "name": response.get("name"),
@@ -1008,7 +1017,7 @@ class MeijuCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,  # noqa: ARG002
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -1019,6 +1028,10 @@ class MeijuCloud(MideaCloud):
             "version": "0",
             "iotAppId": self._app_id,
         }
+        if model_number is not None:
+            # Official SDK name: modelNumber is the numeric deviceSubType,
+            # not the 8-character SN8/appModel embedded in applianceSn.
+            data["modelNumber"] = str(model_number)
         fnm = None
         if (
             response := await self._api_request(
@@ -1256,10 +1269,7 @@ class SmartHomeCloud(MideaCloud):
         ):
             appliances = {}
             for appliance in response["list"]:
-                try:
-                    model_number = int(appliance.get("modelNumber", 0))
-                except ValueError:
-                    model_number = 0
+                model_number = _normalize_model_number(appliance.get("modelNumber"))
                 device_info = {
                     "name": appliance.get("name"),
                     "type": int(appliance.get("type"), 16),
@@ -1286,7 +1296,7 @@ class SmartHomeCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -1303,7 +1313,7 @@ class SmartHomeCloud(MideaCloud):
             },
         )
         if model_number is not None:
-            data["modelNumber"] = model_number
+            data["modelNumber"] = str(model_number)
         fnm = None
         if (
             response := await self._api_request(
@@ -1511,10 +1521,7 @@ class MideaAirCloud(MideaCloud):
         ):
             appliances = {}
             for appliance in response["list"]:
-                try:
-                    model_number = int(appliance.get("modelNumber", 0))
-                except ValueError:
-                    model_number = 0
+                model_number = _normalize_model_number(appliance.get("modelNumber"))
                 device_info = {
                     "name": appliance.get("name"),
                     "type": int(appliance.get("type"), 16),
@@ -1616,7 +1623,7 @@ class MideaAirCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,  # noqa: ARG002
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration.
@@ -1636,6 +1643,8 @@ class MideaAirCloud(MideaCloud):
                 "version": "0",
             },
         )
+        if model_number is not None:
+            data["modelNumber"] = str(model_number)
         for endpoint in (
             "/v1/appliance/protocol/lua/luaGetCbc",
             "/v1/appliance/protocol/lua/luaGet",
@@ -1812,10 +1821,7 @@ class ToshibaIOLife(MideaAirCloud):
             except (KeyError, TypeError, ValueError):
                 _LOGGER.debug("Skipping malformed appliance entry: %s", appliance)
                 continue
-            try:
-                model_number = int(appliance.get("modelNumber", 0))
-            except (TypeError, ValueError):
-                model_number = 0
+            model_number = _normalize_model_number(appliance.get("modelNumber"))
             sn = self._decrypt_sn(str(appliance.get("sn") or ""))
             sn8 = sn[9:17] if len(sn) > SN8_MIN_SERIAL_LENGTH else ""
             appliances[device_id] = {

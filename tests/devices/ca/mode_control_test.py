@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from midealan.const import DeviceType, ProtocolVersion
-from midealan.device import MessageResult
+from midealan.device import MessageResult, MideaDevice
 from midealan.devices.ca import (
     CAModeWritePendingError,
     DeviceAttributes,
@@ -14,8 +14,10 @@ from midealan.devices.ca import (
 from midealan.devices.ca.message import (
     CA_MODE_BODY_LENGTH,
     MessageCAResponse,
+    MessageQuery,
     build_ca_mode_body,
 )
+from midealan.exceptions import ValueWrongType
 from midealan.message import ListTypes, MessageBase, MessageQuestCustom, MessageType
 
 
@@ -115,6 +117,104 @@ def test_invalid_status_body_is_not_cached() -> None:
         send.assert_not_called()
 
 
+def test_parse_message_always_clears_receive_marker() -> None:
+    """CA receipt metadata is scoped to one parsed transport frame."""
+    device = _device()
+    device._message_received()
+
+    with patch.object(
+        MideaDevice,
+        "parse_message",
+        return_value=MessageResult.SUCCESS,
+    ) as parse:
+        assert device.parse_message(b"frame") == MessageResult.SUCCESS
+
+    parse.assert_called_once_with(b"frame")
+    assert device._ca_mode_received_event_order is None
+    assert device._ca_mode_received_at is None
+
+
+def test_parse_message_clears_receive_marker_when_dispatch_fails() -> None:
+    """Malformed input cannot leak receipt ordering into the next frame."""
+    device = _device()
+    device._message_received()
+
+    with (
+        patch.object(MideaDevice, "parse_message", side_effect=ValueError("bad")),
+        pytest.raises(ValueError, match="bad"),
+    ):
+        device.parse_message(b"frame")
+
+    assert device._ca_mode_received_event_order is None
+    assert device._ca_mode_received_at is None
+
+
+def test_unsupported_and_invalid_mode_writes_are_rejected() -> None:
+    """Only boolean writes to verified mode attributes reach the transport."""
+    device = _device()
+    device.set_attribute("unknown", True)
+    with pytest.raises(ValueWrongType, match="Expected bool"):
+        device.set_attribute(DeviceAttributes.storage_mode.value, 1.0)
+
+
+def test_toshiba_write_return_path_remains_a_no_op() -> None:
+    """A Toshiba write cannot fall through into the Midea mode implementation."""
+    device = _device()
+    device._toshiba_protocol = True
+    with patch.object(device, "reject_toshiba_write"):
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+    assert device._ca_mode_pending is None
+
+
+def test_toshiba_query_path_is_preserved() -> None:
+    """Toshiba devices continue to use their family-specific query builder."""
+    device = _device()
+    device._toshiba_protocol = True
+    with patch.object(device, "build_toshiba_query", return_value=[]) as query:
+        assert device.build_query() == []
+    query.assert_called_once_with()
+
+
+def test_midea_query_path_is_preserved() -> None:
+    """Midea CA devices retain the normal MessageQuery request."""
+    device = _device()
+    queries = device.build_query()
+    assert len(queries) == 1
+    assert isinstance(queries[0], MessageQuery)
+
+
+def test_flex_zone_status_derives_variable_mode() -> None:
+    """The existing 310A2111 temperature-derived mode remains published."""
+    device = _device()
+    device._model = "310A2111"
+    device._subtype = 56
+    status = bytearray(_status())
+    status[10 + 35] = 0x00
+    with patch.object(
+        device,
+        "process_toshiba_message",
+        return_value=None,
+    ):
+        result = device.process_message(bytes(status))
+    assert DeviceAttributes.variable_mode in result
+
+
+def test_toshiba_status_dispatch_returns_before_midea_parser() -> None:
+    """Decoded Toshiba statuses bypass Midea CA mode status handling."""
+    device = _device()
+    expected = {"power": True}
+    with patch.object(device, "process_toshiba_message", return_value=expected):
+        assert device.process_message(b"frame") == expected
+
+
+def test_toshiba_frame_status_is_still_decoded() -> None:
+    """The CA Toshiba decoder remains available after mode-cache additions."""
+    device = _device()
+    device._toshiba_protocol = True
+    with patch.object(device, "process_toshiba_message", return_value={"power": True}):
+        assert device.process_message(b"frame") == {"power": True}
+
+
 def test_set_requires_status_and_waits_for_next_status() -> None:
     """Writes require a fresh status and a later status releases the guard."""
     device = _device()
@@ -147,6 +247,33 @@ def test_notify02_general_status_is_a_valid_set_template() -> None:
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
     command = send.call_args.args[0]
     assert command.body[0] == 0x03
+
+
+def test_mismatched_status_notification_is_not_a_set_template() -> None:
+    """Only query/X00 and notify1/X02 general statuses are writable templates."""
+    device = _device()
+    device.process_message(_status(0x01, MessageType.query, ListTypes.X02))
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+    send.assert_not_called()
+
+
+def test_non_status_message_type_is_not_a_set_template() -> None:
+    """SET responses never become a read-modify-write status template."""
+    device = _device()
+    device.process_message(_status(0x01, MessageType.set, ListTypes.X00))
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
+        device.set_attribute(DeviceAttributes.freezing_mode.value, True)
+    send.assert_not_called()
+
+
+def test_unchanged_mode_does_not_send() -> None:
+    """A requested mode value already reported by the device is a no-op."""
+    device = _device()
+    device.process_message(_status(0x01))
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+    send.assert_not_called()
 
 
 def test_post_set_rejection_releases_pending_guard(
@@ -396,6 +523,37 @@ def test_failed_send_does_not_publish_state_or_leave_pending() -> None:
     with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.holiday_mode.value, True)
         send.assert_called_once()
+
+
+def test_failed_send_preserves_a_replaced_pending_write() -> None:
+    """An older send failure cannot clear pending state installed concurrently."""
+    device = _device()
+    device.process_message(_status(0x00))
+    replacement = MagicMock()
+
+    def replace_pending_then_fail(*_args: object, **_kwargs: object) -> None:
+        device._ca_mode_pending = replacement
+        raise OSError("offline")
+
+    with (
+        patch.object(device, "build_send", side_effect=replace_pending_then_fail),
+        pytest.raises(OSError, match="offline"),
+    ):
+        device.set_attribute(DeviceAttributes.holiday_mode.value, True)
+    assert device._ca_mode_pending is replacement
+
+
+def test_stale_send_callback_cannot_restore_cleared_pending_write() -> None:
+    """A delayed acknowledgement from an old connection is ignored."""
+    device = _device()
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send") as send:
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+
+    on_sent = send.call_args.kwargs["on_sent"]
+    device.close_socket()
+    on_sent()
+    assert device._ca_mode_pending is None
 
 
 def test_framing_has_body_only_and_valid_checksum() -> None:

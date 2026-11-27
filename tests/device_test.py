@@ -664,6 +664,9 @@ class TestMideaDevice:
         self.device._stream_loop = asyncio.get_running_loop()
         await self.device.authenticate()
         self.device.send_message(bytes([0x0] * 20))
+        on_sent = MagicMock()
+        self.device.send_message(bytes([0x0] * 20), on_sent=on_sent)
+        on_sent.assert_called_once_with()
         self.device._device_protocol_version = ProtocolVersion.V2
         self.device.send_message(bytes([0x0] * 20))
 
@@ -691,8 +694,10 @@ class TestMideaDevice:
         self.device._writer = writer
         self.device._stream_loop = asyncio.get_running_loop()
         payload = bytes([0x0] * 20)
-        self.device.send_message_v2(payload, query=True)
+        on_sent = MagicMock()
+        self.device.send_message_v2(payload, query=True, on_sent=on_sent)
         writer.write.assert_called_once_with(payload)
+        on_sent.assert_called_once_with()
 
     def test_send_message_v2_marshals_off_loop_write(self) -> None:
         """A write from off the device loop is handed to the owning loop.
@@ -736,14 +741,29 @@ class TestMideaDevice:
             side_effect=encode_on_loop,
         ) as encode:
             writer.write.side_effect = lambda data: events.append(("write", data))
-            self.device.send_message_v3(payload)
+            on_sent = MagicMock(side_effect=lambda: events.append(("sent", b"")))
+            self.device.send_message_v3(payload, on_sent=on_sent)
 
             encode.assert_not_called()
             writer.write.assert_not_called()
             callback, *args = loop.call_soon_threadsafe.call_args.args
             callback(*args)
 
-        assert events == [("encode", payload), ("write", encoded)]
+        assert events == [("encode", payload), ("write", encoded), ("sent", b"")]
+        on_sent.assert_called_once_with()
+
+    def test_send_message_routes_callback_to_v3(self) -> None:
+        """send_message forwards acknowledgements through the V3 route."""
+        self.device._device_protocol_version = ProtocolVersion.V3
+        on_sent = MagicMock()
+        with patch.object(self.device, "send_message_v3") as v3_mock:
+            self.device.send_message(b"frame", query=True, on_sent=on_sent)
+        v3_mock.assert_called_once_with(
+            b"frame",
+            msg_type=0x6,
+            query=True,
+            on_sent=on_sent,
+        )
 
     def test_send_message_v3_drops_stale_scheduled_send(self) -> None:
         """A queued command cannot encode or write after its writer is replaced."""
@@ -2921,10 +2941,31 @@ class TestMideaDeviceTLS:
         writer = MagicMock()
         device._writer = writer
         device._stream_loop = asyncio.get_running_loop()
-        device.send_message_tls(b"\xaa\x1e\xac\x00")
+        on_sent = MagicMock()
+        device.send_message_tls(b"\xaa\x1e\xac\x00", on_sent=on_sent)
         writer.write.assert_called_once()
+        on_sent.assert_called_once_with()
         sent = writer.write.call_args.args[0]
         assert sent[0:2] == b"\x5a\x5a"
+
+    def test_send_message_tls_deferred_ack_runs_after_write(self) -> None:
+        """Off-loop TLS acknowledgement runs after the scheduled wire write."""
+        bundle = _make_bundle()
+        device = self._tls_device(bundle)
+        self._install_codec(device, bundle)
+        writer = MagicMock()
+        device._writer = writer
+        loop = MagicMock()
+        device._stream_loop = loop
+        events: list[str] = []
+        writer.write.side_effect = lambda _frame: events.append("write")
+        on_sent = MagicMock(side_effect=lambda: events.append("sent"))
+
+        device.send_message_tls(b"frame", on_sent=on_sent)
+        callback, *args = loop.call_soon_threadsafe.call_args.args
+        callback(*args)
+
+        assert events == ["write", "sent"]
 
     def test_send_message_tls_encodes_and_writes_on_device_loop(self) -> None:
         """An off-loop TLS send advances its session counters on the loop."""
@@ -2978,6 +3019,31 @@ class TestMideaDeviceTLS:
         with patch.object(device, "send_message_tls") as tls_mock:
             device.send_message(b"\xaa\x1e\xac\x00", query=True)
         tls_mock.assert_called_once_with(b"\xaa\x1e\xac\x00", query=True)
+        on_sent = MagicMock()
+        with patch.object(device, "send_message_tls") as tls_mock:
+            device.send_message(
+                b"\xaa\x1e\xac\x00",
+                query=True,
+                on_sent=on_sent,
+            )
+        tls_mock.assert_called_once_with(
+            b"\xaa\x1e\xac\x00",
+            query=True,
+            on_sent=on_sent,
+        )
+
+    def test_build_send_tls_forwards_on_sent(self) -> None:
+        """TLS build_send preserves the callback that acknowledges a wire write."""
+        device = self._tls_device(_make_bundle())
+        payload = b"\xaa\x1e\xe3\x00\x00\x00\x00\x00\x03\x03"
+        cmd = MagicMock()
+        cmd.serialize.return_value = payload
+        on_sent = MagicMock()
+
+        with patch.object(device, "send_message_tls") as tls_mock:
+            device.build_send(cmd, query=True, on_sent=on_sent)
+
+        tls_mock.assert_called_once_with(payload, query=True, on_sent=on_sent)
 
     @pytest.mark.asyncio
     async def test_build_send_tls_wraps_bare_frame(self) -> None:

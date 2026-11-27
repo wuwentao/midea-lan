@@ -92,6 +92,9 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         "api_url": "https://mp-prod.smartmidea.net/mas/v5/app/proxy?alias=",
     },
     "SmartHome": {
+        # The preset account works on both overseas backends. Prefer SmartHome
+        # because it supports regional routing, model-specific Lua, and plugins.
+        "default": True,
         "class_name": "SmartHomeCloud",
         "app_id": "1010",
         "app_key": "ac21b9f9cbfe4ca5a88562ef25e2b768",
@@ -108,7 +111,6 @@ SUPPORTED_CLOUDS: dict[str, Any] = {
         "api_url": "https://mapp.appsmb.com",  # codespell:ignore
     },
     "NetHome Plus": {
-        "default": True,
         "class_name": "MideaAirCloud",
         "app_id": "1017",
         "app_key": "3742e9e5842d4ad59c2db887e12449f9",

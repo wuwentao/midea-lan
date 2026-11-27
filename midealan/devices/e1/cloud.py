@@ -6,13 +6,17 @@ from typing import Any
 
 from aiohttp import ClientSession
 
-from midealan.cloud import AUTH_ERROR_CODES, MideaCloud, get_midea_cloud
+from midealan.cloud import (
+    AUTH_ERROR_CODES,
+    SUPPORTED_CLOUDS,
+    MideaCloud,
+    get_midea_cloud,
+)
 from midealan.exceptions import CloudAuthError, CloudError
 
 E1_FILTER_WASH_TIME_ALIAS = "/cfhrs/e1/v1/api"
 E1_FILTER_WASH_TIME_MESSAGE = "selfCleanV2"
 E1_FILTER_WASH_TIME_ACTION = "getCleanTimes"
-MEIJU_CLOUD_NAME = "美的美居"
 AUTH_RETRY_DELAY = 3.0
 
 
@@ -75,19 +79,26 @@ async def get_filter_wash_time(cloud: MideaCloud, appliance_id: int) -> int | No
 
 
 class E1CloudClient:
-    """Fetch E1 cloud features with a Meiju account.
+    """Fetch E1 cloud features with a registered Midea cloud account.
 
     Authentication and token-propagation retries live beside the E1-specific
-    request instead of being reimplemented by each integration.
+    request instead of being reimplemented by each integration. The cloud is
+    selected from :data:`SUPPORTED_CLOUDS`, so additional registered providers
+    can use the same E1 feature without changing this module.
     """
 
     def __init__(
         self,
+        cloud_name: str,
         session: ClientSession,
         account: str,
         password: str,
     ) -> None:
-        """Initialize without starting a cloud session."""
+        """Initialize for a registered cloud without starting a session."""
+        if cloud_name not in SUPPORTED_CLOUDS:
+            msg = f"Unsupported cloud: {cloud_name}"
+            raise CloudError(msg)
+        self._cloud_name = cloud_name
         self._session = session
         self._account = account
         self._password = password
@@ -123,7 +134,7 @@ class E1CloudClient:
                 raise _LoginTokenRejected(cloud, str(retry_err)) from retry_err
 
     async def _async_cloud(self) -> MideaCloud:
-        """Return a logged-in Meiju client, creating it on first use."""
+        """Return a logged-in cloud client, creating it on first use."""
         if self._cloud is None:
             async with self._login_lock:
                 if self._cloud is None:
@@ -131,7 +142,7 @@ class E1CloudClient:
                         msg = "No Midea cloud account stored"
                         raise CloudAuthError(msg)
                     cloud = get_midea_cloud(
-                        MEIJU_CLOUD_NAME,
+                        self._cloud_name,
                         self._session,
                         self._account,
                         self._password,

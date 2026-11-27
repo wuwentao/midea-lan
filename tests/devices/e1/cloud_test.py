@@ -88,11 +88,12 @@ async def test_get_filter_wash_time_failure_is_sanitized(
 
 
 @pytest.mark.asyncio
-async def test_e1_cloud_client_logs_in_and_fetches() -> None:
+@pytest.mark.parametrize("cloud_name", ["美的美居", "SmartHome", "TSmartLife"])
+async def test_e1_cloud_client_logs_in_and_fetches(cloud_name: str) -> None:
     """Authenticate lazily and delegate the device-specific request."""
     cloud = Mock(login=AsyncMock(return_value=True))
     session = Mock()
-    client = E1CloudClient(session, "account", "password")
+    client = E1CloudClient(cloud_name, session, "account", "password")
     with (
         patch(
             "midealan.devices.e1.cloud.get_midea_cloud",
@@ -105,7 +106,7 @@ async def test_e1_cloud_client_logs_in_and_fetches() -> None:
     ):
         assert await client.async_get_report(100) == 42
         assert await client.async_get_report(101) == 42
-    get_cloud.assert_called_once_with("美的美居", session, "account", "password")
+    get_cloud.assert_called_once_with(cloud_name, session, "account", "password")
     cloud.login.assert_awaited_once()
     assert get_minutes.await_args_list == [
         ((cloud, 100), {}),
@@ -118,7 +119,7 @@ async def test_e1_cloud_client_retries_token_then_logs_in_again() -> None:
     """Retry token propagation, then replace a persistently rejected login."""
     first_cloud = Mock(login=AsyncMock(return_value=True))
     second_cloud = Mock(login=AsyncMock(return_value=True))
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     get_minutes = AsyncMock(
         side_effect=[
             CloudAuthError("rejected"),
@@ -147,7 +148,7 @@ async def test_e1_cloud_client_serializes_concurrent_relogin() -> None:
     """Overlapping rejected tokens share one replacement cloud login."""
     old_cloud = Mock()
     new_cloud = Mock(login=AsyncMock(return_value=True))
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     client._cloud = old_cloud
     initial_calls = 0
     both_started = asyncio.Event()
@@ -195,7 +196,7 @@ async def test_e1_cloud_client_serializes_concurrent_initial_login() -> None:
         return True
 
     cloud = Mock(login=AsyncMock(side_effect=login))
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     with (
         patch(
             "midealan.devices.e1.cloud.get_midea_cloud",
@@ -225,7 +226,7 @@ async def test_e1_cloud_client_raises_after_second_login_is_rejected() -> None:
         Mock(login=AsyncMock(return_value=True)),
         Mock(login=AsyncMock(return_value=True)),
     ]
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     get_minutes = AsyncMock(side_effect=CloudAuthError("rejected"))
     with (
         patch(
@@ -245,7 +246,7 @@ async def test_e1_cloud_client_raises_after_second_login_is_rejected() -> None:
 @pytest.mark.parametrize("credentials", [("", "password"), ("account", "")])
 async def test_e1_cloud_client_requires_account(credentials: tuple[str, str]) -> None:
     """Reject missing credentials without creating a cloud client."""
-    client = E1CloudClient(Mock(), *credentials)
+    client = E1CloudClient("美的美居", Mock(), *credentials)
     with (
         patch("midealan.devices.e1.cloud.get_midea_cloud") as get_cloud,
         pytest.raises(CloudAuthError, match="account"),
@@ -258,7 +259,7 @@ async def test_e1_cloud_client_requires_account(credentials: tuple[str, str]) ->
 async def test_e1_cloud_client_rejects_failed_login() -> None:
     """Expose a failed Meiju login as an authentication error."""
     cloud = Mock(login=AsyncMock(return_value=False))
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     with (
         patch("midealan.devices.e1.cloud.get_midea_cloud", return_value=cloud),
         pytest.raises(CloudAuthError, match="login failed"),
@@ -271,7 +272,7 @@ async def test_e1_cloud_client_rejects_failed_login() -> None:
 async def test_e1_cloud_client_sanitizes_malformed_login(failure: Exception) -> None:
     """Map malformed cloud login replies to the public authentication error."""
     cloud = Mock(login=AsyncMock(side_effect=failure))
-    client = E1CloudClient(Mock(), "account", "password")
+    client = E1CloudClient("美的美居", Mock(), "account", "password")
     get_minutes = AsyncMock()
     with (
         patch("midealan.devices.e1.cloud.get_midea_cloud", return_value=cloud),
@@ -283,3 +284,9 @@ async def test_e1_cloud_client_sanitizes_malformed_login(failure: Exception) -> 
     assert exc.value.__cause__ is None
     assert client._cloud is None
     get_minutes.assert_not_awaited()
+
+
+def test_e1_cloud_client_rejects_unsupported_cloud() -> None:
+    """Reject cloud names that are absent from the shared registry."""
+    with pytest.raises(CloudError, match="Unsupported cloud: Invalid"):
+        E1CloudClient("Invalid", Mock(), "account", "password")

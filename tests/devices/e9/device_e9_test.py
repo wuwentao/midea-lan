@@ -7,7 +7,12 @@ import pytest
 
 from midealan.const import ProtocolVersion
 from midealan.devices.e9 import DeviceAttributes, MideaE9Device
-from midealan.devices.e9.message import INNER_HEAD, REPORT_BASE_PUSH
+from midealan.devices.e9.message import (
+    INNER_HEAD,
+    QUERY_CMD_INFO,
+    REPORT_BASE_PUSH,
+    MessageQueryInfo,
+)
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
 
@@ -62,10 +67,45 @@ class TestMideaE9Device:
         assert device.attributes[DeviceAttributes.bake_temperature] is None
 
     def test_build_query(self, device: MideaE9Device) -> None:
-        """Build a single status query with the inner query frame."""
-        query = device.build_query()
-        assert len(query) == 1
-        assert query[0].body[0] == INNER_HEAD
+        """Build status and info queries with the inner query frame."""
+        queries = device.build_query()
+
+        assert len(queries) == 2
+        assert all(query.body[0] == INNER_HEAD for query in queries)
+        assert [query.body[6] for query in queries] == [0x52, 0x51]
+        assert type(queries[0]) is not type(queries[1])
+
+    @pytest.mark.asyncio
+    async def test_info_timeout_keeps_status_polling(
+        self,
+        device: MideaE9Device,
+    ) -> None:
+        """A silent optional info query must not blacklist status polling."""
+        device._appliance_query = False
+        with (
+            patch.object(device, "build_send") as initial_send,
+            patch.object(
+                device,
+                "_await_query_reply",
+                side_effect=[None, TimeoutError()],
+            ),
+        ):
+            await device.refresh_status(check_protocol=True)
+
+        assert [call.args[0].body[6] for call in initial_send.call_args_list] == [
+            0x52,
+            0x51,
+        ]
+        assert device._unsupported_protocol == [MessageQueryInfo.__name__]
+
+        with (
+            patch.object(device, "build_send") as periodic_send,
+            patch("midealan.device.asyncio.sleep"),
+        ):
+            await device.refresh_status()
+
+        periodic_send.assert_called_once()
+        assert periodic_send.call_args.args[0].body[6] == 0x52
 
     def test_process_message(self, device: MideaE9Device) -> None:
         """A notify report updates every decoded attribute."""
@@ -75,6 +115,21 @@ class TestMideaE9Device:
         assert status["volume"] == 1
         assert device.attributes[DeviceAttributes.bottom_temperature] == 80
         assert device.attributes[DeviceAttributes.error_code] == 7
+
+    def test_process_info_message(self, device: MideaE9Device) -> None:
+        """An info-query response updates the product volume attribute."""
+        body = [0] * 16
+        body[0] = INNER_HEAD
+        body[1] = 0x55
+        body[6] = QUERY_CMD_INFO
+        body[7] = 0xC3
+        body[8] = 0x01
+        body[15] = 2
+
+        status = device.process_message(_report_frame(body, MessageType.query))
+
+        assert status["product_volume"] == 2
+        assert device.attributes[DeviceAttributes.product_volume] == 2
 
     def test_process_message_short_no_update(self, device: MideaE9Device) -> None:
         """A body shorter than the minimum record carries no decoded state."""

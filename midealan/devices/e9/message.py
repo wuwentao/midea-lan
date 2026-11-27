@@ -7,7 +7,7 @@ and every Lua ``messageBytes[n]`` offset is the response body offset ``body[n]``
 directly.
 
 - Query: message type 0x03, 9-byte inner frame carrying cmd code 0x52/0xC3
-  (query status) and a trailing inner checksum byte.
+  (query status) or 0x51/0xC3 (query info) and a trailing inner checksum byte.
 - Control: message type 0x02, 19-byte inner frame carrying control_cmd_code,
   volume, color, dosing, work_status, cuisine time, reserve time and
   bake_temperature, plus a trailing inner checksum byte.
@@ -190,6 +190,14 @@ class MessageQuery(MessageE9Base):
         ]
         frame.append(_inner_checksum(frame))
         return bytearray(frame[1:])
+
+
+class MessageQueryInfo(MessageQuery):
+    """e9 info query, kept distinct for per-command timeout tracking."""
+
+    def __init__(self, protocol_version: int) -> None:
+        """Initialize e9 query-info message."""
+        super().__init__(protocol_version, QUERY_CMD_INFO)
 
 
 class MessageSet(MessageE9Base):

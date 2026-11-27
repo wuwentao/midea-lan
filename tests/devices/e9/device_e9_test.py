@@ -10,8 +10,8 @@ from midealan.devices.e9 import DeviceAttributes, MideaE9Device
 from midealan.devices.e9.message import (
     INNER_HEAD,
     QUERY_CMD_INFO,
-    QUERY_CMD_STATUS,
     REPORT_BASE_PUSH,
+    MessageQueryInfo,
 )
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
 from midealan.message import MessageType
@@ -72,10 +72,40 @@ class TestMideaE9Device:
 
         assert len(queries) == 2
         assert all(query.body[0] == INNER_HEAD for query in queries)
-        assert [query.body[6] for query in queries] == [
-            QUERY_CMD_STATUS,
-            QUERY_CMD_INFO,
+        assert [query.body[6] for query in queries] == [0x52, 0x51]
+        assert type(queries[0]) is not type(queries[1])
+
+    @pytest.mark.asyncio
+    async def test_info_timeout_keeps_status_polling(
+        self,
+        device: MideaE9Device,
+    ) -> None:
+        """A silent optional info query must not blacklist status polling."""
+        device._appliance_query = False
+        with (
+            patch.object(device, "build_send") as initial_send,
+            patch.object(
+                device,
+                "_await_query_reply",
+                side_effect=[None, TimeoutError()],
+            ),
+        ):
+            await device.refresh_status(check_protocol=True)
+
+        assert [call.args[0].body[6] for call in initial_send.call_args_list] == [
+            0x52,
+            0x51,
         ]
+        assert device._unsupported_protocol == [MessageQueryInfo.__name__]
+
+        with (
+            patch.object(device, "build_send") as periodic_send,
+            patch("midealan.device.asyncio.sleep"),
+        ):
+            await device.refresh_status()
+
+        periodic_send.assert_called_once()
+        assert periodic_send.call_args.args[0].body[6] == 0x52
 
     def test_process_message(self, device: MideaE9Device) -> None:
         """A notify report updates every decoded attribute."""

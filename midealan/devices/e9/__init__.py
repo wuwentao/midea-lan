@@ -18,7 +18,6 @@ from .message import (
     COLOR_LOW,
     DOSING_HIGH,
     DOSING_LOW,
-    QUERY_CMD_INFO,
     TIME_HR_HIGH,
     TIME_HR_LOW,
     TIME_MIN_HIGH,
@@ -29,6 +28,7 @@ from .message import (
     WORK_STATUS_LOW,
     MessageE9Response,
     MessageQuery,
+    MessageQueryInfo,
     MessageSet,
 )
 
@@ -140,7 +140,7 @@ class MideaE9Device(MideaDevice):
         """Midea e9 device build query."""
         return [
             MessageQuery(self._message_protocol_version),
-            MessageQuery(self._message_protocol_version, QUERY_CMD_INFO),
+            MessageQueryInfo(self._message_protocol_version),
         ]
 
     def process_message(self, msg: bytes) -> dict[str, Any]:

@@ -1,11 +1,12 @@
 """Midea lan device."""
 
+import asyncio
+import contextlib
 import logging
-import socket
-import threading
 import time
 from collections.abc import Callable
 from enum import IntEnum, StrEnum
+from threading import Lock
 from typing import Any, ClassVar, NotRequired, TypedDict, Unpack
 
 from typing_extensions import deprecated
@@ -42,7 +43,14 @@ from .tls import (
     TLSSession,
 )
 
-MIN_AUTH_RESPONSE = 20
+# V3 (8370) handshake reply: a fixed 72-byte frame whose bytes [8:72] are the
+# 64-byte key material fed to tcp_key(). StreamReader.read() may return it in
+# pieces, so authenticate() reads exactly this many bytes (see readexactly).
+AUTH_RESPONSE_LENGTH = 72
+AUTH_KEY_OFFSET = 8
+# Upper bound for a single stream read of the classic (non-TLS) frame batch; a
+# device answers a query with at most a few hundred bytes, far under this.
+STREAM_READ_LIMIT = 512
 MIN_MSG_LENGTH = 56
 MESSAGE_TYPE_INDEX = 9  # offset of the message-type byte in the 10-byte header
 MIN_V2_FACTUAL_MSG_LENGTH = 6
@@ -80,6 +88,19 @@ QUERY_PROBE_RETRIES = 2
 MAX_RECONNECT_SLEEP = 60
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the loop running in this thread, or None when off-loop.
+
+    ``set_attribute`` stays synchronous and may be invoked from a Home Assistant
+    executor thread; this lets ``send_message_v2`` tell whether it must marshal
+    the write onto the device's loop instead of writing from the wrong thread.
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
 
 
 class AuthException(Exception):
@@ -135,7 +156,7 @@ class MideaDeviceInitKwargs(TypedDict):
     cloud_name: NotRequired[str | None]
 
 
-class MideaDevice(threading.Thread):
+class MideaDevice:
     """Midea device."""
 
     TOSHIBA_MANUFACTURER_CODE = "0008"
@@ -153,13 +174,20 @@ class MideaDevice(threading.Thread):
         **kwargs: Unpack[MideaDeviceInitKwargs],
     ) -> None:
         """Midea device initialization."""
-        threading.Thread.__init__(self)
         self._attributes = attributes or {}
-        self._socket: socket.socket | None = None
+        # asyncio stream endpoints replace the blocking socket: the device runs
+        # as a single task on Home Assistant's event loop instead of its own OS
+        # thread, so a per-connection reader/writer pair is all the transport
+        # state the service loop needs.
+        self._reader: asyncio.StreamReader | None = None
+        self._writer: asyncio.StreamWriter | None = None
+        # Synchronous setters may inspect the connection from an executor while
+        # the event loop connects or closes it. Protect only the endpoint/loop
+        # snapshot; never hold this lock while encoding, writing, or awaiting.
+        self._stream_state_lock = Lock()
         self._ip_address = kwargs["ip_address"]
         self._port = kwargs["port"]
         self._security = LocalSecurity()
-        self._socket_lock = threading.RLock()
         self._token = bytes.fromhex(kwargs["token"])
         self._key = bytes.fromhex(kwargs["key"])
         self._buffer = b""
@@ -182,6 +210,25 @@ class MideaDevice(threading.Thread):
         self._previous_refresh = 0.0
         self._previous_heartbeat = 0.0
         self.name = self._device_name
+        # The supervisor coroutine (connect loop + serve loop) started by
+        # open() and cancelled by close(); the event loop it runs on, captured
+        # at open() so a write arriving from an executor thread can be marshalled
+        # back onto it; an optional refresh scheduled from inside message
+        # handling (see queue_refresh); and a lock that serializes a periodic
+        # refresh against one queued mid-connection so their query sends cannot
+        # interleave on the same connection.
+        self._task: asyncio.Task[None] | None = None
+        # _loop proves the supervisor exists (queue_refresh gates on it);
+        # _stream_loop is the loop that owns the live reader/writer and routes
+        # off-loop writes. They coincide under open(), but a direct connect()
+        # (no supervisor) sets only _stream_loop, so keep them separate.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._stream_loop: asyncio.AbstractEventLoop | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
+        self._refresh_lock = asyncio.Lock()
+        # Serialize open()/close() so a reopen cannot slip in while a close is
+        # still tearing down (which would leave _is_run True with no task).
+        self._lifecycle_lock = asyncio.Lock()
         self.set_mac(kwargs.get("mac"))
         # Discovery may report a fixed-width serial padded with NUL bytes or an
         # empty ``apc_sn`` attribute; normalize these to None (mirrors set_mac).
@@ -344,6 +391,14 @@ class MideaDevice(threading.Thread):
             if factual_msg_len < MIN_V2_FACTUAL_MSG_LENGTH:
                 break
             alleged_msg_len = msg[4] + (msg[5] << 8)
+            # The length field itself lives at bytes [4:6], so a declared length
+            # below the minimum frame size is corrupt. Reject it instead of
+            # slicing: a declared length of 0 would append an empty frame and
+            # leave `msg` unchanged, spinning this loop forever on the shared
+            # event loop. Raising mirrors the TLS path ("TLS frame length below
+            # minimum") and lets the serve/connect loop close_socket + reconnect.
+            if alleged_msg_len < MIN_V2_FACTUAL_MSG_LENGTH:
+                raise MessageWrongFormat("V2 frame length below minimum")
             if factual_msg_len >= alleged_msg_len:
                 result.append(msg[:alleged_msg_len])
                 msg = msg[alleged_msg_len:]
@@ -351,69 +406,68 @@ class MideaDevice(threading.Thread):
                 break
         return result, msg
 
-    def connect(self, check_protocol: bool = False) -> bool:
+    async def connect(self, check_protocol: bool = False) -> bool:
         """Connect to device."""
         connected = False
-        sock: socket.socket | None = None
-        with self._socket_lock:
-            was_running = self._is_run
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self._socket = sock
-                sock.settimeout(SOCKET_TIMEOUT)
-                _LOGGER.debug(
-                    "[%s] Connecting to %s:%s",
-                    self._device_id,
-                    self._ip_address,
-                    self._port,
-                )
-                sock.connect((self._ip_address, self._port))
-                _LOGGER.debug("[%s] Connected", self._device_id)
-                if self._tls_enabled:
-                    self.authenticate_tls()
-                elif self._device_protocol_version == ProtocolVersion.V3:
-                    self.authenticate()
-                # 1. midea_ac_lan add device verify token with connect and auth
-                # 2. init connection, check_protocol
-                if check_protocol:
-                    self.refresh_status(check_protocol=check_protocol)
-                if was_running and not self._is_run:
-                    _LOGGER.debug(
-                        "[%s] Connection closed before lifecycle completed",
-                        self._device_id,
-                    )
-                else:
-                    connected = True
-            except TimeoutError:
-                _LOGGER.debug("[%s] Connection timed out", self._device_id)
-            except OSError:  # refresh_status exception
-                _LOGGER.debug("[%s] Connection error", self._device_id)
-            except AuthException:  # authenticate exception
-                _LOGGER.warning("[%s] Authentication failed", self._device_id)
-            except SocketException:  # refresh_status exception
-                _LOGGER.debug("[%s] Connect socket exception", self._device_id)
-            except NoSupportedProtocol:  # refresh_status exception
-                _LOGGER.warning("[%s] No supported query protocol", self._device_id)
-            except Exception as e:
-                _LOGGER.exception(
-                    "[%s] Unknown error during connect device",
-                    self._device_id,
-                    exc_info=e,
-                )
-            finally:
-                # Any failure path leaves connected False; release the socket once
-                # here instead of repeating close_socket() in every handler.
-                if not connected and sock is not None:
-                    self.close_socket(sock)
+        try:
+            _LOGGER.debug(
+                "[%s] Connecting to %s:%s",
+                self._device_id,
+                self._ip_address,
+                self._port,
+            )
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(self._ip_address, self._port),
+                timeout=SOCKET_TIMEOUT,
+            )
+            # Record the loop that owns this stream so an off-loop write
+            # (set_attribute from a Home Assistant executor thread) is routed
+            # back here even when connect() runs without open() / a supervisor.
+            stream_loop = asyncio.get_running_loop()
+            with self._stream_state_lock:
+                self._reader = reader
+                self._writer = writer
+                self._stream_loop = stream_loop
+            _LOGGER.debug("[%s] Connected", self._device_id)
+            if self._tls_enabled:
+                await self.authenticate_tls()
+            elif self._device_protocol_version == ProtocolVersion.V3:
+                await self.authenticate()
+            # 1. midea_ac_lan add device verify token with connect and auth
+            # 2. init connection, check_protocol
+            if check_protocol:
+                await self.refresh_status(check_protocol=check_protocol)
+            connected = True
+        except TimeoutError:
+            _LOGGER.debug("[%s] Connection timed out", self._device_id)
+        except OSError:  # refresh_status exception
+            _LOGGER.debug("[%s] Connection error", self._device_id)
+        except AuthException:  # authenticate exception
+            _LOGGER.warning("[%s] Authentication failed", self._device_id)
+        except SocketException:  # refresh_status exception
+            _LOGGER.debug("[%s] Connect socket exception", self._device_id)
+        except NoSupportedProtocol:  # refresh_status exception
+            _LOGGER.warning("[%s] No supported query protocol", self._device_id)
+        except Exception as e:
+            _LOGGER.exception(
+                "[%s] Unknown error during connect device",
+                self._device_id,
+                exc_info=e,
+            )
+        finally:
+            # Any failure path leaves connected False; release the stream once
+            # here instead of repeating close_socket() in every handler.
+            if not connected:
+                self.close_socket()
         # enable/disable device in init connection
         if check_protocol:
             self.set_available(connected)
         return connected
 
-    def authenticate(self) -> None:
+    async def authenticate(self) -> None:
         """Authenticate to device. V3 only."""
         request = self._security.encode_8370(self._token, MSGTYPE_HANDSHAKE_REQUEST)
-        if not self._socket:
+        if not self._writer or not self._reader:
             _LOGGER.debug(
                 "[%s] authenticate failure, device socket is none",
                 self._device_id,
@@ -421,47 +475,59 @@ class MideaDevice(threading.Thread):
             # raise exception to connect loop
             raise SocketException
         _LOGGER.debug("[%s] Authentication handshaking", self._device_id)
-        self._socket.send(request)
-        response = self._socket.recv(512)
+        self._writer.write(request)
+        # read() returns as soon as any bytes arrive, so the fixed 72-byte reply
+        # can come in pieces; readexactly() blocks until the whole frame is
+        # buffered. Any bytes after it stay in the reader for the serve loop. A
+        # short reply (peer closed early) raises IncompleteReadError -> auth fail.
+        try:
+            response = await asyncio.wait_for(
+                self._reader.readexactly(AUTH_RESPONSE_LENGTH),
+                timeout=SOCKET_TIMEOUT,
+            )
+        except asyncio.IncompleteReadError as exc:
+            _LOGGER.warning(
+                "[%s] Received auth response len %d error, bytes: %s",
+                self._device_id,
+                len(exc.partial),
+                exc.partial.hex(),
+            )
+            raise AuthException from exc
         _LOGGER.debug(
             "[%s] Received auth response with %d bytes: %s",
             self._device_id,
             len(response),
             response.hex(),
         )
-        if len(response) < MIN_AUTH_RESPONSE:
-            _LOGGER.warning(
-                "[%s] Received auth response len %d error, bytes: %s",
-                self._device_id,
-                len(response),
-                response.hex(),
-            )
-            raise AuthException
-        response = response[8:72]
-        self._security.tcp_key(response, self._key)
+        key_material = response[AUTH_KEY_OFFSET:AUTH_RESPONSE_LENGTH]
+        self._security.tcp_key(key_material, self._key)
         _LOGGER.debug("[%s] Authentication success", self._device_id)
 
-    def authenticate_tls(self) -> None:
+    async def authenticate_tls(self) -> None:
         """Run the udp_version>=4 cert/ECDH handshake and derive the session key.
 
         Unlike :meth:`authenticate`, this uses no device token/key: the session
         key is negotiated live from the provisioned app certificate and the
         device's module certificate (see :class:`midealan.tls.TLSSession`).
         """
-        if not self._socket or self._cert_bundle is None:
+        with self._stream_state_lock:
+            writer = self._writer
+        cert_bundle = self._cert_bundle
+        if writer is None or cert_bundle is None:
             _LOGGER.debug(
                 "[%s] authenticate_tls failure, socket or cert bundle is none",
                 self._device_id,
             )
             raise SocketException
-        session = TLSSession(self._cert_bundle, self._device_id)
+        session = TLSSession(cert_bundle, self._device_id)
         _LOGGER.debug("[%s] TLS handshake: sending cert request", self._device_id)
         try:
-            # sendall() guarantees the whole handshake frame is written; a bare
-            # send() may transmit only part of the (large) cert request, leaving
-            # both peers waiting on each other.
-            self._socket.sendall(session.build_cert_request())
-            reply = self._recv_tls_frame()
+            # The stream writer buffers the whole handshake frame; a drain()
+            # after each write flushes the (large) cert request so the peer is
+            # not left waiting on a partially sent frame.
+            writer.write(session.build_cert_request())
+            await writer.drain()
+            reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: cert response %d bytes: %s",
                 self._device_id,
@@ -469,8 +535,9 @@ class MideaDevice(threading.Thread):
                 reply.hex(),
             )
             session.process_cert_response(reply)
-            self._socket.sendall(session.build_finish())
-            finish_reply = self._recv_tls_frame()
+            writer.write(session.build_finish())
+            await writer.drain()
+            finish_reply = await self._recv_tls_frame()
             _LOGGER.debug(
                 "[%s] TLS handshake: finish response %d bytes: %s",
                 self._device_id,
@@ -485,21 +552,32 @@ class MideaDevice(threading.Thread):
                 repr(e),
             )
             raise AuthException from e
-        self._tls_codec = MSDatagram(
+        codec = MSDatagram(
             self._device_id,
-            ap_private_key=self._cert_bundle.ap_private_key,
+            ap_private_key=cert_bundle.ap_private_key,
             session_key=session.session_key,
         )
+        # A synchronous close may run from another thread while authentication
+        # awaits network I/O. Publish the negotiated codec only if its stream is
+        # still current; otherwise it could be reused briefly by a reconnect.
+        with self._stream_state_lock:
+            if self._writer is not writer:
+                _LOGGER.debug(
+                    "[%s] TLS handshake completed for a stale connection",
+                    self._device_id,
+                )
+                raise SocketException
+            self._tls_codec = codec
         _LOGGER.debug("[%s] TLS handshake success", self._device_id)
 
-    def _recv_tls_frame(self) -> bytes:
+    async def _recv_tls_frame(self) -> bytes:
         """Read one complete MSWifiDatagram frame from the socket.
 
-        A single ``recv`` may return a partial frame (the cert chain is large)
-        or several frames at once; read until the declared length arrives and
-        keep any trailing bytes in the buffer for the next read.
+        A single read may return a partial frame (the cert chain is large) or
+        several frames at once; read until the declared length arrives and keep
+        any trailing bytes in the buffer for the next read.
         """
-        if not self._socket:
+        if not self._reader:
             raise SocketException
         while True:
             if len(self._buffer) >= TLS_MIN_FRAME_LENGTH:
@@ -518,7 +596,10 @@ class MideaDevice(threading.Thread):
                     frame = self._buffer[:length]
                     self._buffer = self._buffer[length:]
                     return frame
-            chunk = self._socket.recv(TLS_RECV_BUFFER)
+            chunk = await asyncio.wait_for(
+                self._reader.read(TLS_RECV_BUFFER),
+                timeout=SOCKET_TIMEOUT,
+            )
             if len(chunk) == 0:
                 raise SocketException
             self._buffer += chunk
@@ -534,61 +615,71 @@ class MideaDevice(threading.Thread):
 
     def send_message_tls(self, data: bytes, query: bool = False) -> None:
         """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
-        if self._tls_codec is None:
+        _ = query
+        # Read codec, writer, and loop under one lock so a concurrent
+        # close_socket cannot clear the codec between the connection check and
+        # the deferred encode, leaving an off-loop send with a stale snapshot.
+        with self._stream_state_lock:
+            codec = self._tls_codec
+            writer = self._writer
+            loop = self._stream_loop
+        if codec is None:
             _LOGGER.debug(
                 "[%s] send_message_tls failure, TLS session not established",
                 self._device_id,
             )
             raise SocketException
-        frame = self._tls_codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
-        self.send_message_v2(frame, query=query)
-
-    def send_message_v2(self, data: bytes, query: bool = False) -> None:
-        """Send message V2."""
-        if not self._socket:
+        if writer is None or loop is None:
             _LOGGER.debug(
-                "[%s] send_message_v2 failure, device socket is none, data: %s",
+                "[%s] send failure, device stream is incomplete, data: %s",
                 self._device_id,
                 data.hex(),
             )
-            # raise exception to main loop
             raise SocketException
-        try:
-            # query msg, set timeout to QUERY_TIMEOUT
-            if query:
-                self._socket.settimeout(QUERY_TIMEOUT)
-            self._socket.send(data)
-        except TimeoutError:
-            _LOGGER.debug(
-                "[%s] send_message_v2 timed out",
-                self._device_id,
+        if _running_loop() is not loop:
+            # MSDatagram.encode advances per-session counters. Keep that state
+            # change next to the write on the stream loop so heartbeat and
+            # executor-originated commands cannot allocate counters in one
+            # order and reach the wire in another.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_tls_send,
+                writer,
+                codec,
+                data,
             )
-            # raise exception to main loop
-            raise
-        except ConnectionResetError as e:
-            _LOGGER.debug(
-                "[%s] send_message_v2 ConnectionResetError: %s",
-                self._device_id,
-                e,
+            return
+        frame = codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
+        writer.write(frame)
+
+    def send_message_v2(self, data: bytes, query: bool = False) -> None:
+        """Send message V2.
+
+        Stays synchronous so ``set_attribute`` and every device package that
+        builds a frame keep their current (non-coroutine) shape. The payload is
+        already encrypted by the caller's thread; only the stream write is
+        loop-bound. ``set_attribute`` runs on a Home Assistant executor thread,
+        where writing to the StreamWriter directly would corrupt its transport,
+        so a write arriving off the device loop is marshalled onto it with
+        ``call_soon_threadsafe``. A write issued from the loop itself (connect,
+        probe, heartbeat, periodic refresh) goes straight through. The
+        ``query`` flag no longer toggles a socket timeout -- that moved to the
+        awaited read in the checked probe path -- but is kept for signature
+        stability across the send helpers.
+        """
+        _ = query
+        writer, loop = self._require_stream_connection(data)
+        if _running_loop() is not loop:
+            # Off the stream's owning loop (executor thread): asyncio transports
+            # are not thread-safe, so hand the write to that loop. Capturing the
+            # writer also prevents a delayed callback from reaching a replacement
+            # connection after reconnect.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_send,
+                writer,
+                lambda: data,
             )
-            # raise exception to main loop
-            raise
-        except OSError as e:
-            _LOGGER.debug(
-                "[%s] send_message_v2 OSError: %s",
-                self._device_id,
-                e,
-            )
-            # raise exception to main loop
-            raise
-        except Exception as e:
-            _LOGGER.exception(
-                "[%s] send_message_v2 Unexpected socket error",
-                self._device_id,
-                exc_info=e,
-            )
-            # raise exception to main loop
-            raise
+            return
+        writer.write(data)
 
     def send_message_v3(
         self,
@@ -597,8 +688,79 @@ class MideaDevice(threading.Thread):
         query: bool = False,
     ) -> None:
         """Send message V3."""
-        data = self._security.encode_8370(data, msg_type)
-        self.send_message_v2(data, query=query)
+        _ = query
+        writer, loop = self._require_stream_connection(data)
+        if _running_loop() is not loop:
+            # encode_8370 advances the request counter, so defer both encoding
+            # and writing to the stream loop as one ordered operation.
+            loop.call_soon_threadsafe(
+                self._run_scheduled_send,
+                writer,
+                lambda: self._security.encode_8370(data, msg_type),
+            )
+            return
+        writer.write(self._security.encode_8370(data, msg_type))
+
+    def _require_stream_connection(
+        self,
+        data: bytes,
+    ) -> tuple[asyncio.StreamWriter, asyncio.AbstractEventLoop]:
+        """Return one atomic writer/loop snapshot before mutating counters."""
+        with self._stream_state_lock:
+            writer = self._writer
+            loop = self._stream_loop
+        if writer is None or loop is None:
+            _LOGGER.debug(
+                "[%s] send failure, device stream is incomplete, data: %s",
+                self._device_id,
+                data.hex(),
+            )
+            raise SocketException
+        return writer, loop
+
+    def _run_scheduled_tls_send(
+        self,
+        expected_writer: asyncio.StreamWriter,
+        expected_codec: MSDatagram,
+        data: bytes,
+    ) -> None:
+        """Encode and write one TLS frame if its connection is still active."""
+        if self._tls_codec is not expected_codec:
+            _LOGGER.debug(
+                "[%s] Dropping send from a stale TLS session",
+                self._device_id,
+            )
+            return
+        self._run_scheduled_send(
+            expected_writer,
+            lambda: expected_codec.encode(data, MSG_TYPE_DATA_TRANSMIT),
+        )
+
+    def _run_scheduled_send(
+        self,
+        expected_writer: asyncio.StreamWriter,
+        build_frame: Callable[[], bytes],
+    ) -> None:
+        """Build and write a frame on the stream loop for the active connection."""
+        if self._writer is not expected_writer:
+            _LOGGER.debug(
+                "[%s] Dropping send from a stale connection",
+                self._device_id,
+            )
+            return
+        try:
+            expected_writer.write(build_frame())
+        except (MideaLanError, OSError, RuntimeError, ValueError):
+            # A fire-and-forget executor send cannot return an exception to its
+            # caller. The callback is synchronous on the stream loop, so the
+            # captured writer is still current here; tear it down and let the
+            # supervisor reconnect.
+            _LOGGER.debug(
+                "[%s] Scheduled send failed",
+                self._device_id,
+                exc_info=True,
+            )
+            self.close_socket()
 
     def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
         """Serialize and send."""
@@ -613,34 +775,55 @@ class MideaDevice(threading.Thread):
         msg = PacketBuilder(self._device_id, data).finalize()
         self.send_message(msg, query=query)
 
-    def _await_query_reply(self) -> None:
-        """Block until the current query is answered (checked pass only).
+    def _query_reply_ready(self, result: MessageResult) -> bool:
+        """Return whether the current query's awaited reply has arrived.
 
-        Loops over socket reads until parse_message reports SUCCESS, then
-        restores SOCKET_TIMEOUT. A PADDING result keeps reading; any other
-        result raises ResponseException. A missing socket or a closed peer
-        raises to the connect/main loop. TimeoutError from recv propagates to
-        the caller, which records the query as unsupported.
+        The default resolves on the first fully parsed frame (``SUCCESS``),
+        which matches a family whose status query is answered by a single
+        reply. A device that interleaves other frames before its business reply
+        -- a heartbeat, or a reply to a different query family -- overrides this
+        to keep reading until its own reply is seen, so a mere keep-alive does
+        not end the probe prematurely.
         """
+        return result == MessageResult.SUCCESS
+
+    async def _await_query_reply(self) -> None:
+        """Wait until the current query is answered (checked pass only).
+
+        Reads from the stream until :meth:`_query_reply_ready` accepts the
+        parsed result, bounded by QUERY_TIMEOUT across all reads of this reply.
+        A PADDING result (partial frame) keeps reading; a fully parsed frame
+        that is not yet the awaited reply also keeps reading; any other result
+        raises ResponseException. A missing stream or a closed peer raises to
+        the connect/main loop. A timeout propagates to the caller, which records
+        the query as unsupported.
+        """
+        deadline = time.monotonic() + QUERY_TIMEOUT
         while True:
-            if not self._socket:
+            if not self._reader:
                 _LOGGER.debug("[%s] device socket is none", self._device_id)
                 # raise exception to connect/main loop
                 raise SocketException
-            msg = self._socket.recv(512)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            msg = await asyncio.wait_for(
+                self._reader.read(STREAM_READ_LIMIT),
+                timeout=remaining,
+            )
             if len(msg) == 0:
                 raise ConnectionResetError("Connection closed by peer.")
             result = self.parse_message(msg)
-            # Prevent infinite loop
-            if result == MessageResult.SUCCESS:
+            if self._query_reply_ready(result):
                 break
-            if result == MessageResult.PADDING:
+            # Prevent infinite loop: keep reading only while frames are still
+            # arriving (a partial frame, or a non-matching frame a strict device
+            # chooses to wait past); anything else is an unexpected reply.
+            if result in (MessageResult.PADDING, MessageResult.SUCCESS):
                 continue
             raise ResponseException
-        # recovery SOCKET_TIMEOUT after recv msg
-        self._socket.settimeout(SOCKET_TIMEOUT)
 
-    def _probe_query_reply(
+    async def _probe_query_reply(
         self,
         cmd: MessageRequest,
         real_cmds: list,
@@ -667,7 +850,7 @@ class MideaDevice(threading.Thread):
         max_attempts = 1 if self._probe_answered else QUERY_PROBE_RETRIES
         while True:
             try:
-                self._await_query_reply()
+                await self._await_query_reply()
             except TimeoutError:
                 if attempt < max_attempts:
                     _LOGGER.debug(
@@ -810,7 +993,7 @@ class MideaDevice(threading.Thread):
                 break
         return fallback, stage_index
 
-    def refresh_status(self, check_protocol: bool = False) -> None:
+    async def refresh_status(self, check_protocol: bool = False) -> None:
         """Refresh device status.
 
         Queries are built and sent in dependency order so each stage's reply
@@ -820,10 +1003,19 @@ class MideaDevice(threading.Thread):
         the recurring status queries are built (they may need the decoded
         capabilities) and sent. In the checked pass each stage's reply is
         awaited before the next stage is built, via _advance_query_stage(). In
-        the unchecked periodic refresh no reply is awaited inline -- the run
+        the unchecked periodic refresh no reply is awaited inline -- the serve
         loop parses them -- so any still-armed stage is built and sent back to
         back.
+
+        The refresh lock serializes a periodic refresh against one queued from
+        inside message handling (see queue_refresh), so their query sends cannot
+        interleave on the same connection.
         """
+        async with self._refresh_lock:
+            await self._run_refresh(check_protocol=check_protocol)
+
+    async def _run_refresh(self, check_protocol: bool = False) -> None:
+        """Build and send the query stages for one refresh pass."""
         cmds: list = []
         real_cmds: list = []
         status_appended = False
@@ -885,15 +1077,18 @@ class MideaDevice(threading.Thread):
             index += 1
             query_sent = False
             if cmd.__class__.__name__ not in self._unsupported_protocol:
-                # set socket QUERY_TIMEOUT for query msg
-                # build_send exception should be catch by connect/run
+                # The checked pass awaits the reply with QUERY_TIMEOUT below;
+                # build_send exception should be caught by connect/_supervise.
                 self.build_send(cmd, query=True)
                 query_sent = True
                 # init check_protocol, skip timeout exception
                 if check_protocol:
                     # only catch TimeoutError for check_protocol
-                    # unexpected exception in recv/settimeout, catch by main loop
-                    error, repeated_timeout = self._probe_query_reply(cmd, real_cmds)
+                    # unexpected exception in read, catch by main loop
+                    error, repeated_timeout = await self._probe_query_reply(
+                        cmd,
+                        real_cmds,
+                    )
                     error_count += error
                     if repeated_timeout and cmd in real_cmds:
                         timeout_count += 1
@@ -927,7 +1122,7 @@ class MideaDevice(threading.Thread):
                         status_appended,
                     )
             if not check_protocol and query_sent and index < len(cmds):
-                time.sleep(self.periodic_query_delay())
+                await asyncio.sleep(self.periodic_query_delay())
             # All the REAL status queries failed. The appliance query is excluded: it
             # answers even when the device serves no status protocol, so counting it
             # left error_count one short of len(cmds) and the failure was masked --
@@ -1357,76 +1552,120 @@ class MideaDevice(threading.Thread):
         """Enable device."""
         self.set_available(available)
 
-    def open(self) -> None:
-        """Open thread."""
-        if not self._is_run:
-            self._is_run = True
-            threading.Thread.start(self)
+    async def open(self) -> None:
+        """Start the device service task on the running event loop."""
+        async with self._lifecycle_lock:
+            if not self._is_run:
+                self._is_run = True
+                # Capture the loop so a write arriving from a Home Assistant
+                # executor thread (set_attribute) can be marshalled back onto it.
+                self._loop = asyncio.get_running_loop()
+                self._task = self._loop.create_task(self._supervise())
 
-    def close(self) -> None:
-        """Close thread."""
-        if self._is_run:
-            self._is_run = False
-            self.close_socket()
+    async def close(self) -> None:
+        """Stop the device service task and release the connection."""
+        async with self._lifecycle_lock:
+            if self._is_run:
+                self._is_run = False
+                # Cancel a refresh queued from message handling before the task,
+                # so it cannot resend on a connection we are about to drop.
+                await self._cancel_refresh()
+                try:
+                    if self._task is not None:
+                        self._task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await self._task
+                finally:
+                    # Release the handle and stream even if the supervisor task
+                    # exited with an error (e.g. an update callback raised): a
+                    # second close() returns early, so this must not be skipped.
+                    self._task = None
+                    self.close_socket()
 
     def _should_run(self) -> bool:
         """Return whether the service loop should keep running.
 
-        ``_is_run`` is flipped to False from another thread by ``close()``.
-        Reading it through this method (instead of the bare attribute) keeps
-        the loop-exit checks reachable to static analysis, which would
-        otherwise narrow the attribute to True inside the loop.
+        ``_is_run`` is flipped to False by ``close()``. Reading it through this
+        method (instead of the bare attribute) keeps the loop-exit checks
+        reachable to static analysis, which would otherwise narrow the
+        attribute to True inside the loop.
         """
         return self._is_run
 
-    def close_socket(self, sock: socket.socket | None = None) -> None:
-        """Close socket."""
-        with self._socket_lock:
-            if sock is None:
-                sock = self._socket
-            if sock is None or self._socket is sock:
-                self._unsupported_protocol = []
-                # Re-arm the appliance query too. It is cleared in
-                # pre_process_message and was never set back, so a reconnected device
-                # would skip protocol detection and re-probe with build_query() alone.
-                self._appliance_query = True
-                # Re-arm one-time init queries (e.g. AC B5 capability probes) so a
-                # reconnected device re-probes instead of reusing stale results.
-                self.reset_init_query()
-                self._buffer = b""
-                # Drop the negotiated session key so a reconnect re-runs the
-                # TLS cert/ECDH handshake instead of reusing a stale key.
-                self._tls_codec = None
-        if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError as e:
-                # shutdown() raises ENOTCONN if the peer already went away;
-                # that's fine, we still close() below.
-                _LOGGER.debug(
-                    "[%s] Error while shutting down socket: %s",
-                    self._device_id,
-                    e,
-                )
-            try:
-                sock.close()
-                _LOGGER.debug("[%s] Socket closed", self._device_id)
-            # catch OSError, AttributeError, ValueError to avoid race condition
-            except (OSError, AttributeError, ValueError) as e:
-                _LOGGER.debug("[%s] Error while closing socket: %s", self._device_id, e)
-            finally:
-                with self._socket_lock:
-                    # Avoid clearing a socket installed by a concurrent reconnect.
-                    if self._socket is sock:
-                        self._socket = None
-                        # Publish the loss before reconnecting can make the device
-                        # available again. A stale socket must not affect it. The
-                        # publish stays under the lock so a concurrent reconnect
-                        # cannot interleave a later available=True we then clobber.
-                        # Guard on _available so one failed reconnect cycle does not
-                        # emit duplicate unavailable notifications.
-                        if self._is_run and self._available:
-                            self.set_available(False)
+    def queue_refresh(self) -> None:
+        """Schedule a status refresh from inside message handling.
+
+        ``process_message`` is synchronous and runs inside the serve loop's
+        parse, so a device that wants to re-read state after a control reply
+        (e.g. 0x13) cannot await ``refresh_status`` directly. Scheduling it as a
+        task runs it on the next loop iteration -- effectively immediately, as
+        the serve loop is about to await its next read -- and the refresh lock
+        keeps its sends from interleaving with a periodic refresh. A refresh
+        already in flight is left to finish rather than stacking a second one.
+        """
+        # Gate on _is_run too: close() clears it, then awaits _cancel_refresh().
+        # A reply parsed during that await must not queue a task close() no
+        # longer tracks, which could send on a connection being dropped.
+        if self._loop is None or not self._is_run:
+            return
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
+        self._refresh_task = self._loop.create_task(self._queued_refresh())
+
+    async def _queued_refresh(self) -> None:
+        """Run a queued refresh, logging transport errors instead of raising.
+
+        A connection failure here is surfaced (and recovered) by the serve
+        loop's own read, so swallow the expected transport exceptions rather
+        than letting them escape to the loop's unhandled-task handler.
+        """
+        try:
+            await self.refresh_status()
+        except (OSError, SocketException, NoSupportedProtocol, ResponseException):
+            _LOGGER.debug("[%s] Queued refresh failed", self._device_id)
+
+    async def _cancel_refresh(self) -> None:
+        """Cancel a queued refresh task if one is pending."""
+        task = self._refresh_task
+        self._refresh_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    def close_socket(self) -> None:
+        """Close the stream and re-arm per-connection probe state."""
+        # Detach the connection first. A synchronous setter may be running in
+        # an executor while the loop tears down; it must fail before recording
+        # new pending state or scheduling work on this obsolete connection.
+        with self._stream_state_lock:
+            writer = self._writer
+            self._reader = None
+            self._writer = None
+            self._stream_loop = None
+            self._tls_codec = None
+        self._unsupported_protocol = []
+        # Re-arm the appliance query too. It is cleared in pre_process_message
+        # and was never set back, so a reconnected device would skip protocol
+        # detection and re-probe with build_query() alone.
+        self._appliance_query = True
+        # Re-arm one-time init queries (e.g. AC B5 capability probes) so a
+        # reconnected device re-probes instead of reusing stale results.
+        self.reset_init_query()
+        self._buffer = b""
+        if writer is not None:
+            # close() releases the transport synchronously on the next loop
+            # iteration; wait_closed() is not needed for the fd to be freed, and
+            # avoiding it keeps this method callable off a cancellation path.
+            with contextlib.suppress(OSError):
+                writer.close()
+            _LOGGER.debug("[%s] Socket closed", self._device_id)
+            # Publish the loss so a stale connection cannot leave the device
+            # looking available. Guard on _available so one failed reconnect
+            # cycle does not emit duplicate unavailable notifications; _is_run
+            # keeps an explicit close() (which clears it first) silent.
+            if self._is_run and self._available:
+                self.set_available(False)
 
     def set_ip_address(self, ip_address: str) -> None:
         """Set IP address."""
@@ -1443,9 +1682,9 @@ class MideaDevice(threading.Thread):
         """Set refresh interval."""
         self._refresh_interval = refresh_interval
 
-    def _check_refresh(self, now: float) -> None:
+    async def _check_refresh(self, now: float) -> None:
         if 0 < self._refresh_interval <= now - self._previous_refresh:
-            self.refresh_status()
+            await self.refresh_status()
             self._previous_refresh = now
 
     def _check_heartbeat(self, now: float) -> None:
@@ -1453,16 +1692,16 @@ class MideaDevice(threading.Thread):
             self.send_heartbeat()
             self._previous_heartbeat = now
 
-    def _connect_loop(self) -> None:
+    async def _connect_loop(self) -> None:
         """Connect loop until device online."""
         # connect loop until online
         connection_retries = 0
-        while self._socket is None and self._is_run:
+        while self._writer is None and self._is_run:
             _LOGGER.debug("[%s] Socket is None, try to connect", self._device_id)
             # Re-check _should_run(): close() may have requested shutdown after
-            # the while guard was evaluated, so skip opening a socket / network
-            # I/O once teardown is in progress.
-            if self._should_run() and self.connect(check_protocol=True) is False:
+            # the while guard was evaluated, so skip opening a connection /
+            # network I/O once teardown is in progress.
+            if self._should_run() and await self.connect(check_protocol=True) is False:
                 connection_retries += 1
                 # Sleep time with exponential backoff, capped by
                 # MAX_RECONNECT_SLEEP so an appliance that comes back is retried
@@ -1480,58 +1719,62 @@ class MideaDevice(threading.Thread):
                 for _ in range(sleep_time):
                     if not self._should_run():
                         break
-                    time.sleep(1)
+                    await asyncio.sleep(1)
 
-    def run(self) -> None:
-        """Run loop brief description.
+    async def _supervise(self) -> None:
+        """Service task brief description.
 
-        1. first/init connection, self._socket is None
+        1. first/init connection, self._writer is None
             1.1 connect() device loop, pass, enable device
             1.2 auth for v3 device, MUST pass for v3 device
             1.3 init refresh_status, send query and check supported protocol
-                1.3.1 set socket timeout to QUERY_TIMEOUT before send query
+                1.3.1 the checked probe awaits each reply with QUERY_TIMEOUT
                 1.3.2 get response and add timeout query cmd to not supported
-                1.3.1 parse recv response/status for supported protocol
-        2. after socket/device connected, check for heartbeat/refresh_status
+                1.3.1 parse read response/status for supported protocol
+        2. after device connected, check for heartbeat/refresh_status
         3. job1: check refresh_interval
-            3.1 socket/device connection should exist
-            3.2 send only supported query and refresh status in main loop recv
-            3.3 set socket timeout before socket recv
+            3.1 connection should exist
+            3.2 send only supported query and refresh status in serve loop read
+            3.3 each read is bounded by SOCKET_TIMEOUT
         4. job2: check heartbeat interval
-            4.1 socket/device connection should exist
+            4.1 connection should exist
             4.2 send heartbeat packet to keep alive
 
         scenario/bug fix:
-        1. while True loop should sleep 0.1 second to prevent cpu usage issue
+        1. a read bounded by SOCKET_TIMEOUT yields the loop instead of busy-waiting
         2. device running and power off become offline, status update
         3. device disconnected and power on, become online, status update
-        4. set command call build_send, main loop recv socket msg and refresh
+        4. set command call build_send, serve loop reads the reply and refreshes
 
+        Only close() cancels this task; CancelledError (a BaseException) passes
+        through every handler below and ends the task, while transient transport
+        errors break the inner loop to reconnect.
         """
         # service loop
         while self._is_run:
             # connect loop until device online
-            self._connect_loop()
+            await self._connect_loop()
             if not self._should_run():
                 break
-            # socket recv msg timeout counter
+            # read timeout counter
             timeout_counter = 0
             start = time.time()
             self._previous_refresh = self._previous_heartbeat = start
-            # refresh/recv msg loop after connected
+            # refresh/read msg loop after connected
             while True:
                 try:
-                    if not self._socket:
+                    if not self._reader:
                         _LOGGER.debug("[%s] Socket is none", self._device_id)
                         raise SocketException  # noqa: TRY301
                     now = time.time()
                     # refresh_status only send supported query msg
-                    self._check_refresh(now)
+                    await self._check_refresh(now)
                     self._check_heartbeat(now)
-                    # set SOCKET_TIMEOUT before recv socket msg
-                    self._socket.settimeout(SOCKET_TIMEOUT)
-                    # refresh status after set/query
-                    msg = self._socket.recv(512)
+                    # each read is bounded by SOCKET_TIMEOUT
+                    msg = await asyncio.wait_for(
+                        self._reader.read(STREAM_READ_LIMIT),
+                        timeout=SOCKET_TIMEOUT,
+                    )
                     if len(msg) == 0:
                         raise ConnectionResetError("Connection closed by peer")  # noqa: TRY301
                     # parse msg and update latest status
@@ -1553,15 +1796,15 @@ class MideaDevice(threading.Thread):
                     self.close_socket()
                     break
                 except NoSupportedProtocol:
-                    # Drop the socket and reconnect, as every other exception here
-                    # does. Continuing on the same socket could never recover: once
-                    # every command is in _unsupported_protocol, refresh_status takes
-                    # the SKIP branch for all of them and performs NO socket I/O, so
-                    # no socket error can ever be raised to break the loop and the
-                    # device stayed stuck until Home Assistant restarted.
+                    # Drop the connection and reconnect, as every other exception
+                    # here does. Continuing could never recover: once every
+                    # command is in _unsupported_protocol, refresh_status takes
+                    # the SKIP branch for all of them and performs NO I/O, so no
+                    # transport error can ever be raised to break the loop and
+                    # the device stayed stuck until Home Assistant restarted.
                     # close_socket() clears _unsupported_protocol and re-arms
-                    # _appliance_query, so the reconnect is a genuine fresh probe --
-                    # the same effect as the user power-cycling the device.
+                    # _appliance_query, so the reconnect is a genuine fresh probe
+                    # -- the same effect as the user power-cycling the device.
                     _LOGGER.debug("[%s] No Supported protocol", self._device_id)
                     self.close_socket()
                     break

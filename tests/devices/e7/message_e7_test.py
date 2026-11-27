@@ -32,7 +32,7 @@ def _report_frame(body: Sequence[int], message_type: int = MessageType.query) ->
 
 
 def _status_body_16() -> list[int]:
-    """Build a full v1 (16-bit function_no) status body."""
+    """Build a full v1 (16-bit function_num) status body."""
     body = [0] * 24
     body[0] = INNER_HEAD
     body[1] = 0x55
@@ -40,8 +40,8 @@ def _status_body_16() -> list[int]:
     body[8] = 0x27  # cmd high
     body[9] = 1  # response normal
     body[10] = 1  # work_status
-    body[11] = 0x12  # function_no hi
-    body[12] = 0x34  # function_no lo
+    body[11] = 0x12  # function_num hi
+    body[12] = 0x34  # function_num lo
     body[13] = 0  # running hr
     body[14] = 30  # running min
     body[15] = 0  # surplus hr
@@ -57,7 +57,7 @@ def _status_body_16() -> list[int]:
 
 
 def _status_body_32() -> list[int]:
-    """Build a full v3/v4 (32-bit function_no) status body."""
+    """Build a full v3/v4 (32-bit function_num) status body."""
     body = [0] * 26
     body[0] = INNER_HEAD
     body[1] = 0x55
@@ -65,10 +65,10 @@ def _status_body_32() -> list[int]:
     body[8] = 0x27
     body[9] = 1  # response normal
     body[10] = 2  # work_status
-    body[11] = 0x01  # function_no byte 3
-    body[12] = 0x02  # function_no byte 2
-    body[13] = 0x03  # function_no byte 1
-    body[14] = 0x04  # function_no byte 0
+    body[11] = 0x01  # function_num byte 3
+    body[12] = 0x02  # function_num byte 2
+    body[13] = 0x03  # function_num byte 1
+    body[14] = 0x04  # function_num byte 0
     body[15] = 1  # running hr
     body[16] = 5  # running min
     body[17] = 0  # surplus hr
@@ -112,7 +112,7 @@ class TestE7GeneralMessageBody:
         msg = E7GeneralMessageBody(bytearray(_status_body_16()), is_32bit=False)
         assert msg.response == "response_normal"
         assert msg.work_status == 1
-        assert msg.function_no == 0x1234
+        assert msg.function_num == 0x1234
         assert msg.time_running_min == 30
         assert msg.time_surplus_min == 15
         assert msg.time_reserve_hr == 2
@@ -126,7 +126,7 @@ class TestE7GeneralMessageBody:
         msg = E7GeneralMessageBody(bytearray(_status_body_32()), is_32bit=True)
         assert msg.response == "response_normal"
         assert msg.work_status == 2
-        assert msg.function_no == 0x01020304
+        assert msg.function_num == 0x01020304
         assert msg.time_running_hr == 1
         assert msg.time_surplus_min == 45
         assert msg.time_reserve_min == 25
@@ -181,9 +181,9 @@ class TestMessageSet:
     """Test e7 control message for both layouts."""
 
     def test_control_frame_16bit(self) -> None:
-        """A v1 control frame packs function_no as two big-endian bytes."""
+        """A v1 control frame packs function_num as two big-endian bytes."""
         message = MessageSet(SOFT_VERSION_V1)
-        message.function_no = 0x1234
+        message.function_num = 0x1234
         message.work_status = 1
         message.time_reserve_hr = 2
         message.time_reserve_min = 30
@@ -193,8 +193,8 @@ class TestMessageSet:
         body = message.body
         assert body[7] == CMD_CONTROL_LOW
         assert body[8] == CMD_CONTROL_HIGH
-        assert body[9] == 0x12  # function_no hi
-        assert body[10] == 0x34  # function_no lo
+        assert body[9] == 0x12  # function_num hi
+        assert body[10] == 0x34  # function_num lo
         assert body[11] == 1  # work_status
         assert body[12] == 2  # reserve hr
         assert body[13] == 30  # reserve min
@@ -205,9 +205,9 @@ class TestMessageSet:
         assert message.serialize()[8] == SOFT_VERSION_V1
 
     def test_control_frame_32bit(self) -> None:
-        """A v3/v4 control frame packs function_no as four big-endian bytes."""
+        """A v3/v4 control frame packs function_num as four big-endian bytes."""
         message = MessageSet(SOFT_VERSION_V4)
-        message.function_no = 0x01020304
+        message.function_num = 0x01020304
         message.work_status = 2
         message.time_reserve_hr = 3
         message.time_reserve_min = 20
@@ -238,7 +238,7 @@ class TestMessageE7Response:
             SOFT_VERSION_V1,
         )
         assert getattr(response, "work_status") == 1  # noqa: B009
-        assert getattr(response, "function_no") == 0x1234  # noqa: B009
+        assert getattr(response, "function_num") == 0x1234  # noqa: B009
 
     def test_query_reply_32bit(self) -> None:
         """A v3 query reply (0x03) uses the 32-bit layout."""
@@ -246,7 +246,7 @@ class TestMessageE7Response:
             _report_frame(_status_body_32()),
             SOFT_VERSION_V3,
         )
-        assert getattr(response, "function_no") == 0x01020304  # noqa: B009
+        assert getattr(response, "function_num") == 0x01020304  # noqa: B009
 
     def test_set_echo_decodes(self) -> None:
         """A control echo (0x02) is decoded."""

@@ -78,13 +78,13 @@ class MideaX51Device(MideaDevice):
             return self.build_toshiba_query()
         return []
 
-    def refresh_status(self, check_protocol: bool = False) -> None:
+    async def refresh_status(self, check_protocol: bool = False) -> None:
         """Probe an unknown 0x51 identity only during a checked refresh."""
         self._checking_toshiba_protocol = (
             check_protocol and self.manufacturer_code is None
         )
         try:
-            super().refresh_status(check_protocol)
+            await super().refresh_status(check_protocol)
         finally:
             self._checking_toshiba_protocol = False
 

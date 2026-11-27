@@ -5,6 +5,8 @@ from collections.abc import Sequence
 from midealan.const import DeviceType
 from midealan.devices.x9a.message import (
     CONTROL_CMD,
+    FLAG_OFF,
+    FLAG_ON,
     FORM_COOK,
     FORM_STATUS,
     POWER_OFF,
@@ -72,12 +74,12 @@ class TestX9aQueryBody:
         assert msg.error_code == 0
 
     def test_power_off_when_work_status_one(self) -> None:
-        """work_status 0x01 reports power off and no work_status label."""
+        """work_status 0x01 reports power off and clears the status label."""
         body = _query_body()
         body[1] = POWER_OFF  # 0x01
         msg = X9aQueryBody(bytearray(body))
         assert msg.power is False
-        assert not hasattr(msg, "work_status")
+        assert msg.work_status is None
 
     def test_lock_and_light_clear(self) -> None:
         """Lock / furnace_light decode false when their bits are clear."""
@@ -94,6 +96,14 @@ class TestX9aQueryBody:
         body[9] = 0x02  # not in MODE_NAMES
         msg = X9aQueryBody(bytearray(body))
         assert not hasattr(msg, "mode")
+
+    def test_unknown_work_status_omitted(self) -> None:
+        """An unrecognized work-status byte leaves the label unset."""
+        body = _query_body()
+        body[1] = 0x07
+        msg = X9aQueryBody(bytearray(body))
+        assert msg.power is True
+        assert not hasattr(msg, "work_status")
 
 
 class TestX9aControlEchoBody:
@@ -143,6 +153,23 @@ class TestX9aControlEchoBody:
         msg = X9aControlEchoBody(bytearray(body))
         assert not hasattr(msg, "work_status")
         assert msg.power is True
+
+    def test_status_echo_omits_unchanged_fields(self) -> None:
+        """A 0xFF status field does not overwrite unrelated device state."""
+        body = [CONTROL_CMD, FORM_STATUS, VALUE_INVALID, FLAG_ON, VALUE_INVALID]
+        msg = X9aControlEchoBody(bytearray(body))
+        assert not hasattr(msg, "power")
+        assert not hasattr(msg, "work_status")
+        assert msg.lock is True
+        assert not hasattr(msg, "furnace_light")
+
+    def test_status_echo_updates_light_only(self) -> None:
+        """A light echo leaves 0xFF work-status and lock fields untouched."""
+        body = [CONTROL_CMD, FORM_STATUS, VALUE_INVALID, VALUE_INVALID, FLAG_OFF]
+        msg = X9aControlEchoBody(bytearray(body))
+        assert not hasattr(msg, "power")
+        assert not hasattr(msg, "lock")
+        assert msg.furnace_light is False
 
     def test_cook_echo_unknown_mode(self) -> None:
         """A cook echo with an unknown mode byte omits the mode label."""

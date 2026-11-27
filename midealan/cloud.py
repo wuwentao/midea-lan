@@ -30,6 +30,19 @@ from .tls import CertBundle, build_csr, generate_ec_keypair
 
 SN8_MIN_SERIAL_LENGTH = 17
 
+
+def _normalize_model_number(value: object) -> int | str:
+    """Keep numeric model numbers numeric and preserve model identifiers."""
+    if value is None or value == "":
+        return 0
+    try:
+        return int(cast("int | float | str", value))
+    except ValueError:
+        return value if isinstance(value, str) else 0
+    except TypeError:
+        return 0
+
+
 # udp_version>=4 "TLS" appliances replace the per-device LAN token/key with an
 # application certificate the official app provisions from the Midea cloud: it
 # fetches a keyId + AP private key, generates an EC key pair and a PKCS#10 CSR,
@@ -902,10 +915,9 @@ class MeijuCloud(MideaCloud):
             for home in response.get("homeList") or []:
                 for room in home.get("roomList") or []:
                     for appliance in room.get("applianceList"):
-                        try:
-                            model_number = int(appliance.get("modelNumber", 0))
-                        except (ValueError, TypeError):
-                            model_number = 0
+                        model_number = _normalize_model_number(
+                            appliance.get("modelNumber"),
+                        )
                         device_info = {
                             "name": appliance.get("name"),
                             "type": int(appliance.get("type"), 16),
@@ -958,10 +970,7 @@ class MeijuCloud(MideaCloud):
             endpoint="/v1/appliance/info/get",
             data=data,
         ):
-            try:
-                model_number = int(response.get("modelNumber", 0))
-            except (ValueError, TypeError):
-                model_number = 0
+            model_number = _normalize_model_number(response.get("modelNumber"))
             model_type = response.get("type")
             device_info = {
                 "name": response.get("name"),
@@ -1260,10 +1269,7 @@ class SmartHomeCloud(MideaCloud):
         ):
             appliances = {}
             for appliance in response["list"]:
-                try:
-                    model_number = int(appliance.get("modelNumber", 0))
-                except ValueError:
-                    model_number = 0
+                model_number = _normalize_model_number(appliance.get("modelNumber"))
                 device_info = {
                     "name": appliance.get("name"),
                     "type": int(appliance.get("type"), 16),
@@ -1515,10 +1521,7 @@ class MideaAirCloud(MideaCloud):
         ):
             appliances = {}
             for appliance in response["list"]:
-                try:
-                    model_number = int(appliance.get("modelNumber", 0))
-                except ValueError:
-                    model_number = 0
+                model_number = _normalize_model_number(appliance.get("modelNumber"))
                 device_info = {
                     "name": appliance.get("name"),
                     "type": int(appliance.get("type"), 16),
@@ -1818,10 +1821,7 @@ class ToshibaIOLife(MideaAirCloud):
             except (KeyError, TypeError, ValueError):
                 _LOGGER.debug("Skipping malformed appliance entry: %s", appliance)
                 continue
-            try:
-                model_number = int(appliance.get("modelNumber", 0))
-            except (TypeError, ValueError):
-                model_number = 0
+            model_number = _normalize_model_number(appliance.get("modelNumber"))
             sn = self._decrypt_sn(str(appliance.get("sn") or ""))
             sn8 = sn[9:17] if len(sn) > SN8_MIN_SERIAL_LENGTH else ""
             appliances[device_id] = {

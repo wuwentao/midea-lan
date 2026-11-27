@@ -29,6 +29,7 @@ from midealan.cloud import (
     ToshibaIOLife,
     TSmartLifeCloud,
     _mask_token,
+    _normalize_model_number,
     _redact_data,
     get_default_cloud,
     get_midea_cloud,
@@ -54,6 +55,24 @@ _TOSHIBA_ENCRYPTED_SN = (
     "a433df71998b41d4dc354e9bdf78902a"
 )
 _TOSHIBA_EXPECTED_SN = "0008AC0000000000000000000000BEEF"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, 0),
+        ("", 0),
+        (10, 10),
+        (10.0, 10),
+        (True, 1),
+        ("10", 10),
+        ("RAS-X221DZ", "RAS-X221DZ"),
+        ([], 0),
+    ],
+)
+def test_normalize_model_number(value: object, expected: int | str) -> None:
+    """Numeric model numbers become integers and identifiers stay intact."""
+    assert _normalize_model_number(value) == expected
 
 
 def _token_requests(session: Mock) -> list[tuple[str, dict]]:
@@ -675,7 +694,7 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert appliance.get("type") == 0xAC
         assert appliance.get("sn") == ""
         assert appliance.get("sn8") == "00000000"
-        assert appliance.get("model_number") == 0
+        assert appliance.get("model_number") == "ss10"
         assert appliance.get("manufacturer_code") == "1234"
         assert appliance.get("model") == "00000000"
         assert not appliance.get("online")
@@ -723,7 +742,7 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert device.get("type") == 0xAC
         assert device.get("sn") == ""
         assert device.get("sn8") == "00000000"
-        assert device.get("model_number") == 0
+        assert device.get("model_number") == "ss10"
         assert device.get("manufacturer_code") == "1234"
         assert device.get("model") == "00000000"
         assert not device.get("online")
@@ -1194,7 +1213,7 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert appliance.get("type") == 0xAC
         assert appliance.get("sn") == ""
         assert appliance.get("sn8") == ""
-        assert appliance.get("model_number") == 0
+        assert appliance.get("model_number") == "ge"
         assert appliance.get("manufacturer_code") == "1234"
         assert appliance.get("model") == ""
         assert not appliance.get("online")
@@ -1960,7 +1979,7 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert appliance.get("type") == 0xAC
         assert appliance.get("sn") == ""
         assert appliance.get("sn8") == ""
-        assert appliance.get("model_number") == 0
+        assert appliance.get("model_number") == "ge"
         assert appliance.get("manufacturer_code") == "1234"
         assert appliance.get("model") == ""
         assert not appliance.get("online")
@@ -2170,7 +2189,7 @@ class ToshibaIOLifeTest(IsolatedAsyncioTestCase):
         assert list(appliances) == [12345678]
 
     async def test_list_appliances_non_numeric_model_number(self) -> None:
-        """A non-numeric modelNumber falls back to 0."""
+        """A non-numeric modelNumber is preserved as a model identifier."""
         cloud = self.make_cloud(Mock())
         cloud._access_token = _TOSHIBA_ACCESS_TOKEN
         with patch.object(
@@ -2189,7 +2208,7 @@ class ToshibaIOLifeTest(IsolatedAsyncioTestCase):
             ),
         ):
             appliances = await cloud.list_appliances(None)
-        assert appliances[12345678]["model_number"] == 0
+        assert appliances[12345678]["model_number"] == "RAS-X221DZ"
 
     async def test_list_appliances_api_failure(self) -> None:
         """list_appliances returns an empty dict on API failure."""
@@ -2728,7 +2747,7 @@ class TestTSmartLifeCloud(IsolatedAsyncioTestCase):
                 "type": 0xCA,
                 "sn": "",
                 "sn8": "",
-                "model_number": 0,
+                "model_number": "310A079W",
                 "manufacturer_code": "0008",
                 "model": "",
                 "online": True,

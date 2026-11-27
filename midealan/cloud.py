@@ -74,6 +74,12 @@ DAY_REPORT_TIMEOUT = ClientTimeout(20)
 # Codes the gateway answers when the access token is missing, rejected or not a
 # user token; callers log in again instead of retrying the same token.
 AUTH_ERROR_CODES = frozenset({40001, 40002, 44001})
+# Authentication request and response bodies contain account identifiers,
+# password material, access tokens, or session identifiers. Log only that the
+# exchange completed, including in cloud-specific request overrides.
+SENSITIVE_AUTH_ENDPOINTS = frozenset(
+    {"/v1/user/login/id/get", "/v1/user/login", "/mj/user/login"},
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -393,12 +399,16 @@ class MideaCloud:
                         timeout=ClientTimeout(10),
                     )
                     raw = await r.read()
-                    _LOGGER.debug(
-                        "Midea cloud API url: %s, \n data: %s, \n response: %s",
-                        url,
-                        _redact_data(str(data)),
-                        _redact_data(str(raw)),
-                    )
+                    if endpoint in SENSITIVE_AUTH_ENDPOINTS:
+                        # Login replies contain identifiers and session credentials.
+                        _LOGGER.debug("Midea cloud authentication response received")
+                    else:
+                        _LOGGER.debug(
+                            "Midea cloud API url: %s, \n data: %s, \n response: %s",
+                            url,
+                            _redact_data(str(data)),
+                            _redact_data(str(raw)),
+                        )
                     response = json.loads(raw)
                     break
             except (TimeoutError, ClientConnectionError, json.JSONDecodeError) as e:
@@ -657,24 +667,38 @@ class MideaCloud:
             or answered with an error.
 
         """
+        data = await self.request_signed_proxy(
+            DAY_REPORT_ALIAS,
+            {"msg": DAY_REPORT_MESSAGE, "params": {"applianceId": str(appliance_id)}},
+        )
+        error_code = data.get("code")
+        if error_code is not None:
+            raise _day_report_error(error_code, data.get("msg", ""))
+        if str(data.get("retCode")) != "0":
+            raise _day_report_error(0, data.get("desc", data.get("retCode")))
+        result = data.get("result")
+        return result if isinstance(result, dict) else None
+
+    async def request_signed_proxy(
+        self,
+        alias: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Send a signed request using the current user access token."""
         if not self._access_token:
             msg = "No Midea cloud access token"
             raise CloudAuthError(msg)
         if "alias=" not in self._api_url:
-            msg = f"Cloud {self._api_url} does not provide usage reports"
+            msg = "Midea cloud does not provide a signed proxy"
             raise CloudError(msg)
-        url = f"{self._api_url}{DAY_REPORT_ALIAS}"
-        payload = {
-            "msg": DAY_REPORT_MESSAGE,
-            "params": {"applianceId": str(appliance_id)},
-        }
+        url = f"{self._api_url}{alias}"
         # The proxy validates the same request signature as the rest of the cloud
         # API; without these headers it answers 44001 "sign is empty".
         random = str(int(time.time()))
         dump_data = json.dumps(payload)
         sign = self._security.sign("", dump_data, random)
         if sign is None:
-            msg = f"Cloud {self._api_url} cannot sign usage report requests"
+            msg = "Midea cloud cannot sign the proxy request"
             raise CloudError(msg)
         headers = {
             "content-type": "application/json; charset=utf-8",
@@ -694,19 +718,13 @@ class MideaCloud:
                     allow_redirects=False,
                 )
                 data: Any = await response.json(content_type=None)
-        except (ClientError, TimeoutError, ValueError) as err:
-            msg = f"Midea cloud usage report request failed: {err}"
-            raise CloudError(msg) from err
+        except (ClientError, TimeoutError, ValueError):
+            msg = "Midea cloud proxy request failed"
+            raise CloudError(msg) from None
         if not isinstance(data, dict):
-            msg = f"Unexpected Midea cloud usage report response: {type(data).__name__}"
+            msg = "Unexpected Midea cloud proxy response"
             raise CloudError(msg)
-        error_code = data.get("code")
-        if error_code is not None:
-            raise _day_report_error(error_code, data.get("msg", ""))
-        if str(data.get("retCode")) != "0":
-            raise _day_report_error(0, data.get("desc", data.get("retCode")))
-        result = data.get("result")
-        return result if isinstance(result, dict) else None
+        return data
 
     @staticmethod
     def _get_lua_download_metadata(
@@ -1434,12 +1452,15 @@ class MideaAirCloud(MideaCloud):
                         timeout=ClientTimeout(10),
                     )
                     raw = await r.read()
-                    _LOGGER.debug(
-                        "Midea cloud API url: %s, \n data: %s, \n response: %s",
-                        url,
-                        _redact_data(str(data)),
-                        _redact_data(str(raw)),
-                    )
+                    if endpoint in SENSITIVE_AUTH_ENDPOINTS:
+                        _LOGGER.debug("Midea cloud authentication response received")
+                    else:
+                        _LOGGER.debug(
+                            "Midea cloud API url: %s, \n data: %s, \n response: %s",
+                            url,
+                            _redact_data(str(data)),
+                            _redact_data(str(raw)),
+                        )
                     response = json.loads(raw)
                     break
             except (TimeoutError, ClientConnectionError, json.JSONDecodeError) as e:

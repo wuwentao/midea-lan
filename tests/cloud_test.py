@@ -1460,6 +1460,42 @@ class CloudTest(IsolatedAsyncioTestCase):
         assert cloud is not None
         assert await cloud.login()
 
+    async def test_mideaaircloud_login_bodies_are_not_logged(self) -> None:
+        """Never log Midea Air account or session credentials at debug level."""
+        session = Mock()
+        response = Mock()
+        response.read = AsyncMock(
+            return_value=(
+                b'{"errorCode": 0, "result": {"accessToken": '
+                b'"private-access-token", "sessionId": "private-session"}}'
+            ),
+        )
+        session.request = AsyncMock(return_value=response)
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=session,
+            account="private-account",
+            password="private-password",
+        )
+        assert cloud is not None
+        with self.assertLogs("midealan.cloud", level="DEBUG") as logs:
+            await cloud._api_request(
+                endpoint="/v1/user/login",
+                data={
+                    "loginAccount": "private-account",
+                    "password": "private-password",
+                },
+            )
+        joined = "\n".join(logs.output)
+        assert "authentication response received" in joined
+        for secret in (
+            "private-account",
+            "private-password",
+            "private-access-token",
+            "private-session",
+        ):
+            assert secret not in joined
+
     async def test_mideaaircloud_login_api_request_none(self) -> None:
         """Test MideaAirCloud login failure when login response is missing."""
         session = Mock()

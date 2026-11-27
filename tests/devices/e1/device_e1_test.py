@@ -27,7 +27,11 @@ class TestMideaE1Device:
     @pytest.fixture(autouse=True)
     def _setup_device(self) -> None:
         """Set up E1 device."""
-        self.device = MideaE1Device(
+        self.device = self._make_device()
+
+    @staticmethod
+    def _make_device(model: str = "test_model", subtype: int = 1) -> MideaE1Device:
+        return MideaE1Device(
             name="Test Device",
             device_id=1,
             ip_address="192.168.1.100",
@@ -35,8 +39,8 @@ class TestMideaE1Device:
             token="AA",
             key="BB",
             device_protocol=ProtocolVersion.V3,
-            model="test_model",
-            subtype=1,
+            model=model,
+            subtype=subtype,
             customize="test_customize",
         )
 
@@ -637,6 +641,197 @@ class TestMideaE1Device:
         message = mock_build_send.call_args.args[0]
         assert isinstance(message, MessageStorage)
         assert message.storage is True
+
+    @pytest.mark.parametrize(
+        ("model", "subtype", "enabled", "reference_frame"),
+        [
+            # 7600644C is hardware-verified; the rest come from their per-model
+            # vendor Lua, which pads a different 0xFF range for this command.
+            (
+                "7600644C",
+                3,
+                True,
+                (
+                    "aa30e10000000000000281000000ffffffffff01ffff00000000000000"
+                    "0000000000000000000000000000000000000072"
+                ),
+            ),
+            (
+                "7600644C",
+                3,
+                False,
+                (
+                    "aa30e10000000000000281000000ffffffffff00ffff00000000000000"
+                    "0000000000000000000000000000000000000073"
+                ),
+            ),
+            (
+                "7600002B",
+                1,
+                True,
+                (
+                    "aa30e10000000000000281000000ffffffffff01ffffffff0000000000"
+                    "0000000000000000000000000000000000000074"
+                ),
+            ),
+            (
+                "7600002B",
+                1,
+                False,
+                (
+                    "aa30e10000000000000281000000ffffffffff00ffffffff0000000000"
+                    "0000000000000000000000000000000000000075"
+                ),
+            ),
+            (
+                "760001EC",
+                1,
+                True,
+                (
+                    "aa30e10000000000000281000000ffffffffff01ff0000000000000000"
+                    "0000000000000000000000000000000000000071"
+                ),
+            ),
+            (
+                "760001EC",
+                1,
+                False,
+                (
+                    "aa30e10000000000000281000000ffffffffff00ff0000000000000000"
+                    "0000000000000000000000000000000000000072"
+                ),
+            ),
+            (
+                "760RX20S",
+                1,
+                True,
+                (
+                    "aa30e10000000000000281000000ffffffffff01ff0000000000000000"
+                    "0000000000000000000000000000000000000071"
+                ),
+            ),
+            (
+                "760RX20S",
+                1,
+                False,
+                (
+                    "aa30e10000000000000281000000ffffffffff00ff0000000000000000"
+                    "0000000000000000000000000000000000000072"
+                ),
+            ),
+        ],
+    )
+    def test_dry_setting_sends_model_vendor_frame(
+        self,
+        model: str,
+        subtype: int,
+        enabled: bool,
+        reference_frame: str,
+    ) -> None:
+        """Each verified model sends the exact frame its vendor Lua encodes."""
+        device = self._make_device(model, subtype)
+        assert DeviceAttributes.dry_setting in device.attributes
+        assert device.get_attribute(DeviceAttributes.dry_setting) is None
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(DeviceAttributes.dry_setting, enabled)
+        send.assert_called_once()
+        assert send.call_args.args[0].serialize() == bytes.fromhex(reference_frame)
+        assert device.get_attribute(DeviceAttributes.dry_setting) is None
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("7600644C", 3), ("7600002B", 1), ("760001EC", 1), ("760RX20S", 1)],
+    )
+    def test_dry_setting_reads_only_the_setting_bit(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """The reported setting follows the dryswitch bit, not the running bit."""
+        device = self._make_device(model, subtype)
+        body = bytearray(40)
+        body[4] = 0x10  # Setting on, drying not running.
+        update = device.process_message(self._message(MessageType.query, body))
+        assert update[DeviceAttributes.dry_setting] is True
+        assert device.get_attribute(DeviceAttributes.dry_status) is False
+
+        body[4] = 0x20  # Drying runs while the stored setting stays off.
+        update = device.process_message(self._message(MessageType.query, body))
+        assert update[DeviceAttributes.dry_setting] is False
+        assert device.get_attribute(DeviceAttributes.dry_status) is True
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("7600644C", 3), ("7600002B", 1), ("760001EC", 1), ("760RX20S", 1)],
+    )
+    def test_storage_set_time_uses_shared_vendor_frame(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Every verified model sends the same air_set_hour frame."""
+        device = self._make_device(model, subtype)
+        attr = DeviceAttributes.storage_set_time
+        assert attr in device.attributes
+        with patch.object(device, "build_send") as send:
+            device.set_attribute(attr, 24)
+        send.assert_called_once()
+        assert send.call_args.args[0].serialize() == bytes.fromhex(
+            "aa30e10000000000000286180000000000000000000000000000000000"
+            "000000000000000000000000000000000000004f",
+        )
+        assert device.get_attribute(attr) is None
+
+    @pytest.mark.parametrize(
+        ("model", "subtype"),
+        [("76000228", 3), ("7600024L", 1), ("7600644C", 1)],
+    )
+    def test_dry_and_storage_settings_not_exposed_on_unverified_device(
+        self,
+        model: str,
+        subtype: int,
+    ) -> None:
+        """Do not expose or send the model-specific controls on other units."""
+        device = self._make_device(model, subtype)
+        update = device.process_message(
+            self._message(MessageType.query, bytearray(40)),
+        )
+        with patch.object(device, "build_send") as send:
+            for attr, value in (
+                (DeviceAttributes.dry_setting, True),
+                (DeviceAttributes.storage_set_time, 48),
+            ):
+                assert attr not in device.attributes
+                assert attr not in update
+                with pytest.raises(ValueWrongType, match="unsupported"):
+                    device.set_attribute(attr, value)
+        send.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("attr", "value"),
+        [
+            (DeviceAttributes.dry_setting, 1),
+            (DeviceAttributes.dry_setting, "on"),
+            (DeviceAttributes.storage_set_time, True),
+            (DeviceAttributes.storage_set_time, "48"),
+            (DeviceAttributes.storage_set_time, -1),
+            (DeviceAttributes.storage_set_time, 73),
+            (DeviceAttributes.storage_set_time, 36.5),
+        ],
+    )
+    def test_invalid_dry_or_storage_settings_do_not_send(
+        self,
+        attr: DeviceAttributes,
+        value: bool | float | str,
+    ) -> None:
+        """Reject invalid types, fractions and out-of-range hours before sending."""
+        device = self._make_device("7600644C", 3)
+        with (
+            patch.object(device, "build_send") as send,
+            pytest.raises(ValueWrongType, match="Expected"),
+        ):
+            device.set_attribute(attr, value)
+        send.assert_not_called()
 
     def test_set_attribute_unknown_attribute_is_noop(self) -> None:
         """Test set attribute with an unsupported attribute sends nothing."""

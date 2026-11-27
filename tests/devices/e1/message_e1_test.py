@@ -257,7 +257,7 @@ class TestE1GeneralMessageBody:
         result = E1GeneralMessageBody(body)
 
         assert result.time_remaining == 30
-        assert result.storage_set_time is False
+        assert result.storage_set_time == 0
         assert result.storage_remaining is False
         assert result.humidity is None
         assert result.bright is None

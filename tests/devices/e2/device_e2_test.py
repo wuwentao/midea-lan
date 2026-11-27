@@ -282,6 +282,7 @@ class TestMideaE2Device:
         [
             ("51032DV5", E2SubType.T123, True, False, False),
             ("51032DV5", E2SubType.T123, False, True, True),
+            ("51032DV5", E2SubType.T123, False, False, False),
             ("other", E2SubType.T123, False, True, False),
             ("51032DV5", 1, False, True, False),
         ],

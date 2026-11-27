@@ -115,7 +115,7 @@ class TestMidea13Device:
         body[0] = 0x81  # set response body type
         body[1] = 1  # success
         crc = bytearray([0x00])
-        with patch.object(self.device, "refresh_status") as mock_refresh:
+        with patch.object(self.device, "queue_refresh") as mock_refresh:
             new_status = self.device.process_message(bytes(header + body + crc))
             mock_refresh.assert_called_once()
         assert new_status == {"control_success": True}
@@ -129,7 +129,7 @@ class TestMidea13Device:
         body[0] = 0x81  # set response body type
         body[1] = 0  # failure
         crc = bytearray([0x00])
-        with patch.object(self.device, "refresh_status") as mock_refresh:
+        with patch.object(self.device, "queue_refresh") as mock_refresh:
             new_status = self.device.process_message(bytes(header + body + crc))
             mock_refresh.assert_not_called()
         assert new_status == {"control_success": False}

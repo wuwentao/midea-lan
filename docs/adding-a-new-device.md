@@ -561,18 +561,30 @@ Follow the repository conventions (see
 - **Lua availability**: if the required Lua is not already in `midea-lua`, follow
   that repository's README to download it and submit it there first. Link that PR
   from the `midea-lan` PR.
-- **Home Assistant PR**: open the matching `midea_ac_lan` PR at the same time and
-  link it back to the current PR. Do not update the `midea-lan` version in its
-  `custom_components/midea_ac_lan/manifest.json`; maintainers do that centrally
-  after release. Link any related `midea_ac_lan` issue regardless of the change
-  type, or explain why no issue applies.
+- **Home Assistant PR**: open the matching `midea_ac_lan` integration PR at the same time and
+  link it back to the current `midea-lan` lib PR. While this lib PR is unmerged,
+  the integration PR may point the `midea-lan` requirement in
+  `custom_components/midea_ac_lan/manifest.json` at your fork/branch so its
+  CI and end-to-end tests use the unreleased code. The integration CI and local
+  setup install runtime requirements directly from that manifest; its
+  `pyproject.toml` and `uv.lock` contain development/test dependencies only and
+  must not include `midea-lan`. After this PR merges, switch only the manifest to
+  `wuwentao/midea-lan@main`; if they already use upstream `main`, leave them
+  unchanged. The integration PR may merge only with upstream `main` or a released
+  version containing the library changes this integration PR depends on; it must
+  not retain your fork/branch. Do not change this repository's `uv.lock` for
+  the integration dependency. Link any related `midea_ac_lan` issue regardless
+  of the change type, or explain why none applies.
 - **CodeRabbit**: the AI reviewer skips draft PRs. To get a review on a draft,
   comment `@coderabbitai review`. Address every finding and reply in-thread
   documenting the fix and the covering test, then resolve the conversation.
 
-Merging the PR does not publish an immediate release. Maintainers accumulate a
-set of merged changes, publish `midea-lan` manually on a periodic basis, and then
-synchronize `midea_ac_lan` centrally.
+Merging the lib PR does not publish an immediate library release, but the
+corresponding integration PR does not need to wait for one: validate against the
+fork/branch before the lib PR merges and upstream `main` afterward. Maintainers
+periodically publish `midea-lan` and `midea_ac_lan` based on merged PRs: they
+generate the changelog, update the integration manifest to a released library
+version containing the required changes, and publish the integration release.
 
 Reference worked examples to model your PR on:
 
@@ -817,8 +829,9 @@ immediately without waiting for the next poll.
 
 `midea-lan` is the protocol library; the Home Assistant integration
 [`midea_ac_lan`](https://github.com/wuwentao/midea_ac_lan) consumes it. After the
-library supports the device, expose it in HA (typically a separate PR that
-depends on the library release):
+library supports the device, expose it in HA in a separate, cross-linked PR. That
+PR can depend on the library fork/branch while this PR is unmerged, then on
+upstream `main` after it merges, without waiting for a library release:
 
 - **`custom_components/midea_ac_lan/midea_devices.py`**: import the device's
   `DeviceAttributes` and register a `0x<TYPE>:` entry with a `name` and an
@@ -852,8 +865,11 @@ for the matching D9 integration.
 - [ ] `uv run prek run --all-files` passes.
 - [ ] PR on a feature branch, Conventional Commit title, Lua linked, CodeRabbit
       findings answered and conversations resolved.
-- [ ] Related `midea_ac_lan` issue and matching PR linked without changing the
-      manifest dependency, or reasons given when either link does not apply.
+- [ ] Related `midea_ac_lan` issue and matching PR linked; while this PR is
+      unmerged, its manifest may use the fork/branch for CI.
+- [ ] Before the integration PR merges, its manifest uses `wuwentao/midea-lan@main`
+      or a released version containing all required library changes; it must not
+      retain a contributor fork/branch.
 - [ ] (If exposing in HA) `midea_ac_lan` device entry, translations, docs, and
     README updated.
 </content>

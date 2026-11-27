@@ -7,15 +7,15 @@ to the generic ``body_type`` byte and every Lua ``messageBytes[n]`` offset is
 the response body offset ``body[n]`` directly.
 
 The frame layout depends on the device soft version, which the Lua derives from
-``deviceSubType`` (``getSoftVersion``): subtype 6 -> v1 (16-bit function_no),
-subtype 10 -> v3 and subtypes 8/9 -> v4 (both 32-bit function_no). The soft
+``deviceSubType`` (``getSoftVersion``): subtype 6 -> v1 (16-bit function_num),
+subtype 10 -> v3 and subtypes 8/9 -> v4 (both 32-bit function_num). The soft
 version number is also written into the frame's device-protocol-version byte
 (header byte[8]). v3 and v4 build byte-identical frames, so only two concrete
 layouts exist: a 16-bit one (v1) and a 32-bit one (v3/v4).
 
 - Query: message type 0x03, 15-byte inner frame carrying cmd code 0xC353
   (identical across all versions).
-- Control: message type 0x02, carrying cmd code 0x2711 with function_no,
+- Control: message type 0x02, carrying cmd code 0x2711 with function_num,
   work_status, reserve time, fire_level and definite time. The 16-bit frame is
   17 bytes; the 32-bit frame is 19 bytes.
 - Report (0x02 / 0x03, or 0x04 with cmd 0x2714 / 0x2716) decodes the status
@@ -77,7 +77,7 @@ def soft_version_for_subtype(subtype: int) -> int:
 
 
 def is_32bit_layout(soft_version: int) -> bool:
-    """Whether a soft version uses the 32-bit function_no frame layout."""
+    """Whether a soft version uses the 32-bit function_num frame layout."""
     return soft_version in _SOFT_VERSIONS_32BIT
 
 
@@ -94,12 +94,12 @@ CMD_CODE_LOW_BYTE = 7
 CMD_CODE_HIGH_BYTE = 8
 RESPONSE_BYTE = 9
 WORK_STATUS_BYTE = 10
-FUNCTION_NO_BYTE = 11  # start of the big-endian function_no field
-# The trailing status fields start right after the function_no field, whose
+FUNCTION_NO_BYTE = 11  # start of the big-endian function_num field
+# The trailing status fields start right after the function_num field, whose
 # width depends on the layout (2 bytes for v1, 4 bytes for v3/v4).
 FUNCTION_NO_WIDTH_16 = 2
 FUNCTION_NO_WIDTH_32 = 4
-# Offsets of the trailing fields measured from the first byte after function_no.
+# Offsets of the trailing fields measured from the first byte after function_num.
 OFFSET_TIME_RUNNING_HR = 0
 OFFSET_TIME_RUNNING_MIN = 1
 OFFSET_TIME_SURPLUS_HR = 2
@@ -137,8 +137,8 @@ TIME_HR_LOW = 0
 TIME_HR_HIGH = 23
 FIRE_LEVEL_LOW = 0
 FIRE_LEVEL_HIGH = 21
-# function_no / work_status are raw (Lua string2Int, no boundary); bound
-# function_no by the frame width so a value cannot silently truncate.
+# function_num / work_status are raw (Lua string2Int, no boundary); bound
+# function_num by the frame width so a value cannot silently truncate.
 FUNCTION_NO_LOW = 0
 FUNCTION_NO_HIGH_16 = 0xFFFF
 FUNCTION_NO_HIGH_32 = 0xFFFFFFFF
@@ -209,7 +209,7 @@ class MessageQuery(MessageE7Base):
 
 
 class MessageSet(MessageE7Base):
-    """e7 control: function_no / work_status / time / fire_level."""
+    """e7 control: function_num / work_status / time / fire_level."""
 
     def __init__(self, soft_version: int) -> None:
         """Initialize e7 message set."""
@@ -219,7 +219,7 @@ class MessageSet(MessageE7Base):
             body_type=ListTypes(INNER_HEAD),
         )
         self._is_32bit = is_32bit_layout(soft_version)
-        self.function_no = 0
+        self.function_num = 0
         self.work_status = 0
         self.time_reserve_hr = 0
         self.time_reserve_min = 0
@@ -228,18 +228,18 @@ class MessageSet(MessageE7Base):
         self.definite_time_min = 0
 
     @property
-    def _function_no_bytes(self) -> list[int]:
-        """Big-endian function_no bytes for the active layout."""
+    def _function_num_bytes(self) -> list[int]:
+        """Big-endian function_num bytes for the active layout."""
         if self._is_32bit:
             return [
-                (self.function_no >> 24) & BYTE_MASK,
-                (self.function_no >> 16) & BYTE_MASK,
-                (self.function_no >> BYTE_SHIFT) & BYTE_MASK,
-                self.function_no & BYTE_MASK,
+                (self.function_num >> 24) & BYTE_MASK,
+                (self.function_num >> 16) & BYTE_MASK,
+                (self.function_num >> BYTE_SHIFT) & BYTE_MASK,
+                self.function_num & BYTE_MASK,
             ]
         return [
-            (self.function_no >> BYTE_SHIFT) & BYTE_MASK,
-            self.function_no & BYTE_MASK,
+            (self.function_num >> BYTE_SHIFT) & BYTE_MASK,
+            self.function_num & BYTE_MASK,
         ]
 
     @property
@@ -258,7 +258,7 @@ class MessageSet(MessageE7Base):
                 CMD_WORD,
                 CMD_CONTROL_LOW,
                 CMD_CONTROL_HIGH,
-                *self._function_no_bytes,
+                *self._function_num_bytes,
                 self.work_status,
                 self.time_reserve_hr,
                 self.time_reserve_min,
@@ -274,7 +274,7 @@ class E7GeneralMessageBody(MessageBody):
 
     response: str
     work_status: int
-    function_no: int
+    function_num: int
     time_running_hr: int
     time_running_min: int
     time_surplus_hr: int
@@ -295,7 +295,7 @@ class E7GeneralMessageBody(MessageBody):
             self.response = RESPONSE_NAMES[response]
         self.work_status = MessageBody.read_byte(body, WORK_STATUS_BYTE)
         if is_32bit:
-            self.function_no = (
+            self.function_num = (
                 (MessageBody.read_byte(body, FUNCTION_NO_BYTE) << 24)
                 + (MessageBody.read_byte(body, FUNCTION_NO_BYTE + 1) << 16)
                 + (MessageBody.read_byte(body, FUNCTION_NO_BYTE + 2) << BYTE_SHIFT)
@@ -303,7 +303,7 @@ class E7GeneralMessageBody(MessageBody):
             )
             tail = FUNCTION_NO_BYTE + FUNCTION_NO_WIDTH_32
         else:
-            self.function_no = (
+            self.function_num = (
                 MessageBody.read_byte(body, FUNCTION_NO_BYTE) << BYTE_SHIFT
             ) + MessageBody.read_byte(body, FUNCTION_NO_BYTE + 1)
             tail = FUNCTION_NO_BYTE + FUNCTION_NO_WIDTH_16

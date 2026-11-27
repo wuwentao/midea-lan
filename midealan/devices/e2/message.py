@@ -13,6 +13,12 @@ HEATING_POWER_BYTE = 34
 PROTECTION_BYTE = 22
 WATER_CONSUMPTION_BYTE = 25
 MEMORY_BYTE = 23
+MODE_BODY_LENGTH = 9
+MODE_COMMAND = 0x03
+EPLUS_MODE_BYTE = 1
+EPLUS_MODE_FLAG = 0x01
+MEMORY_MODE_BYTE = 3
+MEMORY_MODE_FLAG = 0x80
 
 
 class MessageE2Base(MessageRequest):
@@ -98,16 +104,29 @@ class NewProtocolSet(MessageE2Base):
         self.always_fell: bool | None = None
         self.smart_sterilize: bool | None = None
         self.uv_sterilize: bool | None = None
+        self.eplus: bool | None = None
         self.memory: bool | None = None
+
+    @staticmethod
+    def _mode_body(index: int, flag: int) -> bytearray:
+        """Build the E2 mode command used by mutually exclusive modes."""
+        body = bytearray(MODE_BODY_LENGTH)
+        body[0] = MODE_COMMAND
+        body[index] = flag
+        return body
 
     @property
     def _body(self) -> bytearray:
         byte12 = 0x00
         byte13 = 0x00
+        # T_0000_E2_24.lua encodes eplus in the mode command's second byte.
+        if self.eplus is not None:
+            value = EPLUS_MODE_FLAG if self.eplus else 0x00
+            return self._mode_body(EPLUS_MODE_BYTE, value)
         # memory (Memo U): "mode" command 0x03, flag on the 4th body byte (0x80)
         if self.memory is not None:
-            value = 0x80 if self.memory else 0x00
-            return bytearray([0x03, 0x00, 0x00, value, 0x00, 0x00, 0x00, 0x00, 0x00])
+            value = MEMORY_MODE_FLAG if self.memory else 0x00
+            return self._mode_body(MEMORY_MODE_BYTE, value)
         if self.target_temperature is not None:
             byte12 = 0x07
             byte13 = int(self.target_temperature) & 0xFF

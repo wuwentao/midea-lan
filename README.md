@@ -111,6 +111,10 @@ retrieve each device's token/key or cloud-side details. They share these options
 Supported `--cloud` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
 and `Ariston Clima`.
 
+When complete user credentials are not supplied, the CLI uses its preset account with
+`SmartHome` as the default cloud. Pass or save all three credential fields to select another
+cloud.
+
 `save` writes the credentials to a `midea-lan.json` config file so later commands can omit
 them. Without `--user` it writes `midea-lan.json` in the current directory; with `--user` it
 writes to the per-user config folder. Any command auto-loads this file and fills in only the

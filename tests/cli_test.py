@@ -21,7 +21,7 @@ from midealan.cli import (
     get_config_file_path,
     main,
 )
-from midealan.cloud import MideaAirCloud, SmartHomeCloud
+from midealan.cloud import SmartHomeCloud
 from midealan.const import ProtocolVersion
 from midealan.device import AuthException, NoSupportedProtocol
 from midealan.discover import _extract_mac
@@ -70,7 +70,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
         # test default cloud
         self.namespace.cloud_name = None
         cloud = await self.cli._get_cloud()
-        assert isinstance(cloud, MideaAirCloud)
+        assert isinstance(cloud, SmartHomeCloud)
         assert cloud._session == mock_session_instance
 
     async def test_get_keys(self) -> None:

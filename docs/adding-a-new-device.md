@@ -86,7 +86,7 @@ The Midea cloud ships a per-model Lua file that defines the byte layout of every
 query, report, and control message. This is the source of truth for the
 implementation.
 
-### 2.1 Download the Lua by serial number
+### 2.1 Download the Lua by device identity
 
 Use the `midealan` CLI `download` command (see the
 [README](../README.md#downloading-cloud-lua-and-plugin-files) for full options).
@@ -100,10 +100,21 @@ uv run python -m midealan.cli download \
 
 If the serial number does not resolve the device type correctly, pass it
 explicitly with `--device-type HEX` (for example `--device-type D9`). You can
-also download for a LAN device with `--host`, or for the whole account by
-omitting both `--host` and `--device-sn`. The Lua (and, where supported, the
-plugin) files are written to the current working directory — use a fresh empty
-directory to keep them together.
+download without the complete serial when the 8-character SN8/appModel is known:
+
+```bash
+uv run python -m midealan.cli download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-type AC --device-model 22013279 --device-subtype 8
+```
+
+`--device-subtype` is the device `deviceSubType`/cloud `modelNumber` (normally
+numeric; some overseas clouds use an alphanumeric model number). A type and subtype
+without `--device-model` can select subtype/common Lua, but an exact plugin requires
+the SN8. You can also download for a LAN device with `--host`, or for the whole
+account by omitting all identity options. The Lua (and, where supported, the plugin)
+files are written to the current working directory — use a fresh empty directory to
+keep them together.
 
 ### 2.2 Submit the Lua to the reference repo
 

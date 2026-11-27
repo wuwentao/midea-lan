@@ -77,7 +77,7 @@ else:
 美的云端为每个型号提供一个 Lua 文件，定义了每条查询、上报、控制消息的字节布局。
 这是实现的唯一权威来源。
 
-### 2.1 通过序列号（SN）下载 Lua
+### 2.1 通过设备身份信息下载 Lua
 
 使用 `midealan` CLI 的 `download` 命令（完整参数见
 [README](../README_hans.md#下载云端-lua-与插件文件)）。在源码检出环境中，把
@@ -90,9 +90,19 @@ uv run python -m midealan.cli download \
 ```
 
 若序列号无法正确解析设备类型，用 `--device-type HEX` 显式指定（例如
-`--device-type D9`）。也可用 `--host` 针对某个 LAN 设备下载，或同时省略
-`--host` 与 `--device-sn` 处理整个云账号下的全部设备。Lua（以及在支持时的插件）
-文件会写入当前工作目录 —— 建议使用一个全新的空目录集中保存。
+`--device-type D9`）。已知 8 位 SN8/appModel 时，无需完整 SN：
+
+```bash
+uv run python -m midealan.cli download \
+  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
+  --device-type AC --device-model 22013279 --device-subtype 8
+```
+
+`--device-subtype` 是设备的 `deviceSubType`（云端 `modelNumber`）；通常为数字，部分
+海外云使用字母数字型号。只有类型与 subtype、没有 `--device-model` 时仍可匹配
+subtype/通用 Lua，但精确插件需要 SN8。也可用 `--host` 针对某个 LAN 设备下载，或省略
+所有身份参数处理整个云账号下的设备。Lua（以及在支持时的插件）文件会写入当前工作目录
+—— 建议使用一个全新的空目录集中保存。
 
 ### 2.2 将 Lua 提交到参考仓库
 

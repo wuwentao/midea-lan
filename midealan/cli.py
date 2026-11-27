@@ -43,6 +43,11 @@ LOG_FORMAT = (
     "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
 )
 
+SN8_START = 9
+SN8_LENGTH = 8
+SYNTHETIC_SN_PREFIX_LENGTH = SN8_START
+SYNTHETIC_SN_FILL = "0"
+
 
 class MideaCLI:
     """Midea CLI."""
@@ -285,15 +290,17 @@ class MideaCLI:
         cloud: MideaCloud,
         device_type: int,
         device_sn: str,
-        model: str | None,
+        model_number: int | str | None,
         manufacturer_code: str = "0000",
+        *,
+        download_plugin: bool = True,
     ) -> None:
         """Download the lua and plugin files for a single device."""
         _LOGGER.debug(
             "Download lua file for %s [%s] %s",
             device_sn,
             hex(device_type),
-            model,
+            model_number,
         )
         # A plain error (no traceback) is the right output for the expected
         # NotImplementedError limitations below, so TRY400 (use
@@ -303,7 +310,7 @@ class MideaCLI:
                 str(Path()),
                 device_type,
                 device_sn,
-                model,
+                model_number,
                 manufacturer_code,
             )
             _LOGGER.info("Downloaded lua file: %s", lua)
@@ -322,6 +329,13 @@ class MideaCLI:
                 "Failed to download lua file for %s [%s].",
                 device_sn,
                 hex(device_type),
+            )
+            return
+
+        if not download_plugin:
+            _LOGGER.warning(
+                "Lua download attempted, but an exact plugin cannot be selected "
+                "without the device model (the 8-character SN8/appModel).",
             )
             return
 
@@ -354,8 +368,8 @@ class MideaCLI:
         cloud: MideaCloud,
         device_id: int,
         device_type: int,
-    ) -> tuple[str, str | None, str] | None:
-        """Resolve (serial, model, manufacturer_code) from the cloud account.
+    ) -> tuple[str, int | str | None, str] | None:
+        """Resolve (serial, modelNumber, manufacturer_code) from the cloud.
 
         TLS devices report no usable LAN serial, so the discovery result only
         carries the device id and type. Match the account entry by id first --
@@ -368,12 +382,16 @@ class MideaCLI:
         """
         appliances = await cloud.list_appliances(home_id=None) or {}
         if (appliance := appliances.get(device_id)) is not None:
-            return appliance["sn"], appliance["model"], appliance["manufacturer_code"]
+            return (
+                appliance["sn"],
+                appliance.get("model_number"),
+                appliance["manufacturer_code"],
+            )
         matches = [a for a in appliances.values() if a["type"] == device_type]
         if len(matches) == 1:
             return (
                 matches[0]["sn"],
-                matches[0]["model"],
+                matches[0].get("model_number"),
                 matches[0]["manufacturer_code"],
             )
         if not matches:
@@ -405,8 +423,8 @@ class MideaCLI:
             return
         _, device = devices.popitem()
         device_sn = device["sn"]
-        model = device["model"]
-        manufacturer_code = "0000"
+        model_number = device.get("device_subtype")
+        manufacturer_code = f"{device.get('manufacturer_code', 0):04x}"
         # TLS (udp_version >= 4) devices expose no usable LAN serial/model: the
         # bytes are PBKDF2-encrypted, so discover() returns them empty and flags
         # the result. Resolve a real serial from the cloud account before
@@ -432,13 +450,53 @@ class MideaCLI:
             )
             if resolved is None:
                 return
-            device_sn, model, manufacturer_code = resolved
+            device_sn, model_number, manufacturer_code = resolved
         await self._download_device(
             cloud,
             device["type"],
             device_sn,
-            model,
+            model_number,
             manufacturer_code,
+        )
+
+    @staticmethod
+    def _synthetic_serial(device_type: int, device_model: str | None) -> str:
+        """Build the SN-shaped lookup key expected by Midea cloud APIs.
+
+        The cloud reads the appliance model (SN8/appModel) from bytes 9..16 of
+        the serial. The remaining serial bytes are not part of lua/plugin
+        selection, but the API still validates the complete 32-character
+        shape, so fill them deterministically when the real serial is unknown.
+        """
+        model = device_model or SYNTHETIC_SN_FILL * SN8_LENGTH
+        prefix = f"0000{device_type:02X}000"
+        suffix = SYNTHETIC_SN_FILL * (
+            SERIAL_TYPE1_LENGTH - SYNTHETIC_SN_PREFIX_LENGTH - SN8_LENGTH
+        )
+        return f"{prefix}{model}{suffix}"
+
+    async def _download_by_identity(self, cloud: MideaCloud) -> None:
+        """Download with an explicit type plus model and/or subtype."""
+        if not self.namespace.device_type:
+            _LOGGER.error(
+                "--device-type is required when downloading without --host or "
+                "--device-sn.",
+            )
+            return
+        device_type = int.from_bytes(self.namespace.device_type)
+        device_model = self.namespace.device_model
+        if device_model is not None and len(device_model) != SN8_LENGTH:
+            _LOGGER.error(
+                "--device-model must be the 8-character SN8/appModel value.",
+            )
+            return
+        device_sn = self._synthetic_serial(device_type, device_model)
+        await self._download_device(
+            cloud,
+            device_type,
+            device_sn,
+            self.namespace.device_subtype,
+            download_plugin=device_model is not None,
         )
 
     async def _download_by_sn(self, cloud: MideaCloud, device_sn: str) -> None:
@@ -462,11 +520,11 @@ class MideaCLI:
                 cloud,
                 device_type,
                 device_sn,
-                str(device_sn[9:17]),
+                self.namespace.device_subtype,
             )
             return
 
-        # 2. resolve type/model from the cloud account (fixes AC-style serials)
+        # 2. resolve type/subtype from the cloud account (fixes AC-style serials)
         appliances = await cloud.list_appliances(home_id=None) or {}
         appliance = next(
             (a for a in appliances.values() if a["sn"] == device_sn),
@@ -477,7 +535,11 @@ class MideaCLI:
                 cloud,
                 appliance["type"],
                 device_sn,
-                appliance["model"],
+                (
+                    self.namespace.device_subtype
+                    if self.namespace.device_subtype is not None
+                    else appliance.get("model_number")
+                ),
                 appliance["manufacturer_code"],
             )
             return
@@ -491,19 +553,21 @@ class MideaCLI:
             cloud,
             device_type,
             device_sn,
-            str(device_sn[9:17]),
+            self.namespace.device_subtype,
         )
 
     async def download(self) -> None:
         """Download lua and plugin files from the cloud.
 
-        The target device(s) are resolved in one of three ways:
+        The target device(s) are resolved in one of four ways:
 
-        * ``--host``: discover the device on the LAN; its type and model come
-          from the discovery reply.
+        * ``--host``: discover the device on the LAN; its type, model, and
+          subtype come from the discovery reply.
         * ``--device-sn``: download a single device by serial number (see
           :meth:`_download_by_sn` for how the device type is resolved).
-        * neither: download for every device in the cloud account.
+        * ``--device-type`` with model/subtype metadata: synthesize the lookup
+          serial shape without requiring the real serial.
+        * no identity arguments: download every device in the cloud account.
         """
         cloud = await self._get_cloud()
         _LOGGER.debug("Try to authenticate to the cloud.")
@@ -521,6 +585,18 @@ class MideaCLI:
             await self._download_by_sn(cloud, str(self.namespace.device_sn))
             return
 
+        # explicit identity without a complete serial: synthesize only the SN
+        # shape the cloud validates. Lua matching uses type + modelNumber
+        # (subtype) and/or the SN8 at serial positions 9..16; plugin matching
+        # uses type + SN8.
+        if (
+            self.namespace.device_type
+            or self.namespace.device_model is not None
+            or self.namespace.device_subtype is not None
+        ):
+            await self._download_by_identity(cloud)
+            return
+
         # no host and no SN: download every device in the cloud account
         appliances = await cloud.list_appliances(home_id=None) or {}
         if not appliances:
@@ -532,7 +608,7 @@ class MideaCLI:
                 cloud,
                 appliance["type"],
                 appliance["sn"],
-                appliance["model"],
+                appliance.get("model_number"),
                 appliance["manufacturer_code"],
             )
 
@@ -774,7 +850,7 @@ def main() -> NoReturn:
 
     download_parser = subparsers.add_parser(
         "download",
-        description="Download lua scripts from cloud.",
+        description="Download lua scripts and plugins from cloud.",
         parents=[common_parser],
     )
     download_parser.add_argument(
@@ -783,6 +859,15 @@ def main() -> NoReturn:
         type=bytes.fromhex,
     )
     download_parser.add_argument("--device-sn", help="Device SN")
+    download_parser.add_argument(
+        "--device-model",
+        help="8-character device SN8/appModel (a full SN is not required).",
+    )
+    download_parser.add_argument(
+        "--device-subtype",
+        "--model-number",
+        help="Device subtype/cloud modelNumber.",
+    )
     download_parser.add_argument(
         "--host",
         help="IP Address of the device.",

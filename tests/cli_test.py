@@ -41,6 +41,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             message=bytes.fromhex("00a1a2ac0f2a0000"),
             device_type=bytearray(),
             device_sn="",
+            device_model=None,
+            device_subtype=None,
             user=False,
             debug=True,
             get_sn=False,
@@ -430,6 +432,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             "ip_address": "192.168.0.2",
             "port": 6444,
             "model": "ABCD1234",
+            "device_subtype": 44204,
             "sn": "0000AC000ABCD1234000000000000000",
         }
         # An AC serial number: the type byte at sn[4:6] is "00", so the type
@@ -485,7 +488,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 mock_device["type"],
                 mock_device["sn"],
-                mock_device["model"],
+                mock_device["device_subtype"],
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -496,7 +499,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             )
             mock_cloud_instance.download_plugin.reset_mock()
 
-            # download lua with SN: type and model resolved from the cloud list
+            # download lua with SN: type/subtype resolved from the cloud list
             # (the AC serial's sn[4:6] is "00", so the cloud value fixes it)
             self.namespace.host = None
             self.namespace.device_sn = cloud_sn
@@ -505,7 +508,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 cloud_appliance["type"],
                 cloud_sn,
-                cloud_appliance["model"],
+                cloud_appliance["model_number"],
                 cloud_appliance["manufacturer_code"],
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -517,8 +520,8 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_cloud_instance.download_plugin.reset_mock()
 
             # download lua with SN and explicit device_type override: the legacy
-            # path, which uses the argument and derives the model from the SN
-            # without consulting the cloud account.
+            # path, which uses the argument without consulting the cloud
+            # account. No subtype was supplied in this case.
             self.namespace.device_sn = cloud_sn
             self.namespace.device_type = bytes.fromhex("AC")
             await self.cli.download()
@@ -526,14 +529,14 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0xAC,
                 cloud_sn,
-                cloud_sn[9:17],
+                None,
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
             self.namespace.device_type = bytearray()
 
             # SN not on the account and no device_type: legacy fallback derives
-            # the type from sn[4:6] (0xFF here) and the model from sn[9:17].
+            # the type from sn[4:6] (0xFF here). No subtype is available.
             unknown_sn = "0000FF00UNKNOWN00000000000000000"
             self.namespace.device_sn = unknown_sn
             await self.cli.download()
@@ -541,7 +544,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0xFF,
                 unknown_sn,
-                unknown_sn[9:17],
+                None,
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -554,7 +557,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0xB0,
                 unknown_sn,
-                unknown_sn[9:17],
+                None,
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -568,7 +571,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0,
                 invalid_hex_sn,
-                invalid_hex_sn[9:17],
+                None,
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -581,7 +584,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0,
                 short_sn,
-                short_sn[9:17],
+                None,
                 "0000",
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -594,7 +597,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 cloud_appliance["type"],
                 cloud_sn,
-                cloud_appliance["model"],
+                cloud_appliance["model_number"],
                 cloud_appliance["manufacturer_code"],
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -629,6 +632,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             "type": 0xAC,
             "sn": cloud_sn,
             "model": "KFR-72L",
+            "model_number": 44204,
             "manufacturer_code": "1234",
         }
         other_appliance = {**cloud_appliance, "type": 0xDB}
@@ -659,7 +663,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0xAC,
                 cloud_sn,
-                cloud_appliance["model"],
+                cloud_appliance["model_number"],
                 cloud_appliance["manufacturer_code"],
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -671,7 +675,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
                 str(Path()),
                 0xAC,
                 cloud_sn,
-                cloud_appliance["model"],
+                cloud_appliance["model_number"],
                 cloud_appliance["manufacturer_code"],
             )
             mock_cloud_instance.download_lua.reset_mock()
@@ -702,6 +706,72 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             mock_cloud_instance.list_appliances.assert_not_called()
             mock_cloud_instance.download_lua.assert_not_called()
             self.namespace.username = "user"
+
+    async def test_download_without_complete_serial(self) -> None:
+        """Type plus model/subtype downloads without exposing a real SN."""
+        self.namespace.host = None
+        self.namespace.device_sn = None
+        self.namespace.device_type = bytes.fromhex("AC")
+        self.namespace.device_model = "22013279"
+        self.namespace.device_subtype = "8"
+        mock_cloud = AsyncMock()
+        mock_cloud.login.return_value = True
+
+        with patch.object(self.cli, "_get_cloud", return_value=mock_cloud):
+            await self.cli.download()
+
+            synthetic_sn = "0000AC00022013279" + "0" * 15
+            assert len(synthetic_sn) == 32
+            mock_cloud.download_lua.assert_awaited_once_with(
+                str(Path()),
+                0xAC,
+                synthetic_sn,
+                "8",
+                "0000",
+            )
+            mock_cloud.download_plugin.assert_awaited_once_with(
+                str(Path()),
+                0xAC,
+                synthetic_sn,
+            )
+
+            # Subtype-only lookup can select subtype/common lua, but cannot
+            # identify an exact plugin because plugin matching uses SN8.
+            mock_cloud.reset_mock()
+            mock_cloud.login.return_value = True
+            self.namespace.device_model = None
+            with self.assertLogs("cli", level="WARNING") as logs:
+                await self.cli.download()
+            zero_model_sn = "0000AC00000000000" + "0" * 15
+            mock_cloud.download_lua.assert_awaited_once_with(
+                str(Path()),
+                0xAC,
+                zero_model_sn,
+                "8",
+                "0000",
+            )
+            mock_cloud.download_plugin.assert_not_awaited()
+            assert any("exact plugin" in line for line in logs.output)
+
+            # A model/subtype without a device type is not enough to form the
+            # cloud lookup identity.
+            mock_cloud.reset_mock()
+            mock_cloud.login.return_value = True
+            self.namespace.device_type = bytearray()
+            self.namespace.device_model = "22013279"
+            with self.assertLogs("cli", level="ERROR") as logs:
+                await self.cli.download()
+            mock_cloud.download_lua.assert_not_awaited()
+            assert any("--device-type is required" in line for line in logs.output)
+
+            # Reject marketing model names and truncated SN8 values instead of
+            # silently shifting the synthetic serial offsets.
+            self.namespace.device_type = bytes.fromhex("AC")
+            self.namespace.device_model = "KFR-72L"
+            with self.assertLogs("cli", level="ERROR") as logs:
+                await self.cli.download()
+            mock_cloud.download_lua.assert_not_awaited()
+            assert any("8-character" in line for line in logs.output)
 
     async def test_download_not_supported(self) -> None:
         """Download on a cloud without lua/plugin support is handled cleanly."""
@@ -787,14 +857,14 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             str(Path()),
             appliances[1]["type"],
             appliances[1]["sn"],
-            appliances[1]["model"],
+            None,
             appliances[1]["manufacturer_code"],
         )
         assert mock_cloud_instance.download_lua.await_args_list[2].args == (
             str(Path()),
             appliances[3]["type"],
             appliances[3]["sn"],
-            appliances[3]["model"],
+            None,
             appliances[3]["manufacturer_code"],
         )
         assert mock_cloud_instance.download_plugin.await_args_list[0].args == (

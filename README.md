@@ -203,7 +203,8 @@ link that pull request from the `midea-lan` pull request.
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
-  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
+  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX] | \
+  --device-type HEX [--device-model SN8] [--device-subtype VALUE]]
 ```
 
 Download for a device discovered at a LAN address:
@@ -231,18 +232,45 @@ midealan download \
   --device-sn "0000005112429652937220340014X2X3" --device-type AC
 ```
 
-Omit both `--host` and `--device-sn` to process every appliance in the cloud account:
+A complete serial number is not required when the device type and its 8-character
+SN8/appModel are known. `--device-model` means this protocol/plugin model identifier,
+not the marketing product name:
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --device-type AC --device-model 22013279 --device-subtype 8
+```
+
+The subtype is the device `deviceSubType`/cloud `modelNumber` (also accepted through the
+`--model-number` alias). It is normally numeric, although some overseas clouds use an
+alphanumeric model number. It may be omitted when the SN8 is enough to select a
+model-specific Lua. A type plus subtype can also download the matching subtype/common
+Lua without either SN or SN8:
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --device-type DB --device-subtype 16695
+```
+
+Plugin matching uses device type plus SN8 and does not use subtype. Consequently the
+CLI skips plugin download when `--device-model` is absent, rather than accepting a
+possibly unrelated generic plugin from the cloud.
+
+Omit all device identity options to process every appliance in the cloud account:
 
 ```bash
 midealan download \
   --cloud-name "SmartHome" --username "user@example.com" --password "password"
 ```
 
-`--host` takes precedence when it is supplied with `--device-sn`; LAN discovery provides
-the serial number, type, and model. For a serial-number download, the device type is
-resolved in this order: `--device-type`, a matching appliance in the cloud account, then
-the legacy type byte in the serial number. A malformed or unsupported serial-number
-fallback uses type `0`, so pass `--device-type` when known.
+`--host` takes precedence when it is supplied with other identity options; LAN
+discovery provides the serial number, type, model, and subtype. For a serial-number
+download, the device type is resolved in this order: `--device-type`, a matching
+appliance in the cloud account, then the legacy type byte in the serial number. A
+malformed or unsupported serial-number fallback uses type `0`, so pass `--device-type`
+when known.
 
 Each appliance is handled independently during account-wide downloads. A Lua or plugin
 failure is logged and later appliances continue to be processed. `美的美居` and

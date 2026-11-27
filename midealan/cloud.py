@@ -730,7 +730,7 @@ class MideaCloud:
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -1008,7 +1008,7 @@ class MeijuCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,  # noqa: ARG002
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -1019,6 +1019,10 @@ class MeijuCloud(MideaCloud):
             "version": "0",
             "iotAppId": self._app_id,
         }
+        if model_number is not None:
+            # Official SDK name: modelNumber is the numeric deviceSubType,
+            # not the 8-character SN8/appModel embedded in applianceSn.
+            data["modelNumber"] = str(model_number)
         fnm = None
         if (
             response := await self._api_request(
@@ -1286,7 +1290,7 @@ class SmartHomeCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration."""
@@ -1303,7 +1307,7 @@ class SmartHomeCloud(MideaCloud):
             },
         )
         if model_number is not None:
-            data["modelNumber"] = model_number
+            data["modelNumber"] = str(model_number)
         fnm = None
         if (
             response := await self._api_request(
@@ -1616,7 +1620,7 @@ class MideaAirCloud(MideaCloud):
         path: str,
         device_type: int,
         sn: str,
-        model_number: str | None = None,  # noqa: ARG002
+        model_number: int | str | None = None,
         manufacturer_code: str = "0000",
     ) -> str | None:
         """Download lua integration.
@@ -1636,6 +1640,8 @@ class MideaAirCloud(MideaCloud):
                 "version": "0",
             },
         )
+        if model_number is not None:
+            data["modelNumber"] = str(model_number)
         for endpoint in (
             "/v1/appliance/protocol/lua/luaGetCbc",
             "/v1/appliance/protocol/lua/luaGet",

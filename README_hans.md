@@ -191,7 +191,8 @@ midealan setattr 192.0.2.121 power true --attr-type bool \
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
-  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX]]
+  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX] | \
+  --device-type HEX [--device-model SN8] [--device-subtype VALUE]]
 ```
 
 `--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
@@ -221,17 +222,40 @@ midealan download \
   --device-sn "0000005112429652937220340014X2X3" --device-type AC
 ```
 
-省略 `--host` 和 `--device-sn` 时，会处理云账号内的全部设备：
+如果已知设备类型和 8 位 SN8/appModel，则不需要提供完整 SN。这里的
+`--device-model` 是云端用于匹配协议与插件的型号标识，并非商品宣传型号：
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --device-type AC --device-model 22013279 --device-subtype 8
+```
+
+subtype 指设备的 `deviceSubType`（云端字段名为 `modelNumber`，也可通过别名
+`--model-number` 传入）。该值通常为数字，部分海外云使用字母数字型号。当 SN8 已足以
+匹配型号专用 Lua 时可省略 subtype。也可以只用类型和 subtype，在没有 SN/SN8 时下载
+对应的 subtype Lua 或通用 Lua：
+
+```bash
+midealan download \
+  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --device-type DB --device-subtype 16695
+```
+
+插件只按设备类型与 SN8 匹配，不使用 subtype。因此未提供 `--device-model` 时，CLI
+会跳过插件下载，避免把云端返回的其他通用插件误认为目标设备插件。
+
+省略所有设备身份参数时，会处理云账号内的全部设备：
 
 ```bash
 midealan download \
   --cloud-name "SmartHome" --username "user@example.com" --password "password"
 ```
 
-同时传入 `--host` 和 `--device-sn` 时，`--host` 优先；程序会通过局域网发现获取序列号、
-设备类型和型号。按序列号下载时，设备类型按以下顺序确定：`--device-type`、云账号中匹配
-设备的信息、序列号中的旧格式类型字节。序列号格式错误或不支持旧格式回退时，类型会使用
-`0`，因此已知类型时应传入 `--device-type`。
+同时传入 `--host` 和其他身份参数时，`--host` 优先；程序会通过局域网发现获取序列号、
+设备类型、型号和 subtype。按序列号下载时，设备类型按以下顺序确定：
+`--device-type`、云账号中匹配设备的信息、序列号中的旧格式类型字节。序列号格式错误或
+不支持旧格式回退时，类型会使用 `0`，因此已知类型时应传入 `--device-type`。
 
 批量下载时，每台设备独立处理；某台设备的 Lua 或插件下载失败只会记录日志，后续设备仍会
 继续处理。`美的美居` 与 `SmartHome` 支持 Lua 和插件下载。旧版 `Midea Air`、

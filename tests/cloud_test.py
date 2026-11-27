@@ -831,6 +831,27 @@ class CloudTest(IsolatedAsyncioTestCase):
             result = await cloud.download_lua(tmpdir, 10, "00000000", "0xAC", "0010")
             assert result is None
 
+    async def test_meijucloud_download_lua_sends_subtype(self) -> None:
+        """Meiju sends deviceSubType through the SDK's modelNumber field."""
+        cloud = get_midea_cloud(
+            "美的美居",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value=None),
+        ) as api_request:
+            assert await cloud.download_lua("path", 0xAC, "0" * 32, 44204) is None
+
+        request = api_request.await_args
+        assert request is not None
+        request_data = request.kwargs["data"]
+        assert request_data["applianceType"] == "0xac"
+        assert request_data["modelNumber"] == "44204"
+
     async def test_meijucloud_download_plugin(self) -> None:
         """Test MeijuCloud download_plugin."""
         session = Mock()
@@ -1702,6 +1723,25 @@ class CloudTest(IsolatedAsyncioTestCase):
         ]
         # The legacy attempt must not inherit the signed CBC request.
         assert "sign" not in seen_data[1]
+
+    async def test_mideaaircloud_download_lua_sends_subtype(self) -> None:
+        """Midea Air sends subtype to both current and fallback endpoints."""
+        cloud = get_midea_cloud(
+            "Midea Air",
+            session=Mock(),
+            account="account",
+            password="password",
+        )
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value=None),
+        ) as api_request:
+            assert await cloud.download_lua("path", 0xDB, "0" * 32, 16695) is None
+
+        assert api_request.await_count == 2
+        for request in api_request.await_args_list:
+            assert request.kwargs["data"]["modelNumber"] == "16695"
 
     async def test_mideaaircloud_download_lua_non_ok_response(self) -> None:
         """Test download_lua returns None when both endpoints fail download."""

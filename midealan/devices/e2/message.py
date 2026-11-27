@@ -13,6 +13,7 @@ HEATING_POWER_BYTE = 34
 PROTECTION_BYTE = 22
 WATER_CONSUMPTION_BYTE = 25
 MEMORY_BYTE = 23
+DOUBLE_TANK_MODE_BYTE = 33
 
 
 class MessageE2Base(MessageRequest):
@@ -88,6 +89,7 @@ class NewProtocolSet(MessageE2Base):
         self.variable_heating: bool | None = None
         self.sterilization: bool | None = None
         self.whole_tank_heating: bool | None = None
+        self.double_tank_heating: bool | None = None
         self.protect: bool | None = None
         self.sleep: bool | None = None
         self.big_water: bool | None = None
@@ -111,6 +113,10 @@ class NewProtocolSet(MessageE2Base):
         if self.target_temperature is not None:
             byte12 = 0x07
             byte13 = int(self.target_temperature) & 0xFF
+        elif self.double_tank_heating is not None:
+            # T_0000_E2_24.lua one_egg/two_egg share property 0x19.
+            byte12 = 0x19
+            byte13 = 0x02 if self.double_tank_heating else 0x01
         elif self.whole_tank_heating is not None:
             byte12 = 0x04
             # byte2 0x02/whole_heat 0x01/half_heat
@@ -250,6 +256,17 @@ class E2GeneralMessageBody(MessageBody):
         self.top_heat = (body[15] & 0x02) > 0
         self.water_cyclic = (body[15] & 0x80) > 0
         self.water_system = body[16]
+        # T_0000_E2_24.lua bodyBytes[44] one_egg/two_egg status bits.
+        self.one_egg = (
+            (body[DOUBLE_TANK_MODE_BYTE] & 0x10) > 0
+            if len(body) > DOUBLE_TANK_MODE_BYTE
+            else None
+        )
+        self.two_egg = (
+            (body[DOUBLE_TANK_MODE_BYTE] & 0x20) > 0
+            if len(body) > DOUBLE_TANK_MODE_BYTE
+            else None
+        )
         # in_temperature
         self.in_temperature = float(body[18]) if len(body) > PROTECTION_BYTE else None
         # protect

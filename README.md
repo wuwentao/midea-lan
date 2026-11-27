@@ -242,6 +242,9 @@ midealan download \
   --device-type AC --device-model 22013279 --device-subtype 8
 ```
 
+The matching protocol is
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua).
+
 The subtype is the device `deviceSubType`/cloud `modelNumber` (also accepted through the
 `--model-number` alias). It is normally numeric, although some overseas clouds use an
 alphanumeric model number. It may be omitted when the SN8 is enough to select a
@@ -253,6 +256,9 @@ midealan download \
   --cloud-name "美的美居" --username "user@example.com" --password "password" \
   --device-type DB --device-subtype 16695
 ```
+
+DB subtype `16695` resolves to
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua).
 
 Plugin matching uses device type plus SN8 and does not use subtype. Consequently the
 CLI skips plugin download when `--device-model` is absent, rather than accepting a

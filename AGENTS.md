@@ -84,6 +84,52 @@ user-facing harnesses.
 - Recommended dev environment is **uv + a local `.venv`** (`./scripts/setup.sh` or
   `scripts\setup.ps1`); see `.github/CONTRIBUTING.md`.
 
+### Cloud Lua/plugin download workflow
+
+Use `midealan download` to retrieve cloud protocol assets. Run it from a fresh empty
+directory because downloaded Lua and plugin files are written to the current directory.
+From a source checkout, replace `midealan` below with
+`uv run python -m midealan.cli`.
+
+```bash
+# Discover one LAN appliance and use its cloud identity.
+midealan download --cloud-name "SmartHome" --username USER --password PASSWORD \
+  --host 192.0.2.121
+
+# Resolve one complete serial number through the cloud account.
+midealan download --cloud-name "SmartHome" --username USER --password PASSWORD \
+  --device-sn SERIAL --device-type AC
+
+# A complete serial is not required when type and SN8/appModel are known.
+midealan download --cloud-name "美的美居" --username USER --password PASSWORD \
+  --device-type AC --device-model 22013279 --device-subtype 8
+
+# Type plus subtype/modelNumber can select subtype/common Lua without SN8.
+midealan download --cloud-name "美的美居" --username USER --password PASSWORD \
+  --device-type DB --device-subtype 16695
+
+# Omit identity selectors to process every appliance in the account.
+midealan download --cloud-name "SmartHome" --username USER --password PASSWORD
+```
+
+`--device-model` is the 8-character SN8/appModel used for Lua and plugin matching,
+not a marketing model name. `--device-subtype` (alias `--model-number`) is the cloud
+`modelNumber`/device `deviceSubType`; it may be numeric or alphanumeric. The CLI creates
+the 32-character serial shape required by the cloud when no complete serial is available.
+Plugin matching needs type plus SN8 and does not use subtype, so subtype-only downloads
+must skip the plugin rather than accept an unrelated generic plugin. `--host` takes
+precedence over other selectors. Account-wide downloads isolate failures per appliance.
+
+Before adding device support, check the exact Lua under
+[`wuwentao/midea-lua`](https://github.com/wuwentao/midea-lua) and use a full GitHub file
+URL in documentation and PR text. The examples above already exist as
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua)
+and
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua),
+which is the Lua returned for DB subtype `16695`. If the exact Lua is absent, format the
+download with StyLua according to that repository's README and submit a `midea-lua` PR
+first; link the full PR URL from the `midea-lan` PR.
+
 ## Pull request requirements
 
 - Complete `.github/pull_request_template.md`; use N/A with a short reason when a

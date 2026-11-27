@@ -231,6 +231,9 @@ midealan download \
   --device-type AC --device-model 22013279 --device-subtype 8
 ```
 
+对应协议为
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua)。
+
 subtype 指设备的 `deviceSubType`（云端字段名为 `modelNumber`，也可通过别名
 `--model-number` 传入）。该值通常为数字，部分海外云使用字母数字型号。当 SN8 已足以
 匹配型号专用 Lua 时可省略 subtype。也可以只用类型和 subtype，在没有 SN/SN8 时下载
@@ -241,6 +244,9 @@ midealan download \
   --cloud-name "美的美居" --username "user@example.com" --password "password" \
   --device-type DB --device-subtype 16695
 ```
+
+DB subtype `16695` 对应
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua)。
 
 插件只按设备类型与 SN8 匹配，不使用 subtype。因此未提供 `--device-model` 时，CLI
 会跳过插件下载，避免把云端返回的其他通用插件误认为目标设备插件。

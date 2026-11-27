@@ -98,11 +98,17 @@ uv run python -m midealan.cli download \
   --device-type AC --device-model 22013279 --device-subtype 8
 ```
 
+此示例会获取
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua)。
+
 `--device-subtype` 是设备的 `deviceSubType`（云端 `modelNumber`）；通常为数字，部分
 海外云使用字母数字型号。只有类型与 subtype、没有 `--device-model` 时仍可匹配
 subtype/通用 Lua，但精确插件需要 SN8。也可用 `--host` 针对某个 LAN 设备下载，或省略
 所有身份参数处理整个云账号下的设备。Lua（以及在支持时的插件）文件会写入当前工作目录
 —— 建议使用一个全新的空目录集中保存。
+
+只使用 subtype 的示例中，DB subtype `16695` 对应
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua)。
 
 ### 2.2 将 Lua 提交到参考仓库
 

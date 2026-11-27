@@ -108,6 +108,9 @@ uv run python -m midealan.cli download \
   --device-type AC --device-model 22013279 --device-subtype 8
 ```
 
+This example retrieves
+[`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua).
+
 `--device-subtype` is the device `deviceSubType`/cloud `modelNumber` (normally
 numeric; some overseas clouds use an alphanumeric model number). A type and subtype
 without `--device-model` can select subtype/common Lua, but an exact plugin requires
@@ -115,6 +118,9 @@ the SN8. You can also download for a LAN device with `--host`, or for the whole
 account by omitting all identity options. The Lua (and, where supported, the plugin)
 files are written to the current working directory — use a fresh empty directory to
 keep them together.
+
+For a subtype-only example, DB subtype `16695` resolves to
+[`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua).
 
 ### 2.2 Submit the Lua to the reference repo
 

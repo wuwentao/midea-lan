@@ -31,6 +31,7 @@ class E2SubType(IntEnum):
 
     T82 = 82
     T85 = 85
+    T123 = 123
     T255 = 255
     T36353 = 36353
 
@@ -42,6 +43,12 @@ _LOGGER = logging.getLogger(__name__)
 # opposite physical order. Keep the correction limited to the verified device.
 # https://github.com/wuwentao/midea_ac_lan/issues/1264
 TANK_HEAT_REVERSED_KEYS = frozenset({("510003CN", E2SubType.T255)})
+
+# The official plugin exposes model 51032DV5 subtype 123 through its doubleTank
+# control. T_0000_E2_24.lua maps that control to one_egg/two_egg (property 0x19)
+# instead of half_heat/whole_heat (property 0x04).
+# https://github.com/wuwentao/midea_ac_lan/issues/427
+DOUBLE_TANK_MODE_KEYS = frozenset({("51032DV5", E2SubType.T123)})
 
 
 class DeviceAttributes(StrEnum):
@@ -195,10 +202,20 @@ class MideaE2Device(MideaDevice):
             return
         message.bottom_heat, message.top_heat = message.top_heat, message.bottom_heat
 
+    def _fix_double_tank_mode(self, message: MessageE2Response) -> None:
+        """Map one_egg/two_egg status to the public whole-tank attribute."""
+        if (str(self.model), int(self.subtype)) not in DOUBLE_TANK_MODE_KEYS:
+            return
+        one_egg = getattr(message, "one_egg", None)
+        two_egg = getattr(message, "two_egg", None)
+        if one_egg or two_egg:
+            message.whole_tank_heating = bool(two_egg)  # type: ignore[attr-defined]
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea E2 device process message."""
         message = MessageE2Response(msg)
         self._fix_tank_heat(message)
+        self._fix_double_tank_mode(message)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         for status in self._attributes:
@@ -251,6 +268,12 @@ class MideaE2Device(MideaDevice):
             if attr == DeviceAttributes.power:
                 message = MessagePower(self._message_protocol_version)
                 message.power = bool(value)
+            elif (
+                attr == DeviceAttributes.whole_tank_heating
+                and (str(self.model), int(self.subtype)) in DOUBLE_TANK_MODE_KEYS
+            ):
+                message = NewProtocolSet(self._message_protocol_version)
+                message.double_tank_heating = bool(value)
             elif old_protocol == OldProtocol.true:
                 message = self.make_message_set()
                 if not hasattr(message, str(attr)):

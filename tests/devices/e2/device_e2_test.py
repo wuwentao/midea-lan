@@ -277,6 +277,43 @@ class TestMideaE2Device:
         assert status[DeviceAttributes.bottom_heat.value] is expected_bottom
         assert status[DeviceAttributes.top_heat.value] is expected_top
 
+    @pytest.mark.parametrize(
+        ("model", "subtype", "one_egg", "two_egg", "expected"),
+        [
+            ("51032DV5", E2SubType.T123, True, False, False),
+            ("51032DV5", E2SubType.T123, False, True, True),
+            ("51032DV5", E2SubType.T123, False, False, False),
+            ("other", E2SubType.T123, False, True, False),
+            ("51032DV5", 1, False, True, False),
+        ],
+    )
+    def test_process_message_maps_double_tank_status_for_verified_device_only(
+        self,
+        model: str,
+        subtype: int,
+        one_egg: bool,
+        two_egg: bool,
+        expected: bool,
+    ) -> None:
+        """Map one_egg/two_egg only for model 51032DV5 subtype 123."""
+
+        class FakeMessage:
+            whole_tank_heating = False
+            one_egg = False
+            two_egg = False
+
+        message = FakeMessage()
+        message.one_egg = one_egg
+        message.two_egg = two_egg
+        device = self._device(model=model, subtype=subtype)
+        with patch(
+            "midealan.devices.e2.MessageE2Response",
+            return_value=message,
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.whole_tank_heating.value] is expected
+
     def test_temperature_round_trips(self) -> None:
         """What is written must read back unchanged, in both modes."""
         for customize in ("", '{"precision_halves": true}'):
@@ -352,3 +389,31 @@ class TestMideaE2Device:
             message = mock_build_send.call_args[0][0]
         assert isinstance(message, NewProtocolSet)
         assert message.sterilization is True
+
+    @pytest.mark.parametrize("customize", ["", '{"old_protocol": "true"}'])
+    def test_set_whole_tank_uses_double_tank_command_for_51032dv5(
+        self,
+        customize: str,
+    ) -> None:
+        """51032DV5 subtype 123 always uses the plugin's property 0x19."""
+        device = self._device(
+            customize,
+            model="51032DV5",
+            subtype=E2SubType.T123,
+        )
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.whole_tank_heating.value, True)
+            message = mock_build_send.call_args[0][0]
+
+        assert isinstance(message, NewProtocolSet)
+        assert message._body == bytearray([0x19, 0x02])
+
+    def test_set_whole_tank_keeps_existing_command_for_other_devices(self) -> None:
+        """Other E2 devices keep the half_heat/whole_heat property 0x04."""
+        device = self._device('{"old_protocol": "false"}', subtype=E2SubType.T123)
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.whole_tank_heating.value, True)
+            message = mock_build_send.call_args[0][0]
+
+        assert isinstance(message, NewProtocolSet)
+        assert message._body == bytearray([0x04, 0x02])

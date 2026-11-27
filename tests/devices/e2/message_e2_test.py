@@ -75,6 +75,8 @@ class TestNewProtocolSet:
             ("target_temperature", 65, 0x07, 65),
             ("whole_tank_heating", True, 0x04, 0x02),
             ("whole_tank_heating", False, 0x04, 0x01),
+            ("double_tank_heating", True, 0x19, 0x02),
+            ("double_tank_heating", False, 0x19, 0x01),
             ("variable_heating", True, 0x10, 0x01),
             ("variable_heating", False, 0x10, 0x00),
             ("sterilization", True, 0x0D, 0x01),
@@ -205,6 +207,8 @@ class TestE2GeneralMessageBody:
         assert body.in_temperature is None
         assert body.protection is False
         assert body.memory is None
+        assert body.one_egg is None
+        assert body.two_egg is None
         assert not hasattr(body, "day_water_consumption")
         assert not hasattr(body, "water_consumption")
         assert not hasattr(body, "volume")
@@ -237,6 +241,7 @@ class TestE2GeneralMessageBody:
         raw[25] = 0x02  # water consumption high byte
         raw[27] = 5  # volume
         raw[28] = 3  # rate
+        raw[33] = 0x30  # one_egg and two_egg
         raw[34] = 20  # heating power
         body = E2GeneralMessageBody(raw)
         assert body.power is True
@@ -279,6 +284,8 @@ class TestE2GeneralMessageBody:
         assert body.water_consumption == 544
         assert body.volume == 5
         assert body.rate == 300
+        assert body.one_egg is True
+        assert body.two_egg is True
         assert body.heating_power == 2000
 
 

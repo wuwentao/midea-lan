@@ -123,6 +123,18 @@ class TestNewProtocolSet:
         )
 
     @pytest.mark.parametrize(
+        ("efficient", "flag"),
+        [(True, 0x10), (False, 0x00)],
+    )
+    def test_body_efficient(self, efficient: bool, flag: int) -> None:
+        """Test efficient uses the Lua mode-command representation."""
+        msg = NewProtocolSet(protocol_version=ProtocolVersion.V1)
+        msg.efficient = efficient
+        assert msg._body == bytearray(
+            [0x03, flag, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )
+
+    @pytest.mark.parametrize(
         ("memory", "flag"),
         [(True, 0x80), (False, 0x00)],
     )

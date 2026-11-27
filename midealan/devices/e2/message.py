@@ -17,6 +17,8 @@ MODE_BODY_LENGTH = 9
 MODE_COMMAND = 0x03
 EPLUS_MODE_BYTE = 1
 EPLUS_MODE_FLAG = 0x01
+EFFICIENT_MODE_BYTE = 1
+EFFICIENT_MODE_FLAG = 0x10
 MEMORY_MODE_BYTE = 3
 MEMORY_MODE_FLAG = 0x80
 
@@ -105,6 +107,7 @@ class NewProtocolSet(MessageE2Base):
         self.smart_sterilize: bool | None = None
         self.uv_sterilize: bool | None = None
         self.eplus: bool | None = None
+        self.efficient: bool | None = None
         self.memory: bool | None = None
 
     @staticmethod
@@ -123,6 +126,10 @@ class NewProtocolSet(MessageE2Base):
         if self.eplus is not None:
             value = EPLUS_MODE_FLAG if self.eplus else 0x00
             return self._mode_body(EPLUS_MODE_BYTE, value)
+        # T_0000_E2_24.lua encodes efficient in the same mutually exclusive mode.
+        if self.efficient is not None:
+            value = EFFICIENT_MODE_FLAG if self.efficient else 0x00
+            return self._mode_body(EFFICIENT_MODE_BYTE, value)
         # memory (Memo U): "mode" command 0x03, flag on the 4th body byte (0x80)
         if self.memory is not None:
             value = MEMORY_MODE_FLAG if self.memory else 0x00

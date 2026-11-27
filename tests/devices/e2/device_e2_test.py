@@ -365,3 +365,16 @@ class TestMideaE2Device:
         assert message._body == bytearray(
             [0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         )
+
+    def test_set_efficient_uses_mode_command(self) -> None:
+        """Test efficient is sent with the Lua mode command."""
+        device = self._device('{"old_protocol": "false"}')
+        with patch.object(device, "build_send") as mock_build_send:
+            device.set_attribute(DeviceAttributes.efficient.value, True)
+            mock_build_send.assert_called_once()
+            message = mock_build_send.call_args[0][0]
+        assert isinstance(message, NewProtocolSet)
+        assert message.efficient is True
+        assert message._body == bytearray(
+            [0x03, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+        )

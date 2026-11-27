@@ -105,10 +105,10 @@ working from a checkout, replace `midealan` in the examples below with
 `discover` (for V3 devices), `info`, and `download` sign in to a Midea cloud account to
 retrieve each device's token/key or cloud-side details. They share these options:
 
-- `--username` / `-u`, `--password` / `-p`, and `--cloud-name` / `-cn`.
+- `--username` / `-u`, `--password` / `-p`, and `--cloud` / `-cn`.
 - `--debug` / `-d` turns on debug logging (available on every command).
 
-Supported `--cloud-name` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
+Supported `--cloud` values are `美的美居`, `SmartHome`, `Midea Air`, `NetHome Plus`,
 and `Ariston Clima`.
 
 `save` writes the credentials to a `midea-lan.json` config file so later commands can omit
@@ -118,10 +118,10 @@ username, password, and cloud name you did not pass on the command line.
 
 ```bash
 # store credentials in the current directory (./midea-lan.json)
-midealan save --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan save --cloud "美的美居" --username "user@example.com" --password "secret"
 
 # store them in the per-user config folder instead
-midealan save --user --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan save --user --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 #### Discovering devices on the LAN
@@ -132,11 +132,11 @@ V3 devices need cloud credentials so the command can fetch their token/key.
 
 ```bash
 # scan the whole LAN
-midealan discover --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan discover --cloud "美的美居" --username "user@example.com" --password "secret"
 
 # query a single device
 midealan discover --host 192.0.2.121 \
-  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+  --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 `--get_sn` reads only the device serial number instead of the full attribute set. On 2024+
@@ -152,7 +152,7 @@ model, sn8, Wi-Fi module version, and online state. The Wi-Fi version is only re
 the `美的美居` cloud; other clouds leave it blank.
 
 ```bash
-midealan info --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan info --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 ```text
@@ -182,7 +182,7 @@ discovery step.
 
 ```bash
 midealan setattr 192.0.2.121 power true --attr-type bool \
-  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+  --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 The `download` command has its own section below.
@@ -203,24 +203,37 @@ link that pull request from the `midea-lan` pull request.
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
-  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX] | \
-  --device-type HEX [--device-model SN8] [--device-subtype VALUE]]
+  --cloud CLOUD [--host HOST | --sn SERIAL [--type HEX] | \
+  --type HEX [--model SN8] [--subtype VALUE]]
 ```
+
+Choose whichever input is available; the identity-based options extend the existing
+serial-number workflow and do not replace it:
+
+- `--host HOST`: discover one LAN appliance and use its identity.
+- `--sn SERIAL`: download directly with the complete serial number. Add
+  `--type HEX` only when the serial or cloud account cannot identify the type.
+- `--type HEX --model SN8 [--subtype VALUE]`: download without a
+  complete serial when the 8-character SN8/appModel is known.
+- `--type HEX --subtype VALUE`: download subtype/common Lua without a
+  serial or SN8; an exact plugin cannot be selected in this mode.
+- No device selector: process every appliance in the cloud account.
 
 Download for a device discovered at a LAN address:
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --cloud "美的美居" --username "user@example.com" --password "password" \
   --host 192.0.2.121
 ```
 
-Download for one serial number from the cloud account:
+Download directly with one complete serial number from the cloud account (the original
+SN workflow remains fully supported):
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3"
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3"
 ```
 
 Pass an explicit hexadecimal device type when the serial number does not identify the
@@ -228,54 +241,54 @@ device type correctly:
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3" --device-type AC
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3" --type AC
 ```
 
 A complete serial number is not required when the device type and its 8-character
-SN8/appModel are known. `--device-model` means this protocol/plugin model identifier,
+SN8/appModel are known. `--model` means this protocol/plugin model identifier,
 not the marketing product name:
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
-  --device-type AC --device-model 22013279 --device-subtype 8
+  --cloud "美的美居" --username "user@example.com" --password "password" \
+  --type AC --model 22013279 --subtype 8
 ```
 
 The matching protocol is
 [`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua).
 
-The subtype is the device `deviceSubType`/cloud `modelNumber` (also accepted through the
-`--model-number` alias). It is normally numeric, although some overseas clouds use an
-alphanumeric model number. It may be omitted when the SN8 is enough to select a
+The subtype is the device `deviceSubType`/cloud `modelNumber`. It is normally numeric,
+although some overseas clouds use an alphanumeric model number. It may be omitted when
+the SN8 is enough to select a
 model-specific Lua. A type plus subtype can also download the matching subtype/common
 Lua without either SN or SN8:
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
-  --device-type DB --device-subtype 16695
+  --cloud "美的美居" --username "user@example.com" --password "password" \
+  --type DB --subtype 16695
 ```
 
 DB subtype `16695` resolves to
 [`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua).
 
 Plugin matching uses device type plus SN8 and does not use subtype. Consequently the
-CLI skips plugin download when `--device-model` is absent, rather than accepting a
+CLI skips plugin download when `--model` is absent, rather than accepting a
 possibly unrelated generic plugin from the cloud.
 
 Omit all device identity options to process every appliance in the cloud account:
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password"
+  --cloud "SmartHome" --username "user@example.com" --password "password"
 ```
 
 `--host` takes precedence when it is supplied with other identity options; LAN
 discovery provides the serial number, type, model, and subtype. For a serial-number
-download, the device type is resolved in this order: `--device-type`, a matching
+download, the device type is resolved in this order: `--type`, a matching
 appliance in the cloud account, then the legacy type byte in the serial number. A
-malformed or unsupported serial-number fallback uses type `0`, so pass `--device-type`
+malformed or unsupported serial-number fallback uses type `0`, so pass `--type`
 when known.
 
 Each appliance is handled independently during account-wide downloads. A Lua or plugin

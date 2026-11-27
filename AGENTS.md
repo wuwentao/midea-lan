@@ -93,27 +93,35 @@ From a source checkout, replace `midealan` below with
 
 ```bash
 # Discover one LAN appliance and use its cloud identity.
-midealan download --cloud-name "SmartHome" --username USER --password PASSWORD \
+midealan download --cloud "SmartHome" --username USER --password PASSWORD \
   --host 192.0.2.121
 
-# Resolve one complete serial number through the cloud account.
-midealan download --cloud-name "SmartHome" --username USER --password PASSWORD \
-  --device-sn SERIAL --device-type AC
+# Resolve one complete serial number directly through the cloud account.
+midealan download --cloud "SmartHome" --username USER --password PASSWORD \
+  --sn SERIAL
+
+# Keep the complete-SN workflow and override only a type it cannot identify.
+midealan download --cloud "SmartHome" --username USER --password PASSWORD \
+  --sn SERIAL --type AC
 
 # A complete serial is not required when type and SN8/appModel are known.
-midealan download --cloud-name "美的美居" --username USER --password PASSWORD \
-  --device-type AC --device-model 22013279 --device-subtype 8
+midealan download --cloud "美的美居" --username USER --password PASSWORD \
+  --type AC --model 22013279 --subtype 8
 
 # Type plus subtype/modelNumber can select subtype/common Lua without SN8.
-midealan download --cloud-name "美的美居" --username USER --password PASSWORD \
-  --device-type DB --device-subtype 16695
+midealan download --cloud "美的美居" --username USER --password PASSWORD \
+  --type DB --subtype 16695
 
 # Omit identity selectors to process every appliance in the account.
-midealan download --cloud-name "SmartHome" --username USER --password PASSWORD
+midealan download --cloud "SmartHome" --username USER --password PASSWORD
 ```
 
-`--device-model` is the 8-character SN8/appModel used for Lua and plugin matching,
-not a marketing model name. `--device-subtype` (alias `--model-number`) is the cloud
+These are parallel choices based on the identity data available. The type/model/subtype
+forms extend the original complete-SN download and must not replace or remove the `--sn`
+path from code, tests, README examples, or device-development guidance.
+
+`--model` is the 8-character SN8/appModel used for Lua and plugin matching,
+not a marketing model name. `--subtype` is the cloud
 `modelNumber`/device `deviceSubType`; it may be numeric or alphanumeric. The CLI creates
 the 32-character serial shape required by the cloud when no complete serial is available.
 Plugin matching needs type plus SN8 and does not use subtype, so subtype-only downloads

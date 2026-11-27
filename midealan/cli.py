@@ -6,7 +6,7 @@ import inspect
 import json
 import logging
 import sys
-from argparse import ArgumentParser, BooleanOptionalAction, Namespace
+from argparse import SUPPRESS, ArgumentParser, BooleanOptionalAction, Namespace
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -58,7 +58,7 @@ class MideaCLI:
     def _has_user_credentials(self) -> bool:
         """Return whether the user supplied their own cloud account.
 
-        Without all three of ``--cloud-name``, ``--username`` and
+        Without all three of ``--cloud``, ``--username`` and
         ``--password``, :meth:`_get_cloud` silently falls back to the shared
         preset account, which authenticates but does not list the user's own
         devices.
@@ -115,7 +115,7 @@ class MideaCLI:
         if not self._has_user_credentials():
             _LOGGER.error(
                 "This is a TLS (udp_version>=4) device: LAN control needs a "
-                "certificate from your cloud account. Re-run with --cloud-name, "
+                "certificate from your cloud account. Re-run with --cloud, "
                 "--username and --password.",
             )
             return None
@@ -404,7 +404,7 @@ class MideaCLI:
             _LOGGER.error(
                 "This device's serial is encrypted on the LAN and %d devices of "
                 "type %s exist in the cloud account; cannot pick one. Re-run with "
-                "--device-sn instead of --host to choose the serial explicitly.",
+                "--sn instead of --host to choose the serial explicitly.",
                 len(matches),
                 hex(device_type),
             )
@@ -439,7 +439,7 @@ class MideaCLI:
                 _LOGGER.error(
                     "This device's serial is encrypted on the LAN and can only "
                     "be resolved from your cloud account. Re-run with "
-                    "--cloud-name, --username and --password so the serial can "
+                    "--cloud, --username and --password so the serial can "
                     "be fetched from the cloud.",
                 )
                 return
@@ -479,15 +479,14 @@ class MideaCLI:
         """Download with an explicit type plus model and/or subtype."""
         if not self.namespace.device_type:
             _LOGGER.error(
-                "--device-type is required when downloading without --host or "
-                "--device-sn.",
+                "--type is required when downloading without --host or --sn.",
             )
             return
         device_type = int.from_bytes(self.namespace.device_type)
         device_model = self.namespace.device_model
         if device_model is not None and len(device_model) != SN8_LENGTH:
             _LOGGER.error(
-                "--device-model must be the 8-character SN8/appModel value.",
+                "--model must be the 8-character SN8/appModel value.",
             )
             return
         device_sn = self._synthetic_serial(device_type, device_model)
@@ -506,7 +505,7 @@ class MideaCLI:
         the legacy behavior intact while fixing device types the serial number
         cannot express:
 
-        1. an explicit ``--device-type`` argument;
+        1. an explicit ``--type`` argument;
         2. the device's entry in the cloud account -- authoritative, and needed
            because some serials (e.g. air conditioners) carry ``00`` where the
            type byte would be;
@@ -563,9 +562,9 @@ class MideaCLI:
 
         * ``--host``: discover the device on the LAN; its type, model, and
           subtype come from the discovery reply.
-        * ``--device-sn``: download a single device by serial number (see
+        * ``--sn``: download a single device by serial number (see
           :meth:`_download_by_sn` for how the device type is resolved).
-        * ``--device-type`` with model/subtype metadata: synthesize the lookup
+        * ``--type`` with model/subtype metadata: synthesize the lookup
           serial shape without requiring the real serial.
         * no identity arguments: download every device in the cloud account.
         """
@@ -798,10 +797,18 @@ def main() -> NoReturn:
         help="Set cloud password",
     )
     common_parser.add_argument(
-        "--cloud-name",
+        "--cloud",
         "-cn",
+        dest="cloud_name",
         type=str,
         help="Set Cloud name",
+        choices=SUPPORTED_CLOUDS.keys(),
+    )
+    common_parser.add_argument(
+        "--cloud-name",
+        dest="cloud_name",
+        type=str,
+        help=SUPPRESS,
         choices=SUPPORTED_CLOUDS.keys(),
     )
 
@@ -854,19 +861,47 @@ def main() -> NoReturn:
         parents=[common_parser],
     )
     download_parser.add_argument(
-        "--device-type",
-        help="Device Type",
+        "--type",
+        dest="device_type",
+        help="Hexadecimal device type.",
         type=bytes.fromhex,
     )
-    download_parser.add_argument("--device-sn", help="Device SN")
+    download_parser.add_argument(
+        "--device-type",
+        dest="device_type",
+        help=SUPPRESS,
+        type=bytes.fromhex,
+    )
+    download_parser.add_argument(
+        "--sn",
+        dest="device_sn",
+        help="Complete device serial number.",
+    )
+    download_parser.add_argument(
+        "--device-sn",
+        dest="device_sn",
+        help=SUPPRESS,
+    )
+    download_parser.add_argument(
+        "--model",
+        dest="device_model",
+        help="8-character device SN8/appModel (a full SN is not required).",
+    )
     download_parser.add_argument(
         "--device-model",
-        help="8-character device SN8/appModel (a full SN is not required).",
+        dest="device_model",
+        help=SUPPRESS,
+    )
+    download_parser.add_argument(
+        "--subtype",
+        dest="device_subtype",
+        help="Device subtype/cloud modelNumber.",
     )
     download_parser.add_argument(
         "--device-subtype",
         "--model-number",
-        help="Device subtype/cloud modelNumber.",
+        dest="device_subtype",
+        help=SUPPRESS,
     )
     download_parser.add_argument(
         "--host",

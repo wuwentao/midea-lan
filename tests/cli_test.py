@@ -7,6 +7,7 @@ import subprocess
 import sys
 import warnings
 from argparse import Namespace
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -685,7 +686,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             await self.cli.download()
             mock_cloud_instance.download_lua.assert_not_called()
 
-            # id absent and ambiguous type match: stop and ask for --device-sn
+            # id absent and ambiguous type match: stop and ask for --sn
             mock_cloud_instance.list_appliances.return_value = {
                 7: cloud_appliance,
                 8: {**cloud_appliance, "sn": "00000051222270043261305102939999"},
@@ -701,7 +702,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             with self.assertLogs("cli", level="ERROR") as logs:
                 await self.cli.download()
             assert any(
-                "--cloud-name" in line and "--username" in line for line in logs.output
+                "--cloud" in line and "--username" in line for line in logs.output
             )
             mock_cloud_instance.list_appliances.assert_not_called()
             mock_cloud_instance.download_lua.assert_not_called()
@@ -762,7 +763,7 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             with self.assertLogs("cli", level="ERROR") as logs:
                 await self.cli.download()
             mock_cloud.download_lua.assert_not_awaited()
-            assert any("--device-type is required" in line for line in logs.output)
+            assert any("--type is required" in line for line in logs.output)
 
             # Reject marketing model names and truncated SN8 values instead of
             # silently shifting the synthetic serial offsets.
@@ -1124,6 +1125,100 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
 
         assert exit_code == 0
         mock_run.assert_called_once()
+
+    def test_download_identity_argument_aliases(self) -> None:
+        """Short options and compatibility aliases populate the same fields."""
+        argument_sets = [
+            [
+                "--cloud",
+                "SmartHome",
+                "--sn",
+                "SERIAL",
+                "--type",
+                "AC",
+                "--model",
+                "22013279",
+                "--subtype",
+                "8",
+            ],
+            [
+                "--cloud-name",
+                "SmartHome",
+                "--device-sn",
+                "SERIAL",
+                "--device-type",
+                "AC",
+                "--device-model",
+                "22013279",
+                "--device-subtype",
+                "8",
+            ],
+            [
+                "--cloud-name",
+                "SmartHome",
+                "--device-sn",
+                "SERIAL",
+                "--device-type",
+                "AC",
+                "--device-model",
+                "22013279",
+                "--model-number",
+                "8",
+            ],
+        ]
+        for identity_args in argument_sets:
+            with (
+                self.subTest(identity_args=identity_args),
+                TemporaryDirectory() as tmpdir,
+            ):
+                config_file = Path(tmpdir) / "missing.json"
+                exit_code: int | str | None = None
+                with (
+                    patch.object(sys, "argv", ["midealan", "download", *identity_args]),
+                    patch(
+                        "midealan.cli.get_config_file_path",
+                        return_value=config_file,
+                    ),
+                    patch.object(MideaCLI, "run") as mock_run,
+                ):
+                    try:
+                        main()
+                    except SystemExit as exc:
+                        exit_code = exc.code
+
+                assert exit_code == 0
+                namespace = mock_run.call_args.args[0]
+                assert namespace.device_sn == "SERIAL"
+                assert namespace.device_type == bytes.fromhex("AC")
+                assert namespace.device_model == "22013279"
+                assert namespace.device_subtype == "8"
+                assert namespace.cloud_name == "SmartHome"
+
+    def test_download_help_shows_only_short_identity_options(self) -> None:
+        """Help recommends concise options while compatibility aliases stay hidden."""
+        exit_code: int | str | None = None
+        with (
+            patch.object(sys, "argv", ["midealan", "download", "--help"]),
+            patch("sys.stdout", new_callable=StringIO) as stdout,
+        ):
+            try:
+                main()
+            except SystemExit as exc:
+                exit_code = exc.code
+
+        assert exit_code == 0
+        help_text = stdout.getvalue()
+        for option in ("--cloud", "--sn", "--type", "--model", "--subtype"):
+            assert option in help_text
+        for alias in (
+            "--cloud-name",
+            "--device-sn",
+            "--device-type",
+            "--device-model",
+            "--device-subtype",
+            "--model-number",
+        ):
+            assert alias not in help_text
 
     def test_main_module_entry(self) -> None:
         """Test the __main__ guard when running the module as a script."""

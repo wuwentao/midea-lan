@@ -104,10 +104,10 @@ uv run python -m midealan.cli -h
 `discover`（针对 V3 设备）、`info` 和 `download` 需要登录美的云账号，以获取设备的
 token/key 或云端信息。它们共用以下参数：
 
-- `--username` / `-u`、`--password` / `-p` 和 `--cloud-name` / `-cn`。
+- `--username` / `-u`、`--password` / `-p` 和 `--cloud` / `-cn`。
 - `--debug` / `-d` 开启调试日志（所有子命令均可用）。
 
-`--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
+`--cloud` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
 `Ariston Clima`。
 
 `save` 会把凭据写入 `midea-lan.json` 配置文件，之后的命令便可省略这些参数。不加 `--user`
@@ -116,10 +116,10 @@ token/key 或云端信息。它们共用以下参数：
 
 ```bash
 # 将凭据保存到当前目录（./midea-lan.json）
-midealan save --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan save --cloud "美的美居" --username "user@example.com" --password "secret"
 
 # 改为保存到用户配置目录
-midealan save --user --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan save --user --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 #### 在局域网发现设备
@@ -129,11 +129,11 @@ midealan save --user --cloud-name "美的美居" --username "user@example.com" -
 
 ```bash
 # 扫描整个局域网
-midealan discover --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan discover --cloud "美的美居" --username "user@example.com" --password "secret"
 
 # 仅查询单台设备
 midealan discover --host 192.0.2.121 \
-  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+  --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 `--get_sn` 只读取设备序列号，而不读取完整属性。2024 年后的 TLS 设备在局域网上的序列号是加密
@@ -146,7 +146,7 @@ midealan discover --host 192.0.2.121 \
 型号、sn8、Wi-Fi 模组版本和在线状态。Wi-Fi 版本仅 `美的美居` 云会返回，其他云留空。
 
 ```bash
-midealan info --cloud-name "美的美居" --username "user@example.com" --password "secret"
+midealan info --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 ```text
@@ -174,7 +174,7 @@ midealan decode aa20ac00000000000003418100ff03ff000200000000000000000000000003cd
 
 ```bash
 midealan setattr 192.0.2.121 power true --attr-type bool \
-  --cloud-name "美的美居" --username "user@example.com" --password "secret"
+  --cloud "美的美居" --username "user@example.com" --password "secret"
 ```
 
 `download` 子命令的详细说明见下一节。
@@ -191,77 +191,88 @@ midealan setattr 192.0.2.121 power true --attr-type bool \
 
 ```text
 midealan download [--debug] --username USERNAME --password PASSWORD \
-  --cloud-name CLOUD [--host HOST | --device-sn SERIAL [--device-type HEX] | \
-  --device-type HEX [--device-model SN8] [--device-subtype VALUE]]
+  --cloud CLOUD [--host HOST | --sn SERIAL [--type HEX] | \
+  --type HEX [--model SN8] [--subtype VALUE]]
 ```
 
-`--cloud-name` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
+以下方式是并列选择；新增的身份参数不会取代原有的完整 SN 下载方式：
+
+- `--host HOST`：发现一台 LAN 设备并使用其身份信息下载。
+- `--sn SERIAL`：直接使用完整 SN 下载。仅当 SN 或云账号无法确定设备类型时，
+  才需要额外传入 `--type HEX`。
+- `--type HEX --model SN8 [--subtype VALUE]`：已知 8 位
+  SN8/appModel 时，无需完整 SN 即可下载。
+- `--type HEX --subtype VALUE`：没有 SN/SN8 时下载 subtype/通用 Lua；
+  此方式无法精确选择插件。
+- 不传设备选择参数：处理云账号内的全部设备。
+
+`--cloud` 支持的值为：`美的美居`、`SmartHome`、`Midea Air`、`NetHome Plus` 和
 `Ariston Clima`。
 
 按局域网地址发现并下载一台设备：
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
+  --cloud "美的美居" --username "user@example.com" --password "password" \
   --host 192.0.2.121
 ```
 
-按云账号内的设备序列号下载：
+直接使用完整 SN 下载云账号内的单台设备（原有 SN 下载方式继续完整支持）：
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3"
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3"
 ```
 
 当序列号无法正确推导设备类型时，可以显式传入十六进制设备类型：
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3" --device-type AC
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3" --type AC
 ```
 
 如果已知设备类型和 8 位 SN8/appModel，则不需要提供完整 SN。这里的
-`--device-model` 是云端用于匹配协议与插件的型号标识，并非商品宣传型号：
+`--model` 是云端用于匹配协议与插件的型号标识，并非商品宣传型号：
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
-  --device-type AC --device-model 22013279 --device-subtype 8
+  --cloud "美的美居" --username "user@example.com" --password "password" \
+  --type AC --model 22013279 --subtype 8
 ```
 
 对应协议为
 [`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua)。
 
-subtype 指设备的 `deviceSubType`（云端字段名为 `modelNumber`，也可通过别名
-`--model-number` 传入）。该值通常为数字，部分海外云使用字母数字型号。当 SN8 已足以
+subtype 指设备的 `deviceSubType`（云端字段名为 `modelNumber`）。该值通常为数字，
+部分海外云使用字母数字型号。当 SN8 已足以
 匹配型号专用 Lua 时可省略 subtype。也可以只用类型和 subtype，在没有 SN/SN8 时下载
 对应的 subtype Lua 或通用 Lua：
 
 ```bash
 midealan download \
-  --cloud-name "美的美居" --username "user@example.com" --password "password" \
-  --device-type DB --device-subtype 16695
+  --cloud "美的美居" --username "user@example.com" --password "password" \
+  --type DB --subtype 16695
 ```
 
 DB subtype `16695` 对应
 [`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua)。
 
-插件只按设备类型与 SN8 匹配，不使用 subtype。因此未提供 `--device-model` 时，CLI
+插件只按设备类型与 SN8 匹配，不使用 subtype。因此未提供 `--model` 时，CLI
 会跳过插件下载，避免把云端返回的其他通用插件误认为目标设备插件。
 
 省略所有设备身份参数时，会处理云账号内的全部设备：
 
 ```bash
 midealan download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password"
+  --cloud "SmartHome" --username "user@example.com" --password "password"
 ```
 
 同时传入 `--host` 和其他身份参数时，`--host` 优先；程序会通过局域网发现获取序列号、
 设备类型、型号和 subtype。按序列号下载时，设备类型按以下顺序确定：
-`--device-type`、云账号中匹配设备的信息、序列号中的旧格式类型字节。序列号格式错误或
-不支持旧格式回退时，类型会使用 `0`，因此已知类型时应传入 `--device-type`。
+`--type`、云账号中匹配设备的信息、序列号中的旧格式类型字节。序列号格式错误或
+不支持旧格式回退时，类型会使用 `0`，因此已知类型时应传入 `--type`。
 
 批量下载时，每台设备独立处理；某台设备的 Lua 或插件下载失败只会记录日志，后续设备仍会
 继续处理。`美的美居` 与 `SmartHome` 支持 Lua 和插件下载。旧版 `Midea Air`、

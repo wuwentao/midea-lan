@@ -86,34 +86,38 @@ The Midea cloud ships a per-model Lua file that defines the byte layout of every
 query, report, and control message. This is the source of truth for the
 implementation.
 
-### 2.1 Download the Lua by device identity
+### 2.1 Download the Lua by serial number or other device identity
 
 Use the `midealan` CLI `download` command (see the
 [README](../README.md#downloading-cloud-lua-and-plugin-files) for full options).
 From a checkout, replace `midealan` with `uv run python -m midealan.cli`:
 
+The complete-SN command remains the primary direct lookup when the serial is available;
+the model/subtype commands below are additional alternatives, not replacements.
+
 ```bash
 uv run python -m midealan.cli download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-sn "0000005112429652937220340014X2X3"
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --sn "0000005112429652937220340014X2X3"
 ```
 
-If the serial number does not resolve the device type correctly, pass it
-explicitly with `--device-type HEX` (for example `--device-type D9`). You can
-download without the complete serial when the 8-character SN8/appModel is known:
+If the serial number does not resolve the device type correctly, keep using the same
+`--sn` command and additionally pass `--type HEX` (for example `--type D9`). When no
+complete serial is available, the 8-character SN8/appModel provides another download
+method:
 
 ```bash
 uv run python -m midealan.cli download \
-  --cloud-name "SmartHome" --username "user@example.com" --password "password" \
-  --device-type AC --device-model 22013279 --device-subtype 8
+  --cloud "SmartHome" --username "user@example.com" --password "password" \
+  --type AC --model 22013279 --subtype 8
 ```
 
 This example retrieves
 [`T_0000_AC_22013279_2025030601.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xAC/T_0000_AC_22013279_2025030601.lua).
 
-`--device-subtype` is the device `deviceSubType`/cloud `modelNumber` (normally
+`--subtype` is the device `deviceSubType`/cloud `modelNumber` (normally
 numeric; some overseas clouds use an alphanumeric model number). A type and subtype
-without `--device-model` can select subtype/common Lua, but an exact plugin requires
+without `--model` can select subtype/common Lua, but an exact plugin requires
 the SN8. You can also download for a LAN device with `--host`, or for the whole
 account by omitting all identity options. The Lua (and, where supported, the plugin)
 files are written to the current working directory — use a fresh empty directory to
@@ -121,6 +125,10 @@ keep them together.
 
 For a subtype-only example, DB subtype `16695` resolves to
 [`T_0000_DB_41.lua`](https://github.com/wuwentao/midea-lua/blob/main/lua/0xDB/T_0000_DB_41.lua).
+
+Choose the input that is available: `--host`, complete `--sn`, complete SN plus an
+explicit `--type`, `--type` + `--model`, `--type` + `--subtype`, or no selector for the
+whole account. All methods remain supported.
 
 ### 2.2 Submit the Lua to the reference repo
 

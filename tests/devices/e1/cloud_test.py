@@ -290,3 +290,15 @@ def test_e1_cloud_client_rejects_unsupported_cloud() -> None:
     """Reject cloud names that are absent from the shared registry."""
     with pytest.raises(CloudError, match="Unsupported cloud: Invalid"):
         E1CloudClient("Invalid", Mock(), "account", "password")
+
+
+@pytest.mark.parametrize(
+    "cloud_name",
+    ["Midea Air", "NetHome Plus", "Ariston Clima", "Toshiba Iolife"],
+)
+def test_e1_cloud_client_rejects_cloud_without_signed_proxy(
+    cloud_name: str,
+) -> None:
+    """Reject registered clouds whose API URL has no proxy alias."""
+    with pytest.raises(CloudError, match="does not support E1 reports"):
+        E1CloudClient(cloud_name, Mock(), "account", "password")

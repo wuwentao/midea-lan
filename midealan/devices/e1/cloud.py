@@ -98,6 +98,11 @@ class E1CloudClient:
         if cloud_name not in SUPPORTED_CLOUDS:
             msg = f"Unsupported cloud: {cloud_name}"
             raise CloudError(msg)
+        cloud_data = SUPPORTED_CLOUDS[cloud_name]
+        api_url = cloud_data.get("api_url") if isinstance(cloud_data, dict) else None
+        if not isinstance(api_url, str) or "alias=" not in api_url:
+            msg = f"Cloud does not support E1 reports: {cloud_name}"
+            raise CloudError(msg)
         self._cloud_name = cloud_name
         self._session = session
         self._account = account

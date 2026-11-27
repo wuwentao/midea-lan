@@ -158,6 +158,28 @@ class TestMessageSet:
 class TestE2GeneralMessageBody:
     """Test E2 general message body."""
 
+    @pytest.mark.parametrize(
+        ("tank_heat", "expected_bottom", "expected_top"),
+        [
+            (0x01, True, False),
+            (0x02, False, True),
+        ],
+    )
+    def test_tank_heat_bits_follow_lua_protocol(
+        self,
+        tank_heat: int,
+        expected_bottom: bool,
+        expected_top: bool,
+    ) -> None:
+        """Keep the raw bit mapping defined by T_0000_E2_24.lua."""
+        raw = bytearray(17)
+        raw[15] = tank_heat
+
+        body = E2GeneralMessageBody(raw)
+
+        assert body.bottom_heat is expected_bottom
+        assert body.top_heat is expected_top
+
     def test_short_body(self) -> None:
         """Test short body skips the optional trailing fields."""
         raw = bytearray(17)

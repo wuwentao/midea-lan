@@ -31,10 +31,17 @@ class E2SubType(IntEnum):
 
     T82 = 82
     T85 = 85
+    T255 = 255
     T36353 = 36353
 
 
 _LOGGER = logging.getLogger(__name__)
+
+# T_0000_E2_24.lua labels body byte 26 bit 0 as bottom_heat and bit 1 as
+# top_heat. Model 510003CN subtype 255 reports those two heater states in the
+# opposite physical order. Keep the correction limited to the verified device.
+# https://github.com/wuwentao/midea_ac_lan/issues/1264
+TANK_HEAT_REVERSED_KEYS = frozenset({("510003CN", E2SubType.T255)})
 
 
 class DeviceAttributes(StrEnum):
@@ -178,9 +185,20 @@ class MideaE2Device(MideaDevice):
         """Midea E2 device build query."""
         return [MessageQuery(self._message_protocol_version)]
 
+    def _fix_tank_heat(self, message: MessageE2Response) -> None:
+        """Correct reversed tank-heater states for verified devices."""
+        if (
+            (str(self.model), int(self.subtype)) not in TANK_HEAT_REVERSED_KEYS
+            or not hasattr(message, "bottom_heat")
+            or not hasattr(message, "top_heat")
+        ):
+            return
+        message.bottom_heat, message.top_heat = message.top_heat, message.bottom_heat
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea E2 device process message."""
         message = MessageE2Response(msg)
+        self._fix_tank_heat(message)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status = {}
         for status in self._attributes:

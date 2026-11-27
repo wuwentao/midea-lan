@@ -23,7 +23,12 @@ from midealan.devices.e2.message import (
 class TestMideaE2Device:
     """Test Midea E2 Device."""
 
-    def _device(self, customize: str = "", subtype: int = 1) -> MideaE2Device:
+    def _device(
+        self,
+        customize: str = "",
+        subtype: int = 1,
+        model: str = "test_model",
+    ) -> MideaE2Device:
         return MideaE2Device(
             name="Test Device",
             device_id=1,
@@ -32,7 +37,7 @@ class TestMideaE2Device:
             token="AA",
             key="BB",
             device_protocol=ProtocolVersion.V1,
-            model="test_model",
+            model=model,
             subtype=subtype,
             customize=customize,
         )
@@ -240,6 +245,37 @@ class TestMideaE2Device:
 
         assert status[DeviceAttributes.current_temperature.value] == 65
         assert status[DeviceAttributes.target_temperature.value] == 75
+
+    @pytest.mark.parametrize(
+        ("model", "subtype", "expected_bottom", "expected_top"),
+        [
+            ("510003CN", E2SubType.T255, False, True),
+            ("other", E2SubType.T255, True, False),
+            ("510003CN", 1, True, False),
+        ],
+    )
+    def test_process_message_reverses_tank_heat_for_verified_device_only(
+        self,
+        model: str,
+        subtype: int,
+        expected_bottom: bool,
+        expected_top: bool,
+    ) -> None:
+        """Reverse tank-heater states only for model 510003CN subtype 255."""
+
+        class FakeMessage:
+            bottom_heat = True
+            top_heat = False
+
+        device = self._device(model=model, subtype=subtype)
+        with patch(
+            "midealan.devices.e2.MessageE2Response",
+            return_value=FakeMessage(),
+        ):
+            status = device.process_message(b"")
+
+        assert status[DeviceAttributes.bottom_heat.value] is expected_bottom
+        assert status[DeviceAttributes.top_heat.value] is expected_top
 
     def test_temperature_round_trips(self) -> None:
         """What is written must read back unchanged, in both modes."""

@@ -255,7 +255,7 @@ class X9aQueryBody(MessageBody):
     """x9a query-reply status body (Lua query branch, body[0] == 0x31)."""
 
     power: bool
-    work_status: str
+    work_status: str | None
     mode: str
     hour: int
     minutes: int
@@ -273,7 +273,7 @@ class X9aQueryBody(MessageBody):
         super().__init__(body)
         raw_status = MessageBody.read_byte(body, QUERY_WORK_STATUS_BYTE)
         self.power, work_status = _decode_work_status(raw_status)
-        if work_status is not None:
+        if work_status is not None or raw_status == WORK_STATUS_POWER_OFF:
             self.work_status = work_status
         mode = MessageBody.read_byte(body, QUERY_MODE_BYTE)
         if mode in MODE_NAMES:
@@ -306,7 +306,7 @@ class X9aControlEchoBody(MessageBody):
     """
 
     power: bool
-    work_status: str
+    work_status: str | None
     lock: bool
     furnace_light: bool
     hour: int
@@ -323,15 +323,16 @@ class X9aControlEchoBody(MessageBody):
         form = MessageBody.read_byte(body, 1)
         if form == FORM_STATUS and len(body) >= ECHO_STATUS_MIN_LEN:
             raw_status = MessageBody.read_byte(body, ECHO_STATUS_WORK_STATUS_BYTE)
-            self.power, work_status = _decode_work_status(raw_status)
-            if work_status is not None:
-                self.work_status = work_status
-            self.lock = (
-                MessageBody.read_byte(body, ECHO_STATUS_LOCK_BYTE) & LOCK_MASK
-            ) == LOCK_MASK
-            self.furnace_light = (
-                MessageBody.read_byte(body, ECHO_STATUS_LIGHT_BYTE) == FLAG_ON
-            )
+            if raw_status != VALUE_INVALID:
+                self.power, work_status = _decode_work_status(raw_status)
+                if work_status is not None or raw_status == WORK_STATUS_POWER_OFF:
+                    self.work_status = work_status
+            raw_lock = MessageBody.read_byte(body, ECHO_STATUS_LOCK_BYTE)
+            if raw_lock != VALUE_INVALID:
+                self.lock = (raw_lock & LOCK_MASK) == LOCK_MASK
+            raw_light = MessageBody.read_byte(body, ECHO_STATUS_LIGHT_BYTE)
+            if raw_light != VALUE_INVALID:
+                self.furnace_light = raw_light == FLAG_ON
         elif form == FORM_COOK and len(body) >= ECHO_COOK_MIN_LEN:
             self.hour = MessageBody.read_byte(body, ECHO_COOK_HOUR_BYTE)
             self.minutes = MessageBody.read_byte(body, ECHO_COOK_MINUTES_BYTE)

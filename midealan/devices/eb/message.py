@@ -8,7 +8,7 @@ body offset ``body[n]`` directly.
 
 - Query: message type 0x03, 15-byte inner frame carrying cmd code 0xC353.
 - Control: message type 0x02, 17-byte inner frame carrying cmd code 0x2711 with
-  function_no, work_status, reserve time, fire_level and definite time.
+  function_num, work_status, reserve time, fire_level and definite time.
 - Report (0x02 / 0x03, or 0x04 with cmd 0x2714 / 0x2716) decodes the status
   record; 0x2716 carries only error_code.
 """
@@ -146,7 +146,7 @@ class MessageQuery(MessageEBBase):
 
 
 class MessageSet(MessageEBBase):
-    """eb control: function_no / work_status / time / fire_level."""
+    """eb control: function_num / work_status / time / fire_level."""
 
     def __init__(self, protocol_version: int) -> None:
         """Initialize eb message set."""
@@ -155,7 +155,7 @@ class MessageSet(MessageEBBase):
             message_type=MessageType.set,
             body_type=ListTypes(INNER_HEAD),
         )
-        self.function_no = 0
+        self.function_num = 0
         self.work_status = 0
         self.time_reserve_hr = 0
         self.time_reserve_min = 0
@@ -176,8 +176,8 @@ class MessageSet(MessageEBBase):
                 CMD_WORD,
                 CMD_CONTROL_LOW,
                 CMD_CONTROL_HIGH,
-                (self.function_no >> FUNCTION_NO_SHIFT) & FUNCTION_NO_LOW_MASK,
-                self.function_no & FUNCTION_NO_LOW_MASK,
+                (self.function_num >> FUNCTION_NO_SHIFT) & FUNCTION_NO_LOW_MASK,
+                self.function_num & FUNCTION_NO_LOW_MASK,
                 self.work_status,
                 self.time_reserve_hr,
                 self.time_reserve_min,
@@ -193,7 +193,7 @@ class EBGeneralMessageBody(MessageBody):
 
     response: str
     work_status: int
-    function_no: int
+    function_num: int
     time_running_hr: int
     time_running_min: int
     time_surplus_hr: int
@@ -213,7 +213,7 @@ class EBGeneralMessageBody(MessageBody):
         if response in RESPONSE_NAMES:
             self.response = RESPONSE_NAMES[response]
         self.work_status = MessageBody.read_byte(body, WORK_STATUS_BYTE)
-        self.function_no = (
+        self.function_num = (
             MessageBody.read_byte(body, FUNCTION_NO_HI_BYTE) << FUNCTION_NO_SHIFT
         ) + MessageBody.read_byte(body, FUNCTION_NO_LO_BYTE)
         self.time_running_hr = MessageBody.read_byte(body, TIME_RUNNING_HR_BYTE)

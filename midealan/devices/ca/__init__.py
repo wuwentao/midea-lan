@@ -1,7 +1,6 @@
 """Midea lan CA device."""
 
 import logging
-import socket
 import threading
 import time
 from dataclasses import dataclass
@@ -263,9 +262,9 @@ class MideaCADevice(MideaDevice):
             self._ca_mode_received_event_order = None
             self._ca_mode_received_at = None
 
-    def close_socket(self, sock: socket.socket | None = None) -> None:
+    def close_socket(self) -> None:
         """Clear cached mode state when the transport is disconnected."""
-        super().close_socket(sock)
+        super().close_socket()
         with self._ca_mode_lock:
             self._ca_mode_received_event_order = None
             self._ca_mode_received_at = None

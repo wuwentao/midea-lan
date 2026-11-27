@@ -385,9 +385,12 @@ class MideaCADevice(MideaDevice):
                 event_order=event_order,
             )
             pending = self._ca_mode_pending
+            # Require both receipt time and dispatch order to follow the wire write.
             if (
                 pending is not None
                 and pending.sent_order is not None
+                and pending.sent_at is not None
+                and received_at >= pending.sent_at
                 and event_order > pending.sent_order
             ):
                 if bool(raw_body[0] & pending.mask) != pending.enabled:

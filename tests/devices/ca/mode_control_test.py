@@ -415,6 +415,37 @@ def test_pre_set_status_with_delayed_dispatch_does_not_clear_pending(
         assert send.call_count == 2
 
 
+def test_pre_set_receipt_with_later_order_does_not_clear_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-write receipt cannot release the guard due to later dispatch order."""
+    device = _device()
+    clock = [100.0]
+    monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
+    device.process_message(_status(0x00))
+    with patch.object(device, "build_send", side_effect=_complete_send):
+        device.set_attribute(DeviceAttributes.storage_mode.value, True)
+
+    pending = device._ca_mode_pending
+    assert pending is not None
+    assert pending.sent_order is not None
+    assert pending.sent_at == 100.0
+
+    device._remember_ca_mode_status(
+        MessageCAResponse(_status(0x01)),
+        event_order=pending.sent_order + 1,
+        received_at=99.0,
+    )
+    assert device._ca_mode_pending is pending
+
+    device._remember_ca_mode_status(
+        MessageCAResponse(_status(0x01)),
+        event_order=pending.sent_order + 2,
+        received_at=100.0,
+    )
+    assert device._ca_mode_pending is None
+
+
 def test_confirming_status_clears_pending_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -3,6 +3,7 @@
 import json
 import logging
 from enum import StrEnum
+from threading import RLock
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
@@ -129,6 +130,11 @@ class MideaEFDevice(MideaDevice):
                 DeviceAttributes.temperature_current: None,
             },
         )
+        # Reports run on the asyncio stream loop, while synchronous setters may
+        # run in executor threads. Serialize each full-frame state snapshot,
+        # enqueue and write-only cache update so concurrent controls cannot
+        # rebuild a later frame from stale timer values.
+        self._control_lock = RLock()
         self.set_customize(customize)
 
     def build_query(self) -> list[MessageQuery]:
@@ -140,27 +146,29 @@ class MideaEFDevice(MideaDevice):
         message = MessageEFResponse(msg)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
-        for status in self._attributes:
-            if hasattr(message, str(status)):
-                value = getattr(message, str(status))
-                self._attributes[status] = value
-                new_status[str(status)] = value
+        with self._control_lock:
+            for status in self._attributes:
+                if hasattr(message, str(status)):
+                    value = getattr(message, str(status))
+                    self._attributes[status] = value
+                    new_status[str(status)] = value
         return new_status
 
     def _make_message_set(self) -> MessageSet:
         """Build a control message seeded from the current device state."""
         message = MessageSet(self._message_protocol_version)
-        for key in _SEED_BOOL:
-            current = self._attributes[key]
-            if isinstance(current, bool):
-                setattr(message, str(key), current)
-        for key in _SEED_NUMERIC:
-            current = self._attributes[key]
-            if isinstance(current, int):
-                setattr(message, str(key), current)
-        style = self._attributes[DeviceAttributes.drink_style]
-        if isinstance(style, str) and style in _DRINK_STYLES:
-            message.drink_style = style
+        with self._control_lock:
+            for key in _SEED_BOOL:
+                current = self._attributes[key]
+                if isinstance(current, bool):
+                    setattr(message, str(key), current)
+            for key in _SEED_NUMERIC:
+                current = self._attributes[key]
+                if isinstance(current, int):
+                    setattr(message, str(key), current)
+            style = self._attributes[DeviceAttributes.drink_style]
+            if isinstance(style, str) and style in _DRINK_STYLES:
+                message.drink_style = style
         return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
@@ -170,29 +178,30 @@ class MideaEFDevice(MideaDevice):
             # process_status / work time / time_max / temperature_current are
             # read-only report fields.
             return
-        message = self._make_message_set()
-        if attr in _BOOL_ATTRS:
-            setattr(message, str(attr), bool(value))
-        elif attr == DeviceAttributes.drink_style:
-            if not isinstance(value, str) or value not in _DRINK_STYLES:
-                msg = "[ef] drink_style expects warm_drink/hot_drink"
-                raise ValueWrongType(msg)
-            message.drink_style = value
-        else:
-            low, high = _NUMERIC_RANGES[attr]
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                msg = f"[ef] {attr} expects a number"
-                raise ValueWrongType(msg)
-            number = int(value)
-            if not low <= number <= high:
-                msg = f"[ef] {attr} must be in [{low}, {high}]"
-                raise ValueOutOfRange(msg)
-            setattr(message, str(attr), number)
-        self.build_send(message)
-        # Persist write-only timers after a successful send so every later
-        # full control frame preserves them instead of resetting them to zero.
-        if attr in _WRITE_ONLY:
-            self._attributes[attr] = number
+        with self._control_lock:
+            message = self._make_message_set()
+            if attr in _BOOL_ATTRS:
+                setattr(message, str(attr), bool(value))
+            elif attr == DeviceAttributes.drink_style:
+                if not isinstance(value, str) or value not in _DRINK_STYLES:
+                    msg = "[ef] drink_style expects warm_drink/hot_drink"
+                    raise ValueWrongType(msg)
+                message.drink_style = value
+            else:
+                low, high = _NUMERIC_RANGES[attr]
+                if isinstance(value, bool) or not isinstance(value, int | float):
+                    msg = f"[ef] {attr} expects a number"
+                    raise ValueWrongType(msg)
+                number = int(value)
+                if not low <= number <= high:
+                    msg = f"[ef] {attr} must be in [{low}, {high}]"
+                    raise ValueOutOfRange(msg)
+                setattr(message, str(attr), number)
+            self.build_send(message)
+            # Status reports omit timers, so retain a successfully queued
+            # value as the seed for every later full control frame.
+            if attr in _WRITE_ONLY:
+                self._attributes[attr] = number
 
     def set_customize(self, customize: str) -> None:
         """Midea ef device set customize (JSON, same style as other appliances)."""

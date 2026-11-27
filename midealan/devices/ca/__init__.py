@@ -327,17 +327,26 @@ class MideaCADevice(MideaDevice):
             pending = _PendingCAModeWrite(mask=mask, enabled=value)
             self._ca_mode_pending = pending
             try:
-                self.build_send(command)
+                self.build_send(
+                    command,
+                    on_sent=lambda: self._ca_mode_write_sent(pending),
+                )
             except Exception:
-                if self._ca_mode_pending == pending:
+                if self._ca_mode_pending is pending:
                     self._ca_mode_pending = None
                 raise
-            if self._ca_mode_pending == pending:
+
+    def _ca_mode_write_sent(self, pending: _PendingCAModeWrite) -> None:
+        """Record the mode SET only after its stream write runs on the device loop."""
+        sent_at = time.monotonic()
+        sent_order = self._next_ca_mode_event_order()
+        with self._ca_mode_lock:
+            if self._ca_mode_pending is pending:
                 self._ca_mode_pending = _PendingCAModeWrite(
-                    mask=mask,
-                    enabled=value,
-                    sent_order=self._next_ca_mode_event_order(),
-                    sent_at=time.monotonic(),
+                    mask=pending.mask,
+                    enabled=pending.enabled,
+                    sent_order=sent_order,
+                    sent_at=sent_at,
                 )
 
     def _remember_ca_mode_status(

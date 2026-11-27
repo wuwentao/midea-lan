@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Callable
 from enum import StrEnum
 from math import isfinite
 from typing import Any, ClassVar, Unpack
@@ -500,7 +501,12 @@ class MideaC3Device(MideaDevice):
         self._tbt2_probe_enabled = None
         self._feature_query_index = 0
 
-    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+    def build_send(
+        self,
+        cmd: MessageRequest,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
         """Serialize and send, preserving raw short-protocol commands."""
         if self._short_protocol and not query and isinstance(cmd, MessageQuestCustom):
             _LOGGER.debug(
@@ -508,7 +514,7 @@ class MideaC3Device(MideaDevice):
                 self.device_id,
                 cmd.body.hex(),
             )
-        super().build_send(cmd, query=query)
+        super().build_send(cmd, query=query, on_sent=on_sent)
 
     def _cache_short_x01_body(self, message: MessageC3Response) -> None:
         """Cache the latest short X01 body so writes mirror device state."""

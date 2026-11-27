@@ -604,16 +604,43 @@ class MideaDevice:
                 raise SocketException
             self._buffer += chunk
 
-    def send_message(self, data: bytes, query: bool = False) -> None:
+    def send_message(
+        self,
+        data: bytes,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
         """Send message."""
         if self._tls_enabled:
-            self.send_message_tls(data, query=query)
+            if on_sent is None:
+                self.send_message_tls(data, query=query)
+            else:
+                self.send_message_tls(data, query=query, on_sent=on_sent)
         elif self._device_protocol_version == ProtocolVersion.V3:
-            self.send_message_v3(data, msg_type=MSGTYPE_ENCRYPTED_REQUEST, query=query)
-        else:
+            if on_sent is None:
+                self.send_message_v3(
+                    data,
+                    msg_type=MSGTYPE_ENCRYPTED_REQUEST,
+                    query=query,
+                )
+            else:
+                self.send_message_v3(
+                    data,
+                    msg_type=MSGTYPE_ENCRYPTED_REQUEST,
+                    query=query,
+                    on_sent=on_sent,
+                )
+        elif on_sent is None:
             self.send_message_v2(data, query=query)
+        else:
+            self.send_message_v2(data, query=query, on_sent=on_sent)
 
-    def send_message_tls(self, data: bytes, query: bool = False) -> None:
+    def send_message_tls(
+        self,
+        data: bytes,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
         """Wrap a plaintext appliance frame as an AES-128-CCM MSWifiDatagram."""
         _ = query
         # Read codec, writer, and loop under one lock so a concurrent
@@ -646,12 +673,20 @@ class MideaDevice:
                 writer,
                 codec,
                 data,
+                on_sent,
             )
             return
         frame = codec.encode(data, MSG_TYPE_DATA_TRANSMIT)
         writer.write(frame)
+        if on_sent is not None:
+            on_sent()
 
-    def send_message_v2(self, data: bytes, query: bool = False) -> None:
+    def send_message_v2(
+        self,
+        data: bytes,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
         """Send message V2.
 
         Stays synchronous so ``set_attribute`` and every device package that
@@ -677,15 +712,19 @@ class MideaDevice:
                 self._run_scheduled_send,
                 writer,
                 lambda: data,
+                on_sent,
             )
             return
         writer.write(data)
+        if on_sent is not None:
+            on_sent()
 
     def send_message_v3(
         self,
         data: bytes,
         msg_type: int = MSGTYPE_ENCRYPTED_REQUEST,
         query: bool = False,
+        on_sent: Callable[[], None] | None = None,
     ) -> None:
         """Send message V3."""
         _ = query
@@ -697,9 +736,12 @@ class MideaDevice:
                 self._run_scheduled_send,
                 writer,
                 lambda: self._security.encode_8370(data, msg_type),
+                on_sent,
             )
             return
         writer.write(self._security.encode_8370(data, msg_type))
+        if on_sent is not None:
+            on_sent()
 
     def _require_stream_connection(
         self,
@@ -723,6 +765,7 @@ class MideaDevice:
         expected_writer: asyncio.StreamWriter,
         expected_codec: MSDatagram,
         data: bytes,
+        on_sent: Callable[[], None] | None,
     ) -> None:
         """Encode and write one TLS frame if its connection is still active."""
         if self._tls_codec is not expected_codec:
@@ -734,12 +777,14 @@ class MideaDevice:
         self._run_scheduled_send(
             expected_writer,
             lambda: expected_codec.encode(data, MSG_TYPE_DATA_TRANSMIT),
+            on_sent,
         )
 
     def _run_scheduled_send(
         self,
         expected_writer: asyncio.StreamWriter,
         build_frame: Callable[[], bytes],
+        on_sent: Callable[[], None] | None = None,
     ) -> None:
         """Build and write a frame on the stream loop for the active connection."""
         if self._writer is not expected_writer:
@@ -750,6 +795,8 @@ class MideaDevice:
             return
         try:
             expected_writer.write(build_frame())
+            if on_sent is not None:
+                on_sent()
         except (MideaLanError, OSError, RuntimeError, ValueError):
             # A fire-and-forget executor send cannot return an exception to its
             # caller. The callback is synchronous on the stream loop, so the
@@ -762,18 +809,29 @@ class MideaDevice:
             )
             self.close_socket()
 
-    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
-        """Serialize and send."""
+    def build_send(
+        self,
+        cmd: MessageRequest,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
+        """Serialize and send, optionally acknowledging the stream write."""
         data = cmd.serialize()
         _LOGGER.debug("[%s] Sending: %s, query is %s", self._device_id, cmd, query)
         if self._tls_enabled:
             # The TLS transport CCM-wraps the bare appliance frame directly; it
             # does not use the ``5a5a0111`` V1 transport envelope (that wrapper
             # would be an unrecognized inner payload the device drops silently).
-            self.send_message_tls(bytes(data), query=query)
+            if on_sent is None:
+                self.send_message_tls(bytes(data), query=query)
+            else:
+                self.send_message_tls(bytes(data), query=query, on_sent=on_sent)
             return
         msg = PacketBuilder(self._device_id, data).finalize()
-        self.send_message(msg, query=query)
+        if on_sent is None:
+            self.send_message(msg, query=query)
+        else:
+            self.send_message(msg, query=query, on_sent=on_sent)
 
     def _query_reply_ready(self, result: MessageResult) -> bool:
         """Return whether the current query's awaited reply has arrived.

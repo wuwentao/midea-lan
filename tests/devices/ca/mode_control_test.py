@@ -1,10 +1,11 @@
 """Test Midea CA refrigerator mode control."""
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from midealan.const import DeviceType, ProtocolVersion
+from midealan.device import MessageResult
 from midealan.devices.ca import (
     CAModeWritePendingError,
     DeviceAttributes,
@@ -51,6 +52,13 @@ def _status(
     return bytes(header + body + bytearray([0]))
 
 
+def _complete_send(*_args: object, **kwargs: object) -> None:
+    """Run the transport acknowledgement used by synchronous send mocks."""
+    on_sent = kwargs.get("on_sent")
+    if callable(on_sent):
+        on_sent()
+
+
 @pytest.mark.parametrize(
     ("attribute", "mask"),
     [
@@ -83,7 +91,7 @@ def test_body_length_is_strict() -> None:
 def test_missing_or_stale_status_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Absent and older-than-two-minutes status bodies cannot be written."""
     device = _device()
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         send.assert_not_called()
 
@@ -102,7 +110,7 @@ def test_invalid_status_body_is_not_cached() -> None:
         [0xAA, 0, 0, 0, 0, 0, 0, 0, ProtocolVersion.V3, MessageType.query, 0, 0],
     )
     device.process_message(short_body)
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.holiday_mode.value, True)
         send.assert_not_called()
 
@@ -110,7 +118,7 @@ def test_invalid_status_body_is_not_cached() -> None:
 def test_set_requires_status_and_waits_for_next_status() -> None:
     """Writes require a fresh status and a later status releases the guard."""
     device = _device()
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         send.assert_not_called()
 
@@ -135,7 +143,7 @@ def test_notify02_general_status_is_a_valid_set_template() -> None:
     """General-status notifications preserve existing mode bits."""
     device = _device()
     device.process_message(_status(0x01, MessageType.notify1, ListTypes.X02))
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
     command = send.call_args.args[0]
     assert command.body[0] == 0x03
@@ -149,13 +157,110 @@ def test_post_set_rejection_releases_pending_guard(
     clock = [100.0]
     monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
     device.process_message(_status(0x00))
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         clock[0] += 1.0
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         clock[0] += 1.0
         device.process_message(_status(0x00))
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
         assert send.call_count == 2
+
+
+def test_deferred_async_send_cannot_be_confirmed_before_stream_write() -> None:
+    """A status handled before the queued write cannot release the SET guard."""
+    device = _device()
+    device.process_message(_status(0x00))
+    writer = MagicMock()
+    loop = MagicMock()
+    device._device_protocol_version = ProtocolVersion.V2
+    device._writer = writer
+    device._stream_loop = loop
+
+    device.set_attribute(DeviceAttributes.storage_mode.value, True)
+
+    loop.call_soon_threadsafe.assert_called_once()
+    writer.write.assert_not_called()
+    assert device._ca_mode_pending is not None
+    assert device._ca_mode_pending.sent_order is None
+
+    device._message_received()
+    device.process_message(_status(0x00))
+    device._message_dispatch_complete()
+    assert device._ca_mode_pending is not None
+    assert device._ca_mode_pending.sent_order is None
+
+    callback, *args = loop.call_soon_threadsafe.call_args.args
+    callback(*args)
+    writer.write.assert_called_once()
+    pending_after_write = device._ca_mode_pending
+    assert pending_after_write is not None
+    assert pending_after_write.sent_order is not None
+
+    device._message_received()
+    device.process_message(_status(0x01))
+    device._message_dispatch_complete()
+    assert device._ca_mode_pending is None
+
+
+@pytest.mark.asyncio
+async def test_checked_probe_marks_receipt_before_dispatch() -> None:
+    """The checked-probe read records receipt before parsing its frame."""
+    device = _device()
+    reader = AsyncMock()
+    reader.read.return_value = b"frame"
+    device._reader = reader
+    events: list[str] = []
+
+    def parse_message(_msg: bytes) -> MessageResult:
+        events.append("parsed")
+        return MessageResult.SUCCESS
+
+    with (
+        patch.object(
+            device,
+            "_message_received",
+            side_effect=lambda: events.append("received"),
+        ),
+        patch.object(
+            device,
+            "parse_message",
+            side_effect=parse_message,
+        ),
+    ):
+        await device._await_query_reply()
+
+    assert events == ["received", "parsed"]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_marks_receipt_before_dispatch() -> None:
+    """The normal service read records receipt before parsing its frame."""
+    device = _device()
+    reader = AsyncMock()
+    reader.read.side_effect = [b"frame", b""]
+    device._reader = reader
+    device._is_run = True
+    events: list[str] = []
+
+    def parse_message(_msg: bytes) -> MessageResult:
+        events.append("parsed")
+        device._is_run = False
+        return MessageResult.SUCCESS
+
+    with (
+        patch.object(device, "_connect_loop", new_callable=AsyncMock),
+        patch.object(device, "_check_refresh", new_callable=AsyncMock),
+        patch.object(device, "_check_heartbeat"),
+        patch.object(
+            device,
+            "_message_received",
+            side_effect=lambda: events.append("received"),
+        ),
+        patch.object(device, "parse_message", side_effect=parse_message),
+    ):
+        await device._supervise()
+
+    assert events == ["received", "parsed"]
 
 
 def test_pre_set_status_with_delayed_dispatch_does_not_clear_pending(
@@ -168,7 +273,7 @@ def test_pre_set_status_with_delayed_dispatch_does_not_clear_pending(
     device.process_message(_status(0x00))
     clock[0] = 100.0
     device._message_received()
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         clock[0] = 101.0
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         clock[0] = 102.0
@@ -190,7 +295,7 @@ def test_confirming_status_clears_pending_guard(
     device = _device()
     monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: 100.0)
     device.process_message(_status(0x00))
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         device.process_message(_status(0x01))
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
@@ -209,7 +314,7 @@ def test_status_freshness_uses_receive_time_when_dispatch_is_delayed(
     clock[0] += 121.0
     device.process_message(_status(0x00))
 
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
     send.assert_not_called()
 
@@ -224,7 +329,7 @@ def test_older_status_cannot_replace_newer_cached_status() -> None:
         device._remember_ca_mode_status(newer, event_order=2, received_at=200.0)
         device._remember_ca_mode_status(older, event_order=1, received_at=100.0)
 
-        with patch.object(device, "build_send") as send:
+        with patch.object(device, "build_send", side_effect=_complete_send) as send:
             device.set_attribute(DeviceAttributes.holiday_mode.value, True)
     assert send.call_args.args[0].body[0] == 0x12
 
@@ -237,7 +342,7 @@ def test_pending_write_is_reported_after_status_expires(
     clock = [100.0]
     monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
     device.process_message(_status(0x00))
-    with patch.object(device, "build_send"):
+    with patch.object(device, "build_send", side_effect=_complete_send):
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         clock[0] += 121.0
         with pytest.raises(CAModeWritePendingError, match="waiting for device"):
@@ -252,7 +357,7 @@ def test_pending_write_recovers_after_timeout(
     clock = [100.0]
     monkeypatch.setattr("midealan.devices.ca.time.monotonic", lambda: clock[0])
     device.process_message(_status(0x00))
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         clock[0] += 241.0
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
@@ -267,7 +372,7 @@ def test_disconnect_clears_pending_write_and_cached_status() -> None:
     """Reconnect requires a new status and does not retain a pending write."""
     device = _device()
     device.process_message(_status(0x00))
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.storage_mode.value, True)
         device.close_socket()
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
@@ -288,7 +393,7 @@ def test_failed_send_does_not_publish_state_or_leave_pending() -> None:
     ):
         device.set_attribute(DeviceAttributes.holiday_mode.value, True)
     assert device.attributes[DeviceAttributes.holiday_mode] is False
-    with patch.object(device, "build_send") as send:
+    with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.holiday_mode.value, True)
         send.assert_called_once()
 

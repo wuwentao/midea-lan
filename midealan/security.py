@@ -69,6 +69,16 @@ class CloudSecurity:
         self._fixed_key = format(fixed_key, "x").encode("ascii") if fixed_key else None
         self._fixed_iv = format(fixed_iv, "x").encode("ascii") if fixed_iv else None
 
+    @property
+    def session_key(self) -> bytes | None:
+        """Return the per-session AES key, or ``None`` before login.
+
+        The key is set by :meth:`set_aes_keys` during login; for first-party
+        OBM accounts it doubles as the ECB key that decrypts the AP private key
+        value (MSmartPrivateKeyVerify's non-open path).
+        """
+        return getattr(self, "_aes_key", None)
+
     def sign(self, url: str, data: dict[str, Any] | str, random: str) -> str | None:  # noqa: ARG002
         """Sign cloud data."""
         msg: str = self._iot_key or ""
@@ -235,6 +245,23 @@ class MSmartCloudSecurity(CloudSecurity):
             13101328926877700970,
             16429062708050928556,
         )
+
+    def encrypt_account(self, account: str) -> str:
+        """Encrypt the account name for the account-routing endpoint.
+
+        The endpoint expects the account name AES-CBC encrypted with a key and
+        IV derived from ``sha256(app_key)``: key = ``sha256(app_key)[:16]`` and
+        IV = ``sha256(app_key)[16:32]`` (hex digest sliced as ASCII), where
+        ``app_key`` is this security object's login key. These vectors are
+        app-key-derived and independent of the per-session keys that
+        :meth:`set_aes_keys` installs later.
+        """
+        key_digest = sha256(self._login_key.encode("ascii")).hexdigest()
+        return self.aes_encrypt(
+            account.encode("utf-8"),
+            key_digest[:AES_KEY_LENGTH].encode("ascii"),
+            key_digest[AES_KEY_LENGTH:LUA_CBC_IV_END].encode("ascii"),
+        ).hex()
 
     def encrypt_iam_password(self, login_id: str, data: str) -> str:
         """Encrypt IAM password.

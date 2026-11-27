@@ -12,20 +12,16 @@ what the protocol actually reports.
 """
 
 import logging
-import time
 from enum import StrEnum
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
 from midealan.device import (
-    QUERY_TIMEOUT,
-    SOCKET_TIMEOUT,
     MessageResult,
     MideaDevice,
     MideaDeviceInitKwargs,
-    ResponseException,
 )
-from midealan.exceptions import SocketException, ValueOutOfRange, ValueWrongType
+from midealan.exceptions import ValueOutOfRange, ValueWrongType
 from midealan.message import MessageRequest, MessageType
 
 from .message import (
@@ -194,31 +190,25 @@ class MideaX9BDevice(MideaDevice):
             )
         super().build_send(cmd, query=query)
 
-    def _await_query_reply(self) -> None:
-        """Keep reading a checked probe until its matching business reply arrives."""
+    def _query_reply_ready(self, result: MessageResult) -> bool:
+        """Resolve a checked probe only on its matching business reply.
+
+        While a probe targets a specific family, a bare heartbeat or a reply to
+        a different family parses as SUCCESS but must not end the probe: keep
+        reading until this family's own response is recorded in
+        ``_probe_response_protocols``. With no active probe, fall back to the
+        base rule (resolve on the first fully parsed frame).
+        """
         expected = self._active_probe_protocol
         if expected is None:
-            super()._await_query_reply()
-            return
-        deadline = time.monotonic() + QUERY_TIMEOUT
-        while True:
-            if not self._socket:
-                _LOGGER.debug("[%s] device socket is none", self.device_id)
-                raise SocketException
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            self._socket.settimeout(min(remaining, QUERY_TIMEOUT))
-            msg = self._socket.recv(512)
-            if len(msg) == 0:
-                raise ConnectionResetError("Connection closed by peer.")
-            result = self.parse_message(msg)
-            if expected in self._probe_response_protocols:
-                break
-            if result in (MessageResult.PADDING, MessageResult.SUCCESS):
-                continue
-            raise ResponseException
-        self._socket.settimeout(SOCKET_TIMEOUT)
+            return super()._query_reply_ready(result)
+        # One read can batch a valid status frame and a trailing ERROR: the
+        # frame records its protocol, but the batch result is ERROR. Require
+        # SUCCESS as well so a batch ending in ERROR keeps waiting (then raises
+        # ResponseException) instead of counting the probe as answered.
+        return result == MessageResult.SUCCESS and (
+            expected in self._probe_response_protocols
+        )
 
     def _is_query_response_valid(self, cmd: MessageRequest) -> bool:
         """Require a matching x9b business response, not only a heartbeat."""

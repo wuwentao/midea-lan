@@ -8,11 +8,14 @@ import pytest
 from midealan.const import ProtocolVersion
 from midealan.devices.x9a import DeviceAttributes, Midea9aDevice
 from midealan.devices.x9a.message import (
+    CONTROL_CMD,
+    FLAG_ON,
     FORM_COOK,
     FORM_STATUS,
     POWER_OFF,
     POWER_ON,
     QUERY_CMD,
+    VALUE_INVALID,
     WORK_STATUS_WORK,
 )
 from midealan.exceptions import ValueOutOfRange, ValueWrongType
@@ -22,6 +25,12 @@ from midealan.message import MessageType
 def _query_frame(body: Sequence[int]) -> bytes:
     """Wrap a query-reply body in a full x9a frame."""
     header = bytearray([0xAA, 10 + len(body) + 1, 0x9A, 0, 0, 0, 0, 0, 3, 0x03])
+    return bytes(header + bytearray(body) + bytearray([0x00]))
+
+
+def _control_frame(body: Sequence[int]) -> bytes:
+    """Wrap a control-echo body in a full x9a frame."""
+    header = bytearray([0xAA, 10 + len(body) + 1, 0x9A, 0, 0, 0, 0, 0, 3, 0x02])
     return bytes(header + bytearray(body) + bytearray([0x00]))
 
 
@@ -84,6 +93,32 @@ class TestMidea9aDevice:
         header = bytearray([0xAA, 10 + 3 + 1, 0x9A, 0, 0, 0, 0, 0, 3, 0x02])
         frame = bytes(header + bytearray([0x22, FORM_STATUS, 0x03]) + bytearray([0]))
         assert device.process_message(frame) == {}
+
+    def test_process_power_off_clears_work_status(self, device: Midea9aDevice) -> None:
+        """A power-off report clears a previously active work status."""
+        device.process_message(_query_frame(_query_body()))
+        body = _query_body()
+        body[1] = POWER_OFF
+
+        status = device.process_message(_query_frame(body))
+
+        assert status["power"] is False
+        assert status["work_status"] is None
+        assert device.attributes[DeviceAttributes.work_status] is None
+
+    def test_process_status_echo_preserves_unchanged_fields(
+        self,
+        device: Midea9aDevice,
+    ) -> None:
+        """A status echo updates only fields not marked 0xFF unchanged."""
+        device.process_message(_query_frame(_query_body()))
+        body = [CONTROL_CMD, FORM_STATUS, VALUE_INVALID, FLAG_ON, VALUE_INVALID]
+
+        status = device.process_message(_control_frame(body))
+
+        assert status == {"lock": True}
+        assert device.attributes[DeviceAttributes.power] is True
+        assert device.attributes[DeviceAttributes.furnace_light] is False
 
     def test_set_power_on(self, device: Midea9aDevice) -> None:
         """Power on sends a FORM_STATUS control with work_status 0x02."""

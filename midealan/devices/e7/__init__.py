@@ -2,7 +2,9 @@
 
 import json
 import logging
+from collections import deque
 from enum import StrEnum
+from threading import RLock
 from typing import Any, Unpack
 
 from midealan.const import DeviceType
@@ -36,7 +38,7 @@ class DeviceAttributes(StrEnum):
 
     response = "response"
     work_status = "work_status"
-    function_no = "function_no"
+    function_num = "function_num"
     time_running_hr = "time_running_hr"
     time_running_min = "time_running_min"
     time_surplus_hr = "time_surplus_hr"
@@ -59,8 +61,8 @@ _FIXED_RANGES: dict[str, tuple[int, int]] = {
     DeviceAttributes.definite_time_hr: (TIME_HR_LOW, TIME_HR_HIGH),
     DeviceAttributes.definite_time_min: (TIME_MIN_LOW, TIME_MIN_HIGH),
 }
-# function_no range depends on the frame width (16-bit vs 32-bit layout).
-_SEED_ATTRS = (DeviceAttributes.function_no, *_FIXED_RANGES)
+# function_num range depends on the frame width (16-bit vs 32-bit layout).
+_SEED_ATTRS = (DeviceAttributes.function_num, *_FIXED_RANGES)
 
 
 class MideaE7Device(MideaDevice):
@@ -79,7 +81,7 @@ class MideaE7Device(MideaDevice):
             attributes={
                 DeviceAttributes.response: None,
                 DeviceAttributes.work_status: None,
-                DeviceAttributes.function_no: None,
+                DeviceAttributes.function_num: None,
                 DeviceAttributes.time_running_hr: None,
                 DeviceAttributes.time_running_min: None,
                 DeviceAttributes.time_surplus_hr: None,
@@ -93,52 +95,75 @@ class MideaE7Device(MideaDevice):
                 DeviceAttributes.error_code: None,
             },
         )
-        # The frame layout (16-bit vs 32-bit function_no) is keyed off the
+        # The frame layout (16-bit vs 32-bit function_num) is keyed off the
         # device subtype, mirroring the Lua getSoftVersion mapping.
         self._soft_version = soft_version_for_subtype(self.subtype)
+        # A control frame carries every writable field. Keep successful writes
+        # pending until a report confirms them so a rapid follow-up write does
+        # not rebuild the frame from stale reported state.
+        self._pending_controls: dict[str, deque[int]] = {}
+        # Reports run on the asyncio stream loop, while synchronous setters may
+        # run in an executor thread. asyncio.Lock cannot protect both call paths;
+        # this lock covers only state/frame construction, never awaited I/O.
+        self._pending_controls_lock = RLock()
         self.set_customize(customize)
 
     @property
-    def _function_no_high(self) -> int:
-        """Upper bound for function_no in the active layout."""
+    def _function_num_high(self) -> int:
+        """Upper bound for function_num in the active layout."""
         if is_32bit_layout(self._soft_version):
             return FUNCTION_NO_HIGH_32
         return FUNCTION_NO_HIGH_16
 
     def _range_for(self, attr: str) -> tuple[int, int]:
         """Return the accepted inclusive range for a writable attribute."""
-        if attr == DeviceAttributes.function_no:
-            return (FUNCTION_NO_LOW, self._function_no_high)
+        if attr == DeviceAttributes.function_num:
+            return (FUNCTION_NO_LOW, self._function_num_high)
         return _FIXED_RANGES[attr]
 
     def build_query(self) -> list[MessageQuery]:
         """Midea e7 device build query."""
         return [MessageQuery(self._soft_version)]
 
+    def reset_init_query(self) -> None:
+        """Discard controls that belonged to the invalidated connection."""
+        super().reset_init_query()
+        with self._pending_controls_lock:
+            self._pending_controls.clear()
+
     def process_message(self, msg: bytes) -> dict[str, Any]:
         """Midea e7 device process message."""
         message = MessageE7Response(msg, self._soft_version)
         _LOGGER.debug("[%s] Received: %s", self.device_id, message)
         new_status: dict[str, Any] = {}
-        for status in self._attributes:
-            if hasattr(message, str(status)):
-                value = getattr(message, str(status))
-                self._attributes[status] = value
-                new_status[str(status)] = value
+        with self._pending_controls_lock:
+            for status in self._attributes:
+                if hasattr(message, str(status)):
+                    value = getattr(message, str(status))
+                    self._attributes[status] = value
+                    status_key = str(status)
+                    pending = self._pending_controls.get(status_key)
+                    if pending and pending[0] == value:
+                        pending.popleft()
+                        if not pending:
+                            del self._pending_controls[status_key]
+                    new_status[str(status)] = value
         return new_status
 
     def _make_message_set(self) -> MessageSet:
         """Build a control message seeded from the current device state."""
         message = MessageSet(self._soft_version)
-        for key in _SEED_ATTRS:
-            current = self._attributes[key]
-            if isinstance(current, int) and not isinstance(current, bool):
-                setattr(message, str(key), current)
+        with self._pending_controls_lock:
+            for key in _SEED_ATTRS:
+                pending = self._pending_controls.get(str(key))
+                current = pending[-1] if pending else self._attributes[key]
+                if isinstance(current, int) and not isinstance(current, bool):
+                    setattr(message, str(key), current)
         return message
 
     def set_attribute(self, attr: str, value: bool | float | str) -> None:
         """Midea e7 device set attribute."""
-        if attr != DeviceAttributes.function_no and attr not in _FIXED_RANGES:
+        if attr != DeviceAttributes.function_num and attr not in _FIXED_RANGES:
             # response / running / surplus time / work_stage / error_code are
             # read-only report fields.
             return
@@ -150,9 +175,18 @@ class MideaE7Device(MideaDevice):
         if not low <= number <= high:
             msg = f"[e7] {attr} must be in [{low}, {high}]"
             raise ValueOutOfRange(msg)
-        message = self._make_message_set()
-        setattr(message, str(attr), number)
-        self.build_send(message)
+        attr_key = str(attr)
+        with self._pending_controls_lock:
+            pending = self._pending_controls.setdefault(attr_key, deque())
+            pending.append(number)
+            message = self._make_message_set()
+            try:
+                self.build_send(message)
+            except Exception:
+                pending.pop()
+                if not pending:
+                    del self._pending_controls[attr_key]
+                raise
 
     def set_customize(self, customize: str) -> None:
         """Midea e7 device set customize (JSON, same style as other appliances)."""

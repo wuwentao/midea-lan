@@ -18,6 +18,7 @@ from midealan.devices.ac.message import (
     CapabilitiesQuery,
     CapabilityTag,
     CapabilityValue,
+    DisplayToggleMode,
     GroupOneQuery,
     GroupSevenQuery,
     GroupTwoQuery,
@@ -346,6 +347,64 @@ class TestMideaACDevice:
             self.device.set_attribute(DeviceAttributes.screen_display.value, False)
             mock_build_send.assert_called_once()
             assert isinstance(mock_build_send.call_args[0][0], ToggleDisplay)
+            assert mock_build_send.call_args[0][0].mode == DisplayToggleMode.LEGACY
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("00000Q13", None), ("marketing-name", "00000Q13")],
+    )
+    def test_set_screen_display_uses_lua_frame_for_q13(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Models with a verified Lua toggle use its dedicated body."""
+        self.device._model = model
+        self.device._sn8 = sn8
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device._attributes[DeviceAttributes.screen_display] = False
+            self.device.set_attribute(DeviceAttributes.screen_display.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, ToggleDisplay)
+            assert message.mode == DisplayToggleMode.LUA_61
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("22040023", None), ("marketing-name", "22040023")],
+    )
+    def test_set_screen_display_uses_c1_lua_frame(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Models with a C1 Lua toggle select its longer display body."""
+        self.device._model = model
+        self.device._sn8 = sn8
+        with patch.object(self.device, "build_send") as mock_build_send:
+            self.device._attributes[DeviceAttributes.screen_display] = False
+            self.device.set_attribute(DeviceAttributes.screen_display.value, True)
+            message = mock_build_send.call_args[0][0]
+            assert isinstance(message, ToggleDisplay)
+            assert message.mode == DisplayToggleMode.LUA_C1
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [
+            ("24", None),
+            ("marketing-name", "24"),
+            ("75", None),
+            ("marketing-name", "75"),
+        ],
+    )
+    def test_lua_protocol_ids_do_not_select_display_frame(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Lua protocol IDs are not device model/SN8 routing keys."""
+        self.device._model = model
+        self.device._sn8 = sn8
+        assert self.device._display_toggle_mode() == DisplayToggleMode.LEGACY
 
     def test_set_attribute_eco_mode_resets_exclusive_modes(self) -> None:
         """Test eco mode set resets comfort and frost protect on general set."""
@@ -2130,6 +2189,45 @@ class TestMideaACDevice:
 
         assert status[DeviceAttributes.screen_display.value]
         assert device.attributes[DeviceAttributes.screen_display]
+
+    @pytest.mark.parametrize(
+        ("model", "sn8"),
+        [("22019053", None), ("marketing-name", "22019053")],
+    )
+    def test_process_message_uses_lua_a0_byte11_display_layout(
+        self,
+        model: str,
+        sn8: str | None,
+    ) -> None:
+        """Newer Lua families read A0 display state from byte 11 low bits."""
+        device = self._make_device(model, 1)
+        device._sn8 = sn8
+        off_body = bytearray(18)
+        off_body[11] = 0x07
+        on_body = bytearray(18)
+        on_body[14] = 0x70
+        off_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            body=off_body,
+            power=True,
+            screen_display=True,
+        )
+        on_message = SimpleNamespace(
+            body_type=ListTypes.A0,
+            body=on_body,
+            power=True,
+            screen_display=False,
+        )
+
+        with patch(
+            "midealan.devices.ac.MessageACResponse",
+            side_effect=[off_message, on_message],
+        ):
+            off_status = device.process_message(b"")
+            on_status = device.process_message(b"")
+
+        assert off_status[DeviceAttributes.screen_display.value] is False
+        assert on_status[DeviceAttributes.screen_display.value] is True
 
     @staticmethod
     def _new_protocol_temperature_response() -> bytes:

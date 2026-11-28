@@ -12,6 +12,7 @@ from midealan.devices.ac.message import (
     _B1_MAX_CAPABILITY_BATCHES,
     _B1_MAX_PROPERTIES_PER_BATCH,
     A0_A1_C0_MIN_BODY_LENGTH,
+    A5_MIN_BODY_LENGTH,
     CAPABILITY_ONLY_TAGS,
     COMMON_TAGS,
     CONFORT_MODE_MIN_LENGTH2,
@@ -19,6 +20,7 @@ from midealan.devices.ac.message import (
     NEW_PROTOCOL_WIND_ANGLE_BYTE,
     PROPERTIES_TAGS,
     SMART_DRY_MIN_LENGTH,
+    A5Body,
     CapabilitiesQuery,
     CapabilityBody,
     CapabilityTag,
@@ -3871,3 +3873,115 @@ class TestMessageSetAnion:
         msg = StateSet(protocol_version=ProtocolVersion.V1)
         msg.anion = value
         assert msg._body[8] & 0x20 == expected_bit
+
+
+class TestMessageACResponseA5:
+    """Test the A5 outdoor-unit telemetry decoder for 00000Q1A subtype 0."""
+
+    a5_header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0x02, 0x04])
+    query_header = bytearray([0xAA, 0, 0xAC, 0, 0, 0, 0, 0, 0x02, 0x03])
+    a5_heat = bytearray.fromhex(
+        "a539003900000000da07000000000000030050004b000075231900000000006692",
+    )
+    a5_off = bytearray.fromhex(
+        "a500000000000000da01000000000000030000004b0000824029000000000052bc",
+    )
+    c1_group44 = bytearray.fromhex(
+        "c1210144005eb8004b6200000000000000000000017a",
+    )
+    c1_group41_off = bytearray.fromhex(
+        "c121014100000001da055250424109000000000001a6",
+    )
+    c0_off = bytearray.fromhex(
+        "c00085147f7f003f00000066410900730000000000000030fa",
+    )
+
+    def test_a5_power_parsed(self) -> None:
+        """Test A5 power/temperature decoding on a live heating frame."""
+        response = MessageACResponse(
+            self.a5_header + self.a5_heat,
+            parse_a5_power=True,
+        )
+        assert response.compressor_frequency == 57
+        assert response.realtime_power == 2010
+        assert response.indoor_coil_temperature == 33.5
+        assert response.outdoor_coil_temperature == -7.5
+        assert response.discharge_pipe_temperature == 25
+
+    def test_a5_power_off_is_zero(self) -> None:
+        """Test A5 reports 0 W while the compressor is off."""
+        response = MessageACResponse(
+            self.a5_header + self.a5_off,
+            parse_a5_power=True,
+        )
+        assert response.compressor_frequency == 0
+        assert response.realtime_power == 0
+
+    def test_a5_power_disabled_by_default(self) -> None:
+        """Test A5 is ignored unless the model opts in."""
+        response = MessageACResponse(self.a5_header + self.a5_heat)
+        assert not hasattr(response, "realtime_power")
+
+    def test_c1_group44_does_not_override_a5_power(self) -> None:
+        """Test C1 0x44 zero realtime_power is dropped for A5 models."""
+        response = MessageACResponse(
+            self.query_header + self.c1_group44,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+
+    def test_c1_group41_zero_resets_a5_power(self) -> None:
+        """Test C1 0x41 resets realtime_power when the compressor stops."""
+        response = MessageACResponse(
+            self.query_header + self.c1_group41_off,
+            parse_a5_power=True,
+        )
+        assert response.realtime_power == 0
+
+    def test_c0_power_off_does_not_reset_a5_power(self) -> None:
+        """Test C0 indoor-unit power-off leaves the shared A5 power alone."""
+        response = MessageACResponse(
+            self.query_header + self.c0_off,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+
+    def test_a5_dispatcher_short_body_skipped(self) -> None:
+        """Test the notify1 A5 dispatcher skips a body below the minimum."""
+        body = bytearray(A5_MIN_BODY_LENGTH - 1)
+        body[0] = ListTypes.A5
+        response = MessageACResponse(
+            self.a5_header + body,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+        assert not hasattr(response, "compressor_frequency")
+        assert not hasattr(response, "indoor_coil_temperature")
+        assert not hasattr(response, "outdoor_coil_temperature")
+        assert not hasattr(response, "discharge_pipe_temperature")
+
+    def test_a5_body_short_body_guard(self) -> None:
+        """Test A5Body rejects a body below the minimum directly."""
+        body = bytearray(A5_MIN_BODY_LENGTH - 1)
+        body[0] = ListTypes.A5
+        a5 = A5Body(body)
+        assert not hasattr(a5, "realtime_power")
+        assert not hasattr(a5, "compressor_frequency")
+        assert not hasattr(a5, "indoor_coil_temperature")
+        assert not hasattr(a5, "outdoor_coil_temperature")
+        assert not hasattr(a5, "discharge_pipe_temperature")
+
+    def test_a5_frequency_echo_mismatch_rejected(self) -> None:
+        """Test A5Body rejects a frame whose frequency echo differs."""
+        body = bytearray(self.a5_heat)
+        body[1] = 57
+        body[3] = 58
+        response = MessageACResponse(
+            self.a5_header + body,
+            parse_a5_power=True,
+        )
+        assert not hasattr(response, "realtime_power")
+        assert not hasattr(response, "compressor_frequency")
+        assert not hasattr(response, "indoor_coil_temperature")
+        assert not hasattr(response, "outdoor_coil_temperature")
+        assert not hasattr(response, "discharge_pipe_temperature")

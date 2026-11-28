@@ -88,6 +88,21 @@ DAY_REPORT_TIMEOUT = ClientTimeout(20)
 # user token; callers log in again instead of retrying the same token.
 AUTH_ERROR_CODES = frozenset({40001, 40002, 44001})
 
+# udp_version>=4 "TLS" appliances (and many newer devices) are controlled by the
+# official app over the cloud rather than the LAN: it posts the same plaintext
+# appliance frame the LAN path would send to the per-cloud proxy alias below,
+# AES-encrypted under the login session key. The documented app behavior is the
+# weex luaControl/luaQuery ``mode:0`` = "prefer LAN, else WAN transparent": the
+# frame is identical, only the transport differs, so one primitive serves both
+# query and control for every device type.
+TRANSPARENT_SEND_ALIAS = "/v1/appliance/transparent/send"
+# The cloud ``order``/``reply`` wrap each frame as a comma-joined list of SIGNED
+# decimal bytes (Java ``byte``: -128..127) encoded UTF-8, then AES. These bounds
+# name that signed-byte range for the (de)serialization helpers below.
+SIGNED_BYTE_MIN = -128
+SIGNED_BYTE_MAX = 127
+SIGNED_BYTE_MODULUS = 256
+
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORTED_CLOUDS: dict[str, Any] = {
@@ -335,6 +350,38 @@ def _parse_token_list(
                 "key": token["key"].lower(),
             }
     return result
+
+
+def bytes_to_dec_string(data: bytes) -> bytes:
+    """Encode an appliance frame as the cloud ``order`` plaintext.
+
+    Each byte is rendered as a SIGNED decimal (Java ``byte``: -128..127),
+    comma-joined and UTF-8 encoded -- the exact plaintext the cloud expects
+    before AES, mirroring the app's ``bytesToDecString``. The result is returned
+    as ``bytes`` so it is fed to :meth:`CloudSecurity.aes_encrypt` as-is (a
+    ``str`` there would be hex-decoded instead).
+    """
+    return ",".join(
+        str(b - SIGNED_BYTE_MODULUS if b > SIGNED_BYTE_MAX else b) for b in data
+    ).encode("utf-8")
+
+
+def dec_string_to_bytes(dec_string: str) -> bytes:
+    """Decode a cloud ``reply`` plaintext back into an appliance frame.
+
+    Inverse of :func:`bytes_to_dec_string`: the decrypted reply is a comma-joined
+    list of signed decimals; parse each, clamp to the signed-byte range and mask
+    to an unsigned byte (mirrors the app's ``decStringToBytes``). An empty string
+    yields an empty frame.
+    """
+    if not dec_string:
+        return b""
+    result = bytearray()
+    for value in dec_string.split(","):
+        number = int(value.strip())
+        number = max(SIGNED_BYTE_MIN, min(SIGNED_BYTE_MAX, number))
+        result.append(number & (SIGNED_BYTE_MODULUS - 1))
+    return bytes(result)
 
 
 class MideaCloud:
@@ -722,6 +769,67 @@ class MideaCloud:
             raise _day_report_error(0, data.get("desc", data.get("retCode")))
         result = data.get("result")
         return result if isinstance(result, dict) else None
+
+    async def send_transparent(
+        self,
+        appliance_code: int | str,
+        data: bytes,
+    ) -> bytes | None:
+        """Send one appliance frame to the device through the cloud.
+
+        ``data`` is the same plaintext ``0xAA`` application frame the LAN path
+        builds (``MessageRequest.serialize()``) -- for a query or a control set
+        alike. It is encoded with :func:`bytes_to_dec_string` and AES-encrypted
+        under the login session key to form the ``order``, then posted to
+        :data:`TRANSPARENT_SEND_ALIAS`. The session key auto-selects ECB (Meiju
+        inland) or CBC (MSmart/overseas) -- the same key path that already
+        decrypts each appliance ``sn`` in ``list_appliances``.
+
+        Returns
+        -------
+        bytes | None
+            The decoded appliance response frame when the cloud returned one
+            synchronously, otherwise None. A None reply means the command was
+            accepted but no synchronous answer arrived (e.g. the device is
+            offline, or the reply is delivered asynchronously -- the cloud
+            answers business code 1306), which ``_api_request`` collapses to
+            None; it is not an error for a best-effort send.
+
+        Raises
+        ------
+        CloudAuthError
+            If no access token is available.
+        CloudError
+            If the cloud does not expose the transparent proxy alias.
+
+        """
+        if not self._access_token:
+            msg = "No Midea cloud access token"
+            raise CloudAuthError(msg)
+        if "alias=" not in self._api_url:
+            msg = f"Cloud {self._api_url} does not support transparent control"
+            raise CloudError(msg)
+        order = self._security.aes_encrypt(bytes_to_dec_string(data)).hex()
+        # Seed the per-cloud general fields first (like every other business
+        # method), then add the transparent-send fields. Meiju's general data is
+        # empty so its body is unchanged, while MSmart/SmartHome bodies gain the
+        # clientType/appId/deviceId fields that cloud expects alongside the order.
+        body = self._make_general_data()
+        body.update(
+            {
+                "applianceCode": str(appliance_code),
+                "order": order,
+                "timestamp": "true",
+                "isFull": "false",
+            },
+        )
+        response = await self._api_request(
+            endpoint=TRANSPARENT_SEND_ALIAS,
+            data=body,
+        )
+        if response and (reply := response.get("reply")):
+            return dec_string_to_bytes(self._security.aes_decrypt(reply))
+        return None
 
     @staticmethod
     def _get_lua_download_metadata(

@@ -1,7 +1,8 @@
 """Midea lan devices."""
 
+from collections.abc import Callable, Coroutine
 from importlib import import_module
-from typing import cast
+from typing import Any, cast
 
 from midealan.const import DeviceType, ProtocolVersion
 from midealan.device import MideaDevice
@@ -26,6 +27,9 @@ def device_selector(
     manufacturer_code: str | None = None,
     cloud_name: str | None = None,
     cert_bundle: CertBundle | None = None,
+    cloud_send_factory: (
+        Callable[[bytes], Coroutine[Any, Any, bytes | None]] | None
+    ) = None,
 ) -> MideaDevice:
     """Select and load device."""
     try:
@@ -55,6 +59,10 @@ def device_selector(
         # construction; device subclasses forward MideaDeviceInitKwargs and do
         # not accept cert_bundle as a constructor argument.
         device.apply_cert_bundle(cert_bundle)
+        # Install the optional cloud transparent-control coroutine factory the
+        # same way (also kept off the constructor so subclasses need not forward
+        # it).
+        device.set_cloud_send_factory(cloud_send_factory)
     except ModuleNotFoundError:
         device = None
     return cast("MideaDevice", device)

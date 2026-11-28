@@ -378,6 +378,72 @@ class TestMideaCLI(IsolatedAsyncioTestCase):
             assert await self.cli.discover() == []
         device_selector_mock.assert_not_called()
 
+    async def test_discover_installs_cloud_sender(self) -> None:
+        """A logged-in discover installs a cloud coro factory per device."""
+        mock_device = {
+            "device_id": 1,
+            "protocol": ProtocolVersion.V3,
+            "type": 0xAC,
+            "ip_address": "192.168.0.2",
+            "port": 6444,
+            "model": "AC123000",
+            "device_subtype": 44204,
+            "manufacturer_code": 0,
+            "sn": "0000AC12300000001234567890ABCDEF",
+            "mac": "1234567890AB",
+        }
+        mock_cloud_instance = AsyncMock()
+        mock_cloud_instance.get_cloud_keys.return_value = {
+            0: {"token": "token", "key": "key"},
+        }
+        mock_cloud_instance.get_default_keys.return_value = {}
+        mock_device_instance = MagicMock()
+        mock_device_instance.connect = AsyncMock(return_value=True)
+        mock_device_instance.refresh_status = AsyncMock()
+        with (
+            patch("midealan.cli.discover", return_value={1: mock_device}),
+            patch.object(self.cli, "_get_cloud", return_value=mock_cloud_instance),
+            patch(
+                "midealan.cli.device_selector",
+                return_value=mock_device_instance,
+            ) as device_selector_mock,
+        ):
+            await self.cli.discover()
+        # Login succeeds, so discover() passes a coroutine factory bound to
+        # this appliance into device_selector for the LAN-unavailable case.
+        factory = device_selector_mock.call_args.kwargs["cloud_send_factory"]
+        assert factory is not None
+        assert callable(factory)
+
+    async def test_discover_without_cloud_has_no_sender(self) -> None:
+        """Without a logged-in cloud no transparent-control sender is installed."""
+        tls_device = {
+            "device_id": 3,
+            "protocol": ProtocolVersion.V3,
+            "type": 0xE3,
+            "ip_address": "192.168.0.3",
+            "port": 6444,
+            "model": "",
+            "sn": "",
+            "mac": "1234567890AB",
+            "sn_encrypted": True,
+        }
+        mock_device_instance = MagicMock()
+        mock_device_instance.connect = AsyncMock(return_value=True)
+        mock_device_instance.refresh_status = AsyncMock()
+        with (
+            patch("midealan.cli.discover", return_value={3: tls_device}),
+            patch(
+                "midealan.cli.device_selector",
+                return_value=mock_device_instance,
+            ) as device_selector_mock,
+            # _get_cert_bundle is mocked, so the real one never runs and
+            # self._cloud stays None -- no sender should be built.
+            patch.object(self.cli, "_get_cert_bundle", return_value=object()),
+        ):
+            await self.cli.discover()
+        assert device_selector_mock.call_args.kwargs["cloud_send_factory"] is None
+
     def test_message(self) -> None:
         """Test message."""
         mock_device_instance = MagicMock()

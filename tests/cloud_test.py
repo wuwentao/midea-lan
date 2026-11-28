@@ -22,6 +22,7 @@ from midealan.cloud import (
     CERT_PRIVATE_KEY_ALIAS_OEM,
     DEFAULT_KEYS,
     SUPPORTED_CLOUDS,
+    TRANSPARENT_SEND_ALIAS,
     MeijuCloud,
     MideaAirCloud,
     MideaCloud,
@@ -31,12 +32,14 @@ from midealan.cloud import (
     _mask_token,
     _normalize_model_number,
     _redact_data,
+    bytes_to_dec_string,
+    dec_string_to_bytes,
     get_default_cloud,
     get_midea_cloud,
     get_preset_account_cloud,
 )
 from midealan.exceptions import CloudAuthError, CloudError, ElementMissing
-from midealan.security import ToshibaIOLifeSecurity
+from midealan.security import MeijuCloudSecurity, ToshibaIOLifeSecurity
 
 # ``CloudSecurity.get_udp_id(100, method)``. Hard-coded on purpose: deriving them
 # with the same helper the implementation calls would not catch a request that
@@ -3283,3 +3286,156 @@ class CertProvisioningTest(IsolatedAsyncioTestCase):
         assert CERT_PRIVATE_KEY_ALIAS_OEM == "/v2/open/sdk/appliance/privateKey2"
         cloud = self._cloud()
         assert cloud._cert_private_key_alias == CERT_PRIVATE_KEY_ALIAS
+
+
+class DecStringHelpersTest(IsolatedAsyncioTestCase):
+    """Signed-byte dec-string (de)serialization for the cloud order/reply."""
+
+    def test_bytes_to_dec_string_signed(self) -> None:
+        """Bytes render as signed decimals (Java byte: -128..127), UTF-8."""
+        # 0xAA -> -86, 0x7F -> 127, 0x80 -> -128, 0xFF -> -1.
+        assert (
+            bytes_to_dec_string(bytes([0x00, 0x7F, 0x80, 0xFF, 0xAA]))
+            == b"0,127,-128,-1,-86"
+        )
+
+    def test_round_trip_all_bytes(self) -> None:
+        """Every byte 0..255 survives a dec-string round trip."""
+        frame = bytes(range(256))
+        assert dec_string_to_bytes(bytes_to_dec_string(frame).decode()) == frame
+
+    def test_dec_string_to_bytes_empty(self) -> None:
+        """An empty reply plaintext decodes to an empty frame."""
+        assert dec_string_to_bytes("") == b""
+
+    def test_dec_string_to_bytes_clamps_out_of_range(self) -> None:
+        """Out-of-range decimals clamp to the signed-byte bounds then mask."""
+        # 200 -> 127 -> 0x7F; -200 -> -128 -> 0x80; spaces are tolerated.
+        assert dec_string_to_bytes("200, -200") == bytes([0x7F, 0x80])
+
+
+class TransparentSendTest(IsolatedAsyncioTestCase):
+    """Cloud transparent-transmission control primitive + bridge."""
+
+    # An example E3 query frame (the bare AA application frame serialize() emits).
+    _FRAME = bytes.fromhex("aa0ce300000000000003010100e3")
+    # An example appliance response frame the cloud would return.
+    _REPLY_FRAME = bytes.fromhex("aa1ee303000000000203010100112233")
+
+    @staticmethod
+    def _cloud(
+        *,
+        api_url: str = "https://mp-prod.smartmidea.net/mas/v5/app/proxy?alias=",
+    ) -> MideaCloud:
+        """Build a MideaCloud with a real Meiju (ECB) session key installed."""
+        security = MeijuCloudSecurity(
+            "ad0ee21d48a64bf49f4fb583ab76e799",
+            "iotkey",
+            "hmackey",
+        )
+        # Meiju installs an ECB session key at login (iv == b"0"); mirror that so
+        # the order/reply crypto exercises the real path, not a mock.
+        security.set_aes_keys(b"0123456789abcdef", b"0")
+        return MideaCloud(
+            session=Mock(),
+            security=security,
+            app_id="appid",
+            app_key="appkey",
+            account="account",
+            password="password",
+            api_url=api_url,
+        )
+
+    async def test_send_transparent_success(self) -> None:
+        """Encode the frame as the order and decode the reply round-trip."""
+        cloud = self._cloud()
+        cloud.set_access_token("token")
+        # The cloud echoes the reply as AES(order plaintext).hex() under the
+        # same session key, so build it the same way the device would decode it.
+        reply_hex = cloud._security.aes_encrypt(
+            bytes_to_dec_string(self._REPLY_FRAME),
+        ).hex()
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value={"reply": reply_hex}),
+        ) as api_request:
+            result = await cloud.send_transparent(123456, self._FRAME)
+        assert result == self._REPLY_FRAME
+        call = api_request.await_args
+        assert call is not None
+        assert call.kwargs["endpoint"] == TRANSPARENT_SEND_ALIAS
+        body = call.kwargs["data"]
+        assert body["applianceCode"] == "123456"
+        assert body["timestamp"] == "true"
+        assert body["isFull"] == "false"
+        # The order must decrypt back to the original frame under the same key.
+        assert (
+            dec_string_to_bytes(cloud._security.aes_decrypt(body["order"]))
+            == self._FRAME
+        )
+
+    async def test_send_transparent_no_reply(self) -> None:
+        """A None envelope / absent / empty reply yields None (sent, no answer)."""
+        cloud = self._cloud()
+        cloud.set_access_token("token")
+        for envelope in (None, {}, {"reply": ""}):
+            with patch.object(
+                cloud,
+                "_api_request",
+                AsyncMock(return_value=envelope),
+            ):
+                assert await cloud.send_transparent("123456", self._FRAME) is None
+
+    async def test_send_transparent_no_token(self) -> None:
+        """Without an access token the primitive raises CloudAuthError."""
+        cloud = self._cloud()
+        with pytest.raises(CloudAuthError):
+            await cloud.send_transparent("123456", self._FRAME)
+
+    async def test_send_transparent_no_alias(self) -> None:
+        """A cloud without the proxy alias cannot transparent-control."""
+        cloud = self._cloud(api_url="https://mapp.appsmb.com")  # codespell:ignore
+        cloud.set_access_token("token")
+        with pytest.raises(CloudError):
+            await cloud.send_transparent("123456", self._FRAME)
+
+    async def test_send_transparent_seeds_general_fields(self) -> None:
+        """MSmart/SmartHome bodies carry the general fields beside the order.
+
+        Meiju's general data is empty so its body is just the transparent
+        fields (covered above). SmartHome seeds clientType/appId/deviceId, and
+        send_transparent must include them -- like every other business request
+        -- so the cloud accepts the order.
+        """
+        cloud = get_midea_cloud(
+            "SmartHome",
+            session=Mock(),
+            account="user@example.com",
+            password="password",
+        )
+        assert isinstance(cloud, SmartHomeCloud)
+        cloud.set_access_token("token")
+        # Install a CBC session key directly (MSmart uses a real IV, not b"0");
+        # deriving it via set_aes_keys would need a live login handshake.
+        cloud._security._aes_key = b"0123456789abcdef"
+        cloud._security._aes_iv = b"abcdef0123456789"
+        with patch.object(
+            cloud,
+            "_api_request",
+            AsyncMock(return_value=None),
+        ) as api_request:
+            assert await cloud.send_transparent("123456", self._FRAME) is None
+        call = api_request.await_args
+        assert call is not None
+        body = call.kwargs["data"]
+        # The transparent fields are present...
+        assert body["applianceCode"] == "123456"
+        assert body["timestamp"] == "true"
+        assert body["isFull"] == "false"
+        assert "order" in body
+        # ...alongside the seeded SmartHome general fields.
+        assert body["clientType"] == "1"
+        assert body["appId"] == cloud._app_id
+        assert body["deviceId"] == cloud._device_id
+        assert body["src"] == cloud._app_id

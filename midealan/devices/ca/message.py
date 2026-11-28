@@ -39,8 +39,33 @@ TOSHIBA_CA_FREEZER_DOOR_MASK = 0x02
 TOSHIBA_CA_BAR_DOOR_MASK = 0x04
 TOSHIBA_CA_FLEX_ZONE_DOOR_MASK = 0x08
 
+CA_MODE_BODY_LENGTH = 61
+CA_MODE_MAX_AGE_SECONDS = 120.0
+CA_MODE_PENDING_TIMEOUT_SECONDS = 240.0
+CA_MODE_MASKS = {
+    "storage_mode": 0x01,
+    "freezing_mode": 0x02,
+    "holiday_mode": 0x10,
+}
+
 
 ToshibaCAStatus = dict[str, bool | int]
+
+
+def build_ca_mode_body(
+    body: bytes | bytearray,
+    mask: int,
+    enabled: bool,
+) -> bytes:
+    """Build an X00 control body from a query or notification template."""
+    if len(body) != CA_MODE_BODY_LENGTH:
+        raise ValueError(
+            f"CA mode body must contain {CA_MODE_BODY_LENGTH} bytes",
+        )
+    result = bytearray(body)
+    result[0] = ListTypes.X00
+    result[1] = (result[1] | mask) if enabled else (result[1] & ~mask)
+    return bytes(result)
 
 
 def decode_toshiba_ca_status(
@@ -137,6 +162,7 @@ class CAGeneralMessageBody(MessageBody):
         super().__init__(body)
 
         self.code_mode = (body[1] & 0x01) > 0
+        self.storage_mode = self.code_mode
         self.freezing_mode = (body[1] & 0x02) > 0
         self.smart_mode = (body[1] & 0x04) > 0
         self.energy_saving_mode = (body[1] & 0x08) > 0

@@ -12,6 +12,7 @@ what the protocol actually reports.
 """
 
 import logging
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, Unpack
 
@@ -161,7 +162,12 @@ class MideaX9BDevice(MideaDevice):
             new_status[attribute] = value
         return new_status
 
-    def build_send(self, cmd: MessageRequest, query: bool = False) -> None:
+    def build_send(
+        self,
+        cmd: MessageRequest,
+        query: bool = False,
+        on_sent: Callable[[], None] | None = None,
+    ) -> None:
         """Track probe replies and block unverified V4-layout controls."""
         if (
             self.supports_protocol(X9BProtocol.STATUS_V4)
@@ -188,7 +194,7 @@ class MideaX9BDevice(MideaDevice):
                 cmd.__class__.__name__,
                 cmd.serialize().hex(),
             )
-        super().build_send(cmd, query=query)
+        super().build_send(cmd, query=query, on_sent=on_sent)
 
     def _query_reply_ready(self, result: MessageResult) -> bool:
         """Resolve a checked probe only on its matching business reply.

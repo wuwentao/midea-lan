@@ -20,7 +20,6 @@ from midealan.message import (
 
 from .message import (
     CA_MODE_BODY_LENGTH,
-    CA_MODE_BODY_OFFSET,
     CA_MODE_MASKS,
     CA_MODE_MAX_AGE_SECONDS,
     CA_MODE_PENDING_TIMEOUT_SECONDS,
@@ -315,9 +314,9 @@ class MideaCADevice(MideaDevice):
             status = self._fresh_ca_mode_status()
             if status is None:
                 return
-            body = build_ca_mode_body(status.body, mask, value)
-            if body == status.body:
+            if bool(status.body[1] & mask) == value:
                 return
+            body = build_ca_mode_body(status.body, mask, value)
             command = MessageQuestCustom(
                 DeviceType.CA,
                 self._message_protocol_version,
@@ -371,10 +370,9 @@ class MideaCADevice(MideaDevice):
         ):
             return
         body = getattr(message, "body", bytearray())
-        end = CA_MODE_BODY_OFFSET + CA_MODE_BODY_LENGTH
-        if len(body) < end:
+        if len(body) < CA_MODE_BODY_LENGTH:
             return
-        raw_body = bytes(body[CA_MODE_BODY_OFFSET:end])
+        raw_body = bytes(body[:CA_MODE_BODY_LENGTH])
         with self._ca_mode_lock:
             current = self._ca_mode_status
             if current is not None and event_order < current.event_order:
@@ -393,7 +391,7 @@ class MideaCADevice(MideaDevice):
                 and received_at >= pending.sent_at
                 and event_order > pending.sent_order
             ):
-                if bool(raw_body[0] & pending.mask) != pending.enabled:
+                if bool(raw_body[1] & pending.mask) != pending.enabled:
                     _LOGGER.debug(
                         "[%s] CA mode write was not confirmed by device status",
                         self.device_id,

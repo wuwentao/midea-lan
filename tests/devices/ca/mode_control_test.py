@@ -74,11 +74,13 @@ def test_mode_set_changes_only_requested_bit(
     mask: int,
 ) -> None:
     """Each mode uses its documented bit and preserves all other bytes."""
-    original = bytes([0xA0, *range(1, CA_MODE_BODY_LENGTH)])
+    original = bytes([0, 0xA0, *range(2, CA_MODE_BODY_LENGTH)])
     changed = build_ca_mode_body(original, mask, True)
     assert len(changed) == CA_MODE_BODY_LENGTH
-    assert changed[0] == original[0] | mask
-    assert changed[1:] == original[1:]
+    assert changed[0] == 0
+    assert changed[1] == original[1] | mask
+    assert changed[2:] == original[2:]
+    assert build_ca_mode_body(changed, mask, False) == original
     assert attribute.value in {"storage_mode", "freezing_mode", "holiday_mode"}
 
 
@@ -227,8 +229,8 @@ def test_set_requires_status_and_waits_for_next_status() -> None:
         send.assert_called_once()
         command = send.call_args.args[0]
         assert isinstance(command, MessageQuestCustom)
-        assert command.body[0] == 0x01
-        assert command.body[1:] == bytes(range(2, CA_MODE_BODY_LENGTH + 1))
+        expected = bytes([0x00, 0x01, *range(2, 61)])
+        assert command.serialize()[10:-1] == expected
 
         with pytest.raises(CAModeWritePendingError, match="waiting for device"):
             device.set_attribute(DeviceAttributes.freezing_mode.value, True)
@@ -246,7 +248,7 @@ def test_notify02_general_status_is_a_valid_set_template() -> None:
     with patch.object(device, "build_send", side_effect=_complete_send) as send:
         device.set_attribute(DeviceAttributes.freezing_mode.value, True)
     command = send.call_args.args[0]
-    assert command.body[0] == 0x03
+    assert command.serialize()[10:-1] == bytes([0x00, 0x03, *range(2, 61)])
 
 
 def test_mismatched_status_notification_is_not_a_set_template() -> None:
@@ -489,7 +491,7 @@ def test_older_status_cannot_replace_newer_cached_status() -> None:
 
         with patch.object(device, "build_send", side_effect=_complete_send) as send:
             device.set_attribute(DeviceAttributes.holiday_mode.value, True)
-    assert send.call_args.args[0].body[0] == 0x12
+    assert send.call_args.args[0].body[1] == 0x12
 
 
 def test_pending_write_is_reported_after_status_expires(

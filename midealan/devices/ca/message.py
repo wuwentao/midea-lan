@@ -40,7 +40,6 @@ TOSHIBA_CA_BAR_DOOR_MASK = 0x04
 TOSHIBA_CA_FLEX_ZONE_DOOR_MASK = 0x08
 
 CA_MODE_BODY_LENGTH = 61
-CA_MODE_BODY_OFFSET = 1
 CA_MODE_MAX_AGE_SECONDS = 120.0
 CA_MODE_PENDING_TIMEOUT_SECONDS = 240.0
 CA_MODE_MASKS = {
@@ -58,13 +57,14 @@ def build_ca_mode_body(
     mask: int,
     enabled: bool,
 ) -> bytes:
-    """Return a CA status body with only the mode byte changed."""
+    """Build an X00 control body from a query or notification template."""
     if len(body) != CA_MODE_BODY_LENGTH:
         raise ValueError(
             f"CA mode body must contain {CA_MODE_BODY_LENGTH} bytes",
         )
     result = bytearray(body)
-    result[0] = (result[0] | mask) if enabled else (result[0] & ~mask)
+    result[0] = ListTypes.X00
+    result[1] = (result[1] | mask) if enabled else (result[1] & ~mask)
     return bytes(result)
 
 
